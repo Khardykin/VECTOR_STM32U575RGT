@@ -1,0 +1,6 @@
+/Debug/
+*.o
+*.su
+
+.settings/language.settings.xml
+.project
