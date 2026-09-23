@@ -1,2 +1,8 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# бинарные артефакты: образ звуков, wav-исходники, прошивки — без EOL-преобразований
+*.bin binary
+*.img binary
+*.wav binary
+*.stldr binary

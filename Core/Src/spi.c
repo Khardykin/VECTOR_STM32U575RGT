@@ -26,6 +26,8 @@
 
 SPI_HandleTypeDef hspi1;
 SPI_HandleTypeDef hspi2;
+DMA_HandleTypeDef handle_GPDMA1_Channel10;
+DMA_HandleTypeDef handle_GPDMA1_Channel9;
 
 /* SPI1 init function */
 void MX_SPI1_Init(void)
@@ -43,11 +45,11 @@ void MX_SPI1_Init(void)
   hspi1.Instance = SPI1;
   hspi1.Init.Mode = SPI_MODE_MASTER;
   hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_4BIT;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -74,7 +76,31 @@ void MX_SPI1_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN SPI1_Init 2 */
+  /* Куб сгенерировал SPI1 с 4-битными фреймами и делителем /2 (80 МГц).
+     MX25K6435F так не разговаривает: нужны 8-битные фреймы и SCK <= 50 МГц.
+     Правим здесь, в USER CODE, чтобы не терялось при регенерации из CubeMX.
+     160 МГц / 8 = 20 МГц - с запасом для первого запуска; потом можно /4. */
+  hspi1.Init.DataSize          = SPI_DATASIZE_8BIT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
+  /* Пины SCK/MISO/MOSI в GPIO_SPEED_FREQ_LOW на 20 МГц дают пологие фронты
+     и плавающие биты. Поднимаем скорость пинов. */
+  {
+    GPIO_InitTypeDef gio = {0};
+    gio.Pin       = GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7;
+    gio.Mode      = GPIO_MODE_AF_PP;
+    gio.Pull      = GPIO_NOPULL;
+    gio.Speed     = GPIO_SPEED_FREQ_HIGH;
+    gio.Alternate = GPIO_AF5_SPI1;
+    HAL_GPIO_Init(GPIOA, &gio);
+  }
+
+  /* CS неактивен до первого обращения драйвера */
+  HAL_GPIO_WritePin(CS_FLASH_GPIO_Port, CS_FLASH_Pin, GPIO_PIN_SET);
   /* USER CODE END SPI1_Init 2 */
 
 }
@@ -94,7 +120,7 @@ void MX_SPI2_Init(void)
   hspi2.Instance = SPI2;
   hspi2.Init.Mode = SPI_MODE_MASTER;
   hspi2.Init.Direction = SPI_DIRECTION_1LINE;
-  hspi2.Init.DataSize = SPI_DATASIZE_4BIT;
+  hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
   hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi2.Init.NSS = SPI_NSS_SOFT;
@@ -162,10 +188,68 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
     GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF5_SPI1;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+    /* SPI1 DMA Init */
+    /* GPDMA1_REQUEST_SPI1_RX Init */
+    handle_GPDMA1_Channel10.Instance = GPDMA1_Channel10;
+    handle_GPDMA1_Channel10.Init.Request = GPDMA1_REQUEST_SPI1_RX;
+    handle_GPDMA1_Channel10.Init.BlkHWRequest = DMA_BREQ_SINGLE_BURST;
+    handle_GPDMA1_Channel10.Init.Direction = DMA_PERIPH_TO_MEMORY;
+    handle_GPDMA1_Channel10.Init.SrcInc = DMA_SINC_FIXED;
+    handle_GPDMA1_Channel10.Init.DestInc = DMA_DINC_INCREMENTED;
+    handle_GPDMA1_Channel10.Init.SrcDataWidth = DMA_SRC_DATAWIDTH_BYTE;
+    handle_GPDMA1_Channel10.Init.DestDataWidth = DMA_DEST_DATAWIDTH_BYTE;
+    handle_GPDMA1_Channel10.Init.Priority = DMA_LOW_PRIORITY_LOW_WEIGHT;
+    handle_GPDMA1_Channel10.Init.SrcBurstLength = 1;
+    handle_GPDMA1_Channel10.Init.DestBurstLength = 1;
+    handle_GPDMA1_Channel10.Init.TransferAllocatedPort = DMA_SRC_ALLOCATED_PORT0|DMA_DEST_ALLOCATED_PORT0;
+    handle_GPDMA1_Channel10.Init.TransferEventMode = DMA_TCEM_BLOCK_TRANSFER;
+    handle_GPDMA1_Channel10.Init.Mode = DMA_NORMAL;
+    if (HAL_DMA_Init(&handle_GPDMA1_Channel10) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    __HAL_LINKDMA(spiHandle, hdmarx, handle_GPDMA1_Channel10);
+
+    if (HAL_DMA_ConfigChannelAttributes(&handle_GPDMA1_Channel10, DMA_CHANNEL_NPRIV) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    /* GPDMA1_REQUEST_SPI1_TX Init */
+    handle_GPDMA1_Channel9.Instance = GPDMA1_Channel9;
+    handle_GPDMA1_Channel9.Init.Request = GPDMA1_REQUEST_SPI1_TX;
+    handle_GPDMA1_Channel9.Init.BlkHWRequest = DMA_BREQ_SINGLE_BURST;
+    handle_GPDMA1_Channel9.Init.Direction = DMA_MEMORY_TO_PERIPH;
+    handle_GPDMA1_Channel9.Init.SrcInc = DMA_SINC_INCREMENTED;
+    handle_GPDMA1_Channel9.Init.DestInc = DMA_DINC_FIXED;
+    handle_GPDMA1_Channel9.Init.SrcDataWidth = DMA_SRC_DATAWIDTH_BYTE;
+    handle_GPDMA1_Channel9.Init.DestDataWidth = DMA_DEST_DATAWIDTH_BYTE;
+    handle_GPDMA1_Channel9.Init.Priority = DMA_LOW_PRIORITY_LOW_WEIGHT;
+    handle_GPDMA1_Channel9.Init.SrcBurstLength = 1;
+    handle_GPDMA1_Channel9.Init.DestBurstLength = 1;
+    handle_GPDMA1_Channel9.Init.TransferAllocatedPort = DMA_SRC_ALLOCATED_PORT0|DMA_DEST_ALLOCATED_PORT0;
+    handle_GPDMA1_Channel9.Init.TransferEventMode = DMA_TCEM_BLOCK_TRANSFER;
+    handle_GPDMA1_Channel9.Init.Mode = DMA_NORMAL;
+    if (HAL_DMA_Init(&handle_GPDMA1_Channel9) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    __HAL_LINKDMA(spiHandle, hdmatx, handle_GPDMA1_Channel9);
+
+    if (HAL_DMA_ConfigChannelAttributes(&handle_GPDMA1_Channel9, DMA_CHANNEL_NPRIV) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    /* SPI1 interrupt Init */
+    HAL_NVIC_SetPriority(SPI1_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(SPI1_IRQn);
   /* USER CODE BEGIN SPI1_MspInit 1 */
 
   /* USER CODE END SPI1_MspInit 1 */
@@ -196,7 +280,7 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
     GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_15;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF5_SPI2;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
@@ -224,6 +308,12 @@ void HAL_SPI_MspDeInit(SPI_HandleTypeDef* spiHandle)
     */
     HAL_GPIO_DeInit(GPIOA, GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7);
 
+    /* SPI1 DMA DeInit */
+    HAL_DMA_DeInit(spiHandle->hdmarx);
+    HAL_DMA_DeInit(spiHandle->hdmatx);
+
+    /* SPI1 interrupt Deinit */
+    HAL_NVIC_DisableIRQ(SPI1_IRQn);
   /* USER CODE BEGIN SPI1_MspDeInit 1 */
 
   /* USER CODE END SPI1_MspDeInit 1 */

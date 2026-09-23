@@ -1,0 +1,1398 @@
+/**
+  ******************************************************************************
+  * @file    audio_player.c
+  * @brief   Плеер звуков из внешней SPI flash (очередь, состояния, громкость)
+  *
+  *          Поток-владелец воспроизведения: только он трогает SAI/DMA.
+  *          Команды приходят через tx_queue, пробуждение - через семафор,
+  *          который взводят и команды, и ISR завершения DMA.
+  *
+  *          Тестовый вход - кнопки:
+  *            BUTTON1 (PB1) - цикл состояний 0 -> 1 -> 2 -> 0
+  *                            st0 = звук #0, st1 = звук #1, st2 = ТИШИНА
+  *            BUTTON2 (PB2) - проиграть следующий звук образа по очереди
+  *            BUTTON3 (PB3) - стоп
+  *
+  *          ПОРЯДОК СТАРТА (важно, см. также docs/SYSTEM.md):
+  *            main()                    - периферия, sf_probe(), кнопки
+  *            tx_application_define()   - ext_init() -> audio_init()
+  *            audio_init()              - RTOS-объекты, ПОТОК, load_image()
+  *            ap_thread_entry()         - factory-запись (только если образа
+  *                                        нет), затем вечный цикл команд
+  *
+  *          ДИАГНОСТИКА "ничего не происходит": audio_dbg_boot_stage,
+  *          audio_dbg_wakes, audio_dbg_timeouts, audio_dbg_keys,
+  *          audio_dbg_started/played/errors - см. audio_player.h.
+  ******************************************************************************
+  */
+#include "audio_player.h"
+#include "vector_config.h"
+#include "audio_factory.h"
+#include "audio_ids.h"
+#include "audio_image.h"
+#include "spiflash.h"
+#include "extstore.h"
+#include "audio_beep.h"
+#include "sai.h"
+#include "main.h"
+#include "tx_api.h"
+#include "vector_log.h"   /* консольный лог: VECTOR_LOG_ENABLE в vector_config.h */
+#include "vector_tick.h"   /* VTICK_MS() - время только от тика RTOS */
+#include <string.h>
+
+/* ------------------------------------------------------------------ RTOS -- */
+#define AP_STACK_SIZE   4096u
+#define AP_PRIORITY     10u
+
+/* Сколько ждать события, если heartbeat включён (VECTOR_AUDIO_WAKE_TIMEOUT_MS).
+   0 = честное TX_WAIT_FOREVER. Пауза цикла считает свой таймаут отдельно и
+   просто уменьшает это значение (см. цикл потока). Перевод мс -> тики делает
+   VTICK_MS2TICKS (vector_tick.h), всё время в проекте - от тика RTOS.        */
+#if (VECTOR_AUDIO_WAKE_TIMEOUT_MS > 0u)
+#define AP_WAKE_TMO     ((ULONG)VTICK_MS2TICKS(VECTOR_AUDIO_WAKE_TIMEOUT_MS))
+#else
+#define AP_WAKE_TMO     TX_WAIT_FOREVER
+#endif
+
+static TX_THREAD    ap_thread;
+static uint8_t      ap_stack[AP_STACK_SIZE] __attribute__((aligned(8)));
+static TX_QUEUE     ap_queue;
+static ULONG        ap_queue_mem[AUDIO_QUEUE_LEN];
+static TX_SEMAPHORE ap_wake;
+
+/* Команды */
+#define CMD_PLAY    1u
+#define CMD_STOP    2u
+#define CMD_STATE   3u
+#define CMD_BEEP    4u
+#define CMD_LOOP    5u   /* пересчитать цикл (audio_set_loop) */
+#define MSG(cmd, arg)   ((((ULONG)(cmd)) << 16) | ((ULONG)(arg) & 0xFFFFu))
+
+/* ---------------------------------------------------------------- образ --- */
+#define AP_MAX_SOUNDS   32u
+static audio_img_header_t ap_hdr;
+static audio_img_entry_t  ap_tab[AP_MAX_SOUNDS];
+static uint8_t            ap_img_ok = 0;
+/* Образ во внешней flash ВАЛИДЕН, но это ДРУГАЯ сборка, чем зашита в MCU
+   (пересобрали sounds.img / audio_factory_image.c). Играть с него можно,
+   но при старте поток плеера перезапишет внешнюю flash встроенным образом.
+   Ставится в load_image() через audio_factory_is_stale().                   */
+static uint8_t            ap_img_stale = 0;
+/* factory-запись делается РОВНО ОДИН раз за старт и только если образа нет
+   или он устарел: иначе каждая перезагрузка стирала и писала сотни КБ.      */
+static uint8_t            ap_factory_tried = 0;
+
+/* ---------------------------------------------------------------- буфер ---
+ * ap_buf - ОДИН на всё устройство: звук читается из flash ЦЕЛИКОМ сюда и
+ * одной DMA-транзакцией уходит в SAI. 131070 байт = 65535 сэмплов, то есть
+ * 4.09 с при 16 кГц (это же предел uint16_t Size у HAL_SAI_Transmit_DMA).
+ * Второй звук в это же место не читается, поэтому одновременное
+ * воспроизведение двух дорожек невозможно by design.                        */
+#if VECTOR_AUDIO_STREAM
+#define AP_CHUNK   ((uint32_t)VECTOR_AUDIO_STREAM_CHUNK)
+#endif
+
+/* Размер буфера в сэмплах. Стриминг использует только первые 2*AP_CHUNK, но
+   буфер по умолчанию оставлен ПОЛНЫМ (AUDIO_BUF_SAMPLES): если в кубе забыли
+   поставить Mode = Circular для SAI DMA, плеер откатывается на путь одной
+   транзакцией и должен уметь прочитать звук целиком, иначе вместо музыки
+   будет AUDIO_ERR_TOO_LONG. VECTOR_AUDIO_STREAM_SMALLBUF 1 урезает буфер до
+   двух кусков (экономия 115 КБ RAM) - ставить только убедившись, что стриминг
+   реально работает (в логе есть слово "stream").                            */
+#if VECTOR_AUDIO_STREAM && VECTOR_AUDIO_STREAM_SMALLBUF
+#define AP_BUF_SAMPLES  (2u * VECTOR_AUDIO_STREAM_CHUNK)
+#else
+#define AP_BUF_SAMPLES  AUDIO_BUF_SAMPLES
+#endif
+static int16_t ap_buf[AP_BUF_SAMPLES];
+
+/* -------------------------------------------------------------- состояние -
+ * Таблица "состояние -> звук". По умолчанию берётся из СГЕНЕРИРОВАННОГО
+ * audio_ids.h (первые два звука образа), поэтому при добавлении звуков
+ * править здесь ничего не нужно: enum и SND_STATE_DEFAULT_* пересоздаются
+ * скриптом pack_sounds.py вместе с образом.
+ *
+ * Хотите другую привязку - подставьте имена SND_* из audio_ids.h, например:
+ *     { SND_C_VOICE_GAS, SND_B_CLICK, AUDIO_STATE_SILENT }
+ * Кнопка BUTTON1 крутит состояния по кругу (см. HAL_GPIO_EXTI_Rising_Callback).
+ *
+ * Состояние 2 - третий звук образа, если он в наборе есть. pack_sounds.py
+ * генерирует только SND_STATE_DEFAULT_0/1, поэтому дальше берём индекс прямо:
+ * при пересборке образа на месте 2 окажется тот звук, который шёл третьим в
+ * команде сборки. Если звуков меньше трёх - тишина. Защита от выхода за
+ * состав образа есть ниже (ap_state_assert2), при SND_COUNT <= 2 ветка
+ * выбирает AUDIO_STATE_SILENT и ассерт проходит.
+ *
+ * Зачем это нужно: без третьего состояния самый длинный звук образа вообще
+ * недостижим с кнопки, и стриминг (раздел 3, docs/AUDIO.md) не проверить.   */
+/* Третий звук берём индексом, а не макросом: pack_sounds.py генерирует только
+   SND_STATE_DEFAULT_0/1. ВАЖНО - проверка через ТЕРНАРНЫЙ оператор, а не через
+   #if: SND_COUNT объявлен в enum, препроцессор его не видит и в #if подставил
+   бы 0, из-за чего ветка "тишина" выбиралась бы даже для образа из трёх
+   звуков. Как константное выражение AP_STATE_SND2 годится и в инициализатор
+   массива, и в ассерт ниже.                                                  */
+#define AP_STATE_SND2  ((SND_COUNT > 2) ? (uint16_t)2 : (uint16_t)AUDIO_STATE_SILENT)
+
+static volatile uint8_t  ap_state = 0;
+static const uint16_t    ap_state_map[3] = {
+  SND_STATE_DEFAULT_0,      /* состояние 0 */
+  SND_STATE_DEFAULT_1,      /* состояние 1 */
+  AP_STATE_SND2             /* состояние 2 = третий звук образа или тишина */
+};
+
+/* Защита на этапе компиляции: индексы из таблицы обязаны существовать
+   в данном составе образа (0xFFFF = тишина, проверяется отдельно). */
+typedef char ap_state_assert0
+    [((SND_STATE_DEFAULT_0 == 0xFFFFu) || (SND_STATE_DEFAULT_0 < SND_COUNT)) ? 1 : -1];
+typedef char ap_state_assert1
+    [((SND_STATE_DEFAULT_1 == 0xFFFFu) || (SND_STATE_DEFAULT_1 < SND_COUNT)) ? 1 : -1];
+/* третье состояние - константное выражение, поэтому проверяется так же:
+   либо тишина (0xFFFF), либо существующий звук образа.                      */
+typedef char ap_state_assert2
+    [((AP_STATE_SND2 == 0xFFFFu) || (AP_STATE_SND2 < SND_COUNT)) ? 1 : -1];
+
+/* --------------------------------------------------------------- громкость */
+static volatile int32_t ap_vol_q15 = 32767;   /* 100% */
+
+/* ---------------------------------------------------------- воспроизведение
+ * ap_playing_idx: -1 = ничего не играет, -2 = играет аварийный писк,
+ *                 >=0 = индекс звука в образе.
+ * ap_pending_idx: -1 = нет отложенного звука, >=0 = ждёт окончания текущего.
+ * Оба volatile: ap_playing_idx меняется и из ISR завершения DMA.            */
+static volatile int32_t ap_playing_idx = -1;
+static volatile int32_t ap_pending_idx = -1;
+
+/* ------------------------------------------------------- ЦИКЛ состояния ---
+ * Режим "один звук по кругу": звук ТЕКУЩЕГО СОСТОЯНИЯ повторяется с паузой,
+ * пока состояние не сменят (audio_set_state) или не остановят (audio_stop /
+ * состояние "тишина"). Одноразовые audio_play() встраиваются в этот цикл:
+ * звучат вместо повтора, после чего цикл продолжается.
+ *
+ *   ap_loop_on      0/1 - режим включён (audio_set_loop, дефолт из конфига)
+ *   ap_loop_idx     звук, который повторяется; -1 = цикла нет
+ *   ap_loop_pause   пауза между повторами, мс (audio_set_loop_pause)
+ *   ap_next_at      момент (VTICK_MS) следующего повтора; 0 = ещё не задан,
+ *                   то есть звук только что закончился и пауза не началась    */
+static volatile uint8_t  ap_loop_on    = (uint8_t)VECTOR_AUDIO_LOOP_STATE;
+static volatile int32_t  ap_loop_idx   = -1;
+static volatile uint32_t ap_loop_pause = (uint32_t)VECTOR_AUDIO_LOOP_PAUSE_MS;
+static volatile uint32_t ap_next_at    = 0;
+
+/* Дедлайн текущего звучания (VTICK_MS() + длительность + запас). Нужен
+   только watchdog'у ap_check_stuck(): если колбэк завершения DMA так и не
+   пришёл, поток не встаёт навсегда, а гасит "залипший" звук сам.            */
+#define AP_STUCK_MARGIN_MS  500u
+static volatile uint32_t ap_play_deadline = 0;
+static uint32_t ap_seen_played = 0;   /* для лога "звук доигран" (событие из ISR) */
+
+/* Флаг "SAI выдала блок до конца". Ставится из ISR, а ждёт его audio_selftest()
+   - единственное место, где окончание передачи проверяется до планировщика
+   (спать там негде, а в circular-режиме SAI сама в READY не возвращается).   */
+static volatile uint8_t ap_sai_blk_done = 0;
+
+#if VECTOR_AUDIO_STREAM
+typedef struct
+{
+  volatile uint8_t  active;      /* стриминг идёт                            */
+  uint8_t           use_flash;   /* 1 = PCM во внешней flash, 0 = const      */
+  int32_t           idx;         /* индекс звука (-2 = писк)                 */
+  const int16_t    *src;         /* const-источник (писк)                    */
+  uint32_t          src_off;     /* адрес PCM во внешней flash               */
+  uint32_t          total;       /* всего сэмплов в источнике                */
+  uint32_t          loaded;      /* сколько сэмплов уже уложено в буфер      */
+  volatile uint32_t played;      /* сколько сэмплов DMA выдала (пишет ISR)   */
+  volatile uint8_t  req0;        /* ISR просит дозагрузить первую половину   */
+  volatile uint8_t  req1;        /* ISR просит дозагрузить вторую половину   */
+} ap_stream_t;
+
+static ap_stream_t ap_st;
+volatile uint32_t audio_dbg_underrun = 0;   /* половина не была дозагружена вовремя */
+#endif
+
+
+/* ---------------------------------------------------------------- отладка --
+ * Все счётчики смотрятся в отладчике (Expressions), ничего печатать не нужно.
+ * Типичная проверка "почему молчит":
+ *   boot_stage = 5 и keys = 0        -> кнопки не доезжают (EXTI/уровень пина)
+ *   boot_stage = 5 и keys > 0,
+ *   started = 0                      -> команды есть, но старт DMA не удался
+ *                                      (смотрите last_err и errors)
+ *   boot_stage = 2/4                 -> во внешней flash нет валидного образа
+ *   wakes растёт, timeouts растёт    -> поток жив, событий просто нет
+ */
+#define AP_BOOT_INIT        0u  /* audio_init() ещё не отработал             */
+#define AP_BOOT_IMG_OK      1u  /* образ во внешней flash валиден            */
+#define AP_BOOT_IMG_BAD     2u  /* образа нет/бит -> уходим в factory-запись */
+#define AP_BOOT_FACTORY_OK  3u  /* factory-запись прошла, образ перечитан    */
+#define AP_BOOT_FACTORY_ERR 4u  /* factory-запись НЕ удалась, образа нет     */
+#define AP_BOOT_RUN         5u  /* поток в рабочем цикле команд              */
+
+volatile uint32_t audio_dbg_played    = 0;
+volatile uint32_t audio_dbg_started   = 0;
+volatile uint32_t audio_dbg_errors    = 0;
+volatile int32_t  audio_dbg_cur_idx   = -1;
+volatile uint32_t audio_dbg_last_err  = 0;
+volatile uint32_t audio_dbg_boot_stage= AP_BOOT_INIT;
+volatile uint32_t audio_dbg_wakes     = 0;  /* сколько раз проснулись        */
+volatile uint32_t audio_dbg_timeouts  = 0;  /* проснулись по таймауту, не по
+                                               событию (heartbeat)           */
+volatile uint32_t audio_dbg_keys      = 0;  /* команд принято из очереди     */
+volatile uint32_t audio_dbg_last_cmd  = 0;  /* последняя команда (CMD_*)     */
+volatile uint32_t audio_dbg_dropped   = 0;  /* play вытеснил предыдущий play */
+volatile uint32_t audio_dbg_loops     = 0;  /* сколько повторов цикла сыграно */
+volatile uint32_t audio_dbg_stuck     = 0;  /* звук добит watchdog'ом: колбэк
+                                               завершения DMA не пришёл      */
+
+
+
+/* ============================================================ внутреннее == */
+/* Пересчитать ap_loop_idx по текущему состоянию. КОНТЕКСТ: поток плеера.
+   Цикл взводится только если: режим включён, образ прочитан и состоянию
+   назначен звук (AUDIO_STATE_SILENT = "пустая ячейка" таблицы -> тишина).
+   Вызывается из CMD_STATE, CMD_LOOP и после factory-записи образа.          */
+static void ap_loop_update(void)
+{
+  uint16_t snd = (ap_state < (sizeof ap_state_map / sizeof ap_state_map[0]))
+                 ? ap_state_map[ap_state] : AUDIO_STATE_SILENT;
+
+  /* ap_img_ok обязателен: без образа start_now() каждый раз уходил бы в
+     аварийный писк, и цикл превратился бы в бесконечную пищалку. После
+     успешной factory-записи ap_loop_update() вызывается ещё раз.            */
+  if ((ap_loop_on != 0u) && (ap_img_ok != 0u) && (snd != AUDIO_STATE_SILENT))
+  {
+    ap_loop_idx = (int32_t)snd;
+  }
+  else
+  {
+    ap_loop_idx = -1;
+    ap_next_at  = 0;
+  }
+}
+
+/* Watchdog звучания. КОНТЕКСТ: поток плеера, вызывается только на
+   heartbeat-проходе (событий не было). Если звук "играет" дольше расчётного
+   времени + запас, значит колбэк HAL_SAI_TxCpltCallback не пришёл (не включён
+   GPDMA1_Channel11_IRQn, ошибка SAI, сбой DMA) - принудительно гасим передачу,
+   иначе очередь встала бы навсегда. Рост audio_dbg_stuck = искать проблему в
+   цепочке SAI/GPDMA, а не в кнопках.                                        */
+static void ap_check_stuck(void)
+{
+  uint32_t dl = ap_play_deadline;
+
+  if ((ap_playing_idx != -1) && (dl != 0u))
+  {
+    /* сравнение с учётом переполнения VTICK_MS() (~49.7 суток) */
+    if ((int32_t)(VTICK_MS() - dl) > 0)
+    {
+#if VECTOR_AUDIO_STREAM
+      ap_st.active = 0;
+#endif
+      (void)HAL_SAI_Abort(&hsai_BlockA1);
+      ap_playing_idx    = -1;
+      audio_dbg_cur_idx = -1;
+      ap_play_deadline  = 0;
+      audio_dbg_stuck++;
+    }
+  }
+}
+
+static void apply_volume(int16_t *p, uint32_t n);   /* объявление: стриминг
+                                                       использует её раньше */
+
+/* ------------------------------------------------------------- СТРИМИНГ ---
+ * Один звук = поток кусков. Источник: PCM во внешней flash (ap_tab[idx].offset)
+ * или const-массив во внутренней flash (аварийный писк).
+ *
+ * Разделение ответственности:
+ *   ISR (HAL_SAI_TxHalfCplt / TxCplt) - только счётчик выданных сэмплов,
+ *        флаг "половина освободилась" и tx_semaphore_put. Читать flash из ISR
+ *        нельзя (там ожидание на мьютексе и семафоре).
+ *   Поток (stream_service)            - дозагружает освободившуюся половину:
+ *        ext_read куском, громкость, хвост добивает тишиной.
+ *
+ * Запас времени на дозагрузку = AP_CHUNK / AUDIO_SAMPLE_RATE (4096/16000 =
+ * 256 мс), чтение 8 КБ из flash занимает ~3 мс, то есть запас ~80 раз.
+ * Если поток всё же не успеет, DMA повторит предыдущий кусок (слышно как
+ * заикание) - счётчик audio_dbg_underrun это покажет.                        */
+
+/* Признак того, что SAI-DMA сконфигурирована как circular linked-list.
+   Это делает CubeMX (SAI1_A -> DMA -> GPDMA1 Channel11 -> Mode = Circular):
+   на U5 circular для GPDMA реализуется связным списком, и только в режиме
+   DMA_LINKEDLIST_CIRCULAR HAL НЕ гасит SAI по завершении блока - поэтому
+   стыки кусков проходят без щелей и щелчков.                               */
+static int stream_dma_circular(void)
+{
+#if VECTOR_AUDIO_STREAM
+  DMA_HandleTypeDef *h = hsai_BlockA1.hdmatx;
+  if (h != (DMA_HandleTypeDef *)0)
+  {
+    return (h->Mode == DMA_LINKEDLIST_CIRCULAR) ? 1 : 0;
+  }
+#endif
+  return 0;
+}
+
+#if VECTOR_AUDIO_STREAM
+/* Дозагрузить одну половину буфера (half = 0 или 1). КОНТЕКСТ: только поток.
+   Если источник кончился - кладёт тишину, поэтому DMA никогда не читает
+   мусор и конец звука не щёлкает.                                           */
+static void stream_fill(uint8_t half)
+{
+  int16_t *dst = (half != 0u) ? &ap_buf[AP_CHUNK] : &ap_buf[0];
+  uint32_t want = AP_CHUNK;
+  uint32_t got  = 0;
+
+  if (ap_st.loaded < ap_st.total)
+  {
+    uint32_t left = ap_st.total - ap_st.loaded;
+    if (want > left)
+    {
+      want = left;
+    }
+    if (ap_st.use_flash != 0u)
+    {
+      if (ext_read(ap_st.src_off + (ap_st.loaded * 2u), (uint8_t *)dst, want * 2u) == 0)
+      {
+        got = want;
+      }
+      else
+      {
+        audio_dbg_errors++;
+        audio_dbg_last_err = (uint32_t)AUDIO_ERR_IO;
+        LOG_E(VLOG_M_AUDIO, "stream: read fail at sample %u of %u",
+              ap_st.loaded, ap_st.total);
+      }
+    }
+    else
+    {
+      (void)memcpy(dst, ap_st.src + ap_st.loaded, want * 2u);
+      got = want;
+    }
+    ap_st.loaded += got;
+    if (got != 0u)
+    {
+      apply_volume(dst, got);
+    }
+  }
+
+  /* хвост добиваем тишиной */
+  while (got < AP_CHUNK)
+  {
+    dst[got++] = 0;
+  }
+}
+
+/* Обслуживание стрима: дозагрузить половины, о которых попросил ISR, и
+   заметить конец звука. КОНТЕКСТ: только поток плеера.                      */
+static void stream_service(void)
+{
+  if (ap_st.active == 0u)
+  {
+    return;
+  }
+
+  if (ap_st.req0 != 0u)
+  {
+    ap_st.req0 = 0;
+    stream_fill(0);
+  }
+  if (ap_st.req1 != 0u)
+  {
+    ap_st.req1 = 0;
+    stream_fill(1);
+  }
+
+  /* Конец: DMA выдала не меньше total сэмплов (хвост - тишина). Точность
+     окончания = половина буфера (AP_CHUNK/AUDIO_SAMPLE_RATE), дальше звучит
+     тишина, поэтому щелчка нет.                                            */
+  if (ap_st.played >= ap_st.total)
+  {
+    ap_st.active = 0;
+    (void)HAL_SAI_Abort(&hsai_BlockA1);
+    audio_dbg_played++;
+    audio_dbg_cur_idx = -1;
+    ap_playing_idx    = -1;
+    ap_play_deadline  = 0;
+    LOG_D(VLOG_M_AUDIO, "stream done: %u samples (%u underrun)",
+          ap_st.total, audio_dbg_underrun);
+  }
+}
+
+/* Запустить звук кусками. Возврат: AUDIO_OK, либо ошибка (тогда вызывающий
+   пробует путь одной транзакцией). КОНТЕКСТ: только поток плеера.           */
+static audio_err_t stream_start_src(int32_t idx, uint8_t use_flash,
+                                    const int16_t *src, uint32_t src_off,
+                                    uint32_t total)
+{
+  HAL_StatusTypeDef hs;
+
+  if (!stream_dma_circular())
+  {
+    return AUDIO_ERR_IO;     /* нет circular в кубе -> пусть работает one-shot */
+  }
+  if ((total == 0u) || ((2u * AP_CHUNK) > 65535u))
+  {
+    return AUDIO_ERR_BAD_INDEX;
+  }
+
+  ap_st.idx       = idx;
+  ap_st.use_flash = use_flash;
+  ap_st.src       = src;
+  ap_st.src_off   = src_off;
+  ap_st.total     = total;
+  ap_st.loaded    = 0;
+  ap_st.played    = 0;
+  ap_st.req0      = 0;
+  ap_st.req1      = 0;
+
+  /* первые две половины грузим ДО старта DMA, чтобы в эфир не ушёл мусор */
+  stream_fill(0);
+  stream_fill(1);
+
+  hs = HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t *)ap_buf,
+                            (uint16_t)(2u * AP_CHUNK));
+  if (hs != HAL_OK)
+  {
+    audio_dbg_errors++;
+    audio_dbg_last_err = (uint32_t)AUDIO_ERR_IO;
+    LOG_E(VLOG_M_AUDIO, "stream: SAI DMA start fail hal=%d (1=err 2=busy)", (int32_t)hs);
+    return AUDIO_ERR_IO;
+  }
+
+  ap_st.active      = 1;
+  ap_playing_idx    = idx;
+  audio_dbg_cur_idx = idx;
+  audio_dbg_started++;
+  audio_dbg_underrun = 0;
+  ap_play_deadline  = VTICK_MS() + ((total * 1000u) / AUDIO_SAMPLE_RATE)
+                      + AP_STUCK_MARGIN_MS;
+  return AUDIO_OK;
+}
+#endif /* VECTOR_AUDIO_STREAM */
+
+/* Применяет программную громкость (Q15) к буферу PCM in-place.
+   Контекст: поток плеера, после чтения из flash и ДО старта DMA.
+   При 100% (g >= 32767) выходит сразу - копирования не делает.              */
+static void apply_volume(int16_t *p, uint32_t n)
+{
+  int32_t g = ap_vol_q15;
+  uint32_t i;
+  if (g >= 32767)
+  {
+    return;
+  }
+  for (i = 0; i < n; i++)
+  {
+    int32_t v = ((int32_t)p[i] * g) >> 15;
+    if (v > 32767)      { v = 32767;  }
+    else if (v < -32768){ v = -32768; }
+    p[i] = (int16_t)v;
+  }
+}
+
+/* Аварийный писк: DMA прямо из const-массива во внутренней flash.
+   Контекст: только поток плеера. Внешняя flash при этом НЕ трогается,
+   поэтому писк работает даже при мёртвой SPI-шине/битом образе.
+   Возврат: AUDIO_OK или AUDIO_ERR_IO (DMA не запустилась).                  */
+static audio_err_t beep_now(void)
+{
+#if VECTOR_AUDIO_STREAM
+  if (stream_start_src(-2, 0, audio_beep_pcm, 0, audio_beep_samples) == AUDIO_OK)
+  {
+    LOG_I(VLOG_M_AUDIO, "beep started (stream), %u samples", audio_beep_samples);
+    return AUDIO_OK;
+  }
+#endif
+  {
+    HAL_StatusTypeDef hs = HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t *)audio_beep_pcm,
+                                                (uint16_t)audio_beep_samples);
+    if (hs != HAL_OK)
+    {
+      audio_dbg_errors++;
+      audio_dbg_last_err = (uint32_t)AUDIO_ERR_IO;
+      LOG_E(VLOG_M_AUDIO, "beep DMA fail: hal=%d (1=err 2=busy) sai_err=%x SD_MODE?",
+            (int32_t)hs, (uint32_t)hsai_BlockA1.ErrorCode);
+      return AUDIO_ERR_IO;
+    }
+    LOG_I(VLOG_M_AUDIO, "beep started, %u samples", audio_beep_samples);
+    ap_playing_idx    = -2;      /* маркер: играет писк */
+    audio_dbg_cur_idx = -2;
+    audio_dbg_started++;
+    ap_play_deadline  = VTICK_MS() +
+                        ((audio_beep_samples * 1000u) / AUDIO_SAMPLE_RATE) + AP_STUCK_MARGIN_MS;
+    return AUDIO_OK;
+  }
+}
+
+/* Главный "запуск звука": таблица -> чтение PCM из внешней flash в ap_buf ->
+   громкость -> одна DMA-транзакция в SAI. Контекст: только поток плеера.
+   idx - индекс звука в образе (не идентификатор из audio_ids.h напрямую,
+   а его значение - они совпадают по построению образа).
+   Возврат: AUDIO_OK, иначе код ошибки (и audio_dbg_last_err/++errors).
+   НЕ блокирует: окончание звучания придёт из HAL_SAI_TxCpltCallback.        */
+static audio_err_t start_now(uint16_t idx)
+{
+  const audio_img_entry_t *e;
+  audio_err_t rc = AUDIO_OK;
+
+  if (!ap_img_ok)
+  {
+    /* Внешняя flash мертва или образ битый: аварийный писк из внутренней
+       flash, чтобы устройство не молчало совсем. */
+    audio_dbg_last_err = (uint32_t)AUDIO_ERR_NO_IMAGE;
+    LOG_W(VLOG_M_AUDIO, "no valid image -> beep instead of sound #%u", (uint32_t)idx);
+    return beep_now();
+  }
+  else if (idx >= ap_hdr.count)      { rc = AUDIO_ERR_BAD_INDEX; }
+  else
+  {
+    e = &ap_tab[idx];
+#if VECTOR_AUDIO_STREAM
+    if (stream_dma_circular())
+    {
+      /* Стриминг: длина звука НЕ ограничена ни буфером, ни uint16_t Size.
+         Если не получилось (DMA занята и т.п.) - падаем в путь одной
+         транзакцией ниже.                                                    */
+      rc = stream_start_src((int32_t)idx, 1u, (const int16_t *)0,
+                            AUDIO_IMG_BASE_ADDR + e->offset, e->length / 2u);
+      if (rc == AUDIO_OK)
+      {
+        LOG_I(VLOG_M_AUDIO, "play #%u '%s' stream %u samples @%u Hz (chunk %u)",
+              (uint32_t)idx, (const char *)e->name, (e->length / 2u),
+              (uint32_t)e->rate, (uint32_t)AP_CHUNK);
+        if ((e->rate != 0u) && (e->rate != AUDIO_SAMPLE_RATE))
+        {
+          LOG_W(VLOG_M_AUDIO, "RATE MISMATCH: sound %u Hz, AUDIO_SAMPLE_RATE %u Hz",
+                (uint32_t)e->rate, (uint32_t)AUDIO_SAMPLE_RATE);
+        }
+        return AUDIO_OK;
+      }
+      rc = AUDIO_OK;      /* пробуем one-shot, ошибку стрима уже залогировали */
+    }
+    else
+    {
+      static uint8_t hinted = 0;
+      if (!hinted)
+      {
+        hinted = 1;
+        LOG_W(VLOG_M_AUDIO,
+              "SAI DMA is not circular -> one-shot mode, max %.2f s per sound. "
+              "Set in CubeMX: SAI1_A -> DMA -> GPDMA1 Channel11 -> Mode = Circular",
+              (uint32_t)AP_BUF_SAMPLES / (AUDIO_SAMPLE_RATE / 100u) / 10u);
+      }
+    }
+#endif
+    if ((e->length / 2u) > AP_BUF_SAMPLES)
+    {
+      rc = AUDIO_ERR_TOO_LONG;
+      LOG_E(VLOG_M_AUDIO, "sound #%u too long: %u samples > %u (limit %.2f s @%u Hz)",
+            (uint32_t)idx, (e->length / 2u), (uint32_t)AP_BUF_SAMPLES,
+            (uint32_t)AP_BUF_SAMPLES / (AUDIO_SAMPLE_RATE / 100u) / 10u,
+            (uint32_t)AUDIO_SAMPLE_RATE);
+    }
+    else if (ext_read(AUDIO_IMG_BASE_ADDR + e->offset, (uint8_t *)ap_buf, e->length) != 0)
+    {
+      rc = AUDIO_ERR_IO;
+    }
+    else
+    {
+      apply_volume(ap_buf, e->length / 2u);
+      {
+        HAL_StatusTypeDef hs = HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t *)ap_buf,
+                                                    (uint16_t)(e->length / 2u));
+        if (hs != HAL_OK)
+        {
+          rc = AUDIO_ERR_IO;
+          LOG_E(VLOG_M_AUDIO, "SAI DMA fail: hal=%d (1=err 2=busy) sai_err=%x",
+                (int32_t)hs, (uint32_t)hsai_BlockA1.ErrorCode);
+        }
+        else
+        {
+          LOG_I(VLOG_M_AUDIO, "play #%u '%s' %u samples @%u Hz",
+              (uint32_t)idx, (const char *)e->name, (e->length / 2u), (uint32_t)e->rate);
+          uint32_t rate = (e->rate != 0u) ? e->rate : AUDIO_SAMPLE_RATE;
+          ap_playing_idx     = (int32_t)idx;
+          audio_dbg_cur_idx  = (int32_t)idx;
+          audio_dbg_started++;
+          /* сколько звук должен играть + запас: порог для ap_check_stuck() */
+          ap_play_deadline   = VTICK_MS() +
+                               (((e->length / 2u) * 1000u) / rate) + AP_STUCK_MARGIN_MS;
+        }
+      }
+    }
+  }
+
+  if (rc != AUDIO_OK)
+  {
+    audio_dbg_errors++;
+    audio_dbg_last_err = (uint32_t)rc;
+    LOG_E(VLOG_M_AUDIO, "start #%u failed, err=%d (1=no image 2=bad idx 3=too long 4=io)",
+          (uint32_t)idx, (int32_t)rc);
+  }
+  return rc;
+}
+
+/* Немедленный стоп: гасим DMA/SAI и помечаем "не играет".
+   Контекст: только поток плеера. Очередь команд НЕ чистит - это делает
+   вызывающий (queue_clear), чтобы stop_now можно было звать и просто так.   */
+static void stop_now(void)
+{
+#if VECTOR_AUDIO_STREAM
+  ap_st.active = 0;      /* раньше Abort, чтобы ISR не попросил дозагрузку */
+  ap_st.req0   = 0;
+  ap_st.req1   = 0;
+#endif
+  if (ap_playing_idx != -1)
+  {
+    int32_t was = ap_playing_idx;
+    (void)HAL_SAI_Abort(&hsai_BlockA1);
+    ap_playing_idx    = -1;
+    audio_dbg_cur_idx = -1;
+    LOG_I(VLOG_M_AUDIO, "stop (aborted idx=%d)", was);
+  }
+  ap_pending_idx   = -1;      /* отложенный звук тоже отменяем */
+  ap_play_deadline = 0;       /* watchdog больше не нужен */
+}
+
+/* Выбрасывает ВСЕ накопившиеся команды из очереди (flush) И отложенный звук.
+   Контекст: только поток плеера. Семафор ap_wake при этом может остаться
+   взведённым - это безопасно: лишний проход цикла просто ничего не найдёт.  */
+static void queue_clear(void)
+{
+  (void)tx_queue_flush(&ap_queue);
+  ap_pending_idx = -1;
+}
+
+/* --------------------------------------------------------------- поток ----
+ * Тело потока плеера - ЕДИНСТВЕННЫЙ владелец SAI/DMA и ap_buf.
+ *
+ * Цикл: проснулись (событие или heartbeat-таймаут) -> разобрали ВСЕ команды
+ * из очереди -> если свободно и в очереди что-то лежит, взяли следующий звук.
+ * Команды кладут audio_play()/audio_stop()/audio_set_state()/audio_beep(),
+ * а пробуждение даёт либо они же, либо ISR завершения DMA (см. конец файла).
+ *
+ * Перед циклом - одноразовый factory-режим: если audio_init() не нашёл во
+ * внешней flash валидного образа, зашиваем туда образ из прошивки и
+ * перечитываем таблицу. Именно "если не нашёл": иначе каждая перезагрузка
+ * стирала и писала 195 КБ заново (долгий "зависон" на старте + износ flash). */
+static void ap_thread_entry(ULONG arg)
+{
+  (void)arg;
+
+#if VECTOR_AUDIO_FACTORY_EMBED && VECTOR_AUDIO_FACTORY_ON_BOOT
+#if VECTOR_AUDIO_FACTORY_FORCE
+  /* Отладочный forcing: перезаписать внешнюю flash встроенным образом на
+     ЭТОМ старте, даже если отпечатки совпадают. В серии должен быть 0.     */
+  ap_img_stale = 1;
+#endif
+  /* Перезапись нужна в двух случаях:
+       !ap_img_ok    - образа нет/бит/не та частота (как было раньше);
+       ap_img_stale  - образ ВАЛИДЕН, но это другая сборка, чем в MCU.
+     Второй случай и есть "поменял sounds.img, а во flash ничего не
+     записалось": старая сборка проходит все проверки load_image().          */
+  if (((!ap_img_ok) || (ap_img_stale != 0u)) && (!ap_factory_tried))
+  {
+    ap_factory_tried = 1;
+    if (!ap_img_ok)
+    {
+      audio_dbg_boot_stage = AP_BOOT_IMG_BAD;
+      LOG_W(VLOG_M_AUDIO, "no image -> factory program (takes seconds)");
+    }
+    else
+    {
+      /* образ есть и играбелен, но устарел: boot_stage не понижаем, чтобы по
+         логу было видно именно ОБНОВЛЕНИЕ, а не аварию                     */
+      LOG_W(VLOG_M_AUDIO, "image stale -> factory UPDATE (takes seconds)");
+    }
+    if (audio_factory_program() == 0)
+    {
+      audio_reload_image();
+      ap_loop_update();      /* образ появился - цикл можно взводить */
+      audio_dbg_boot_stage = ap_img_ok ? AP_BOOT_FACTORY_OK : AP_BOOT_FACTORY_ERR;
+      LOG_I(VLOG_M_AUDIO, "factory ok, sounds=%u stale=%u",
+            (uint32_t)ap_hdr.count, (uint32_t)ap_img_stale);
+    }
+    else
+    {
+      /* Образ так и не появился: дальше на любую команду будет аварийный
+         писк из внутренней flash (см. start_now). Причина - в sf_probe_rc,
+         factory_dbg_sector и audio_dbg_last_err. */
+      audio_dbg_boot_stage = AP_BOOT_FACTORY_ERR;
+      LOG_E(VLOG_M_AUDIO, "factory FAILED -> beep only");
+    }
+  }
+#elif VECTOR_AUDIO_FACTORY_EMBED
+  if (!ap_img_ok)
+  {
+    /* Автоматическая запись выключена (VECTOR_AUDIO_FACTORY_ON_BOOT 0):
+       внешнюю flash не трогаем, играем аварийный писк. Причина отказа образа
+       уже напечатана выше (image header bad / image CRC mismatch / read fail).
+       Записать образ вручную можно вызовом audio_factory_program().          */
+    LOG_W(VLOG_M_AUDIO, "no valid image, factory OFF by config -> beep only");
+  }
+  else if (ap_img_stale != 0u)
+  {
+    /* Играем СТАРУЮ сборку из внешней flash: она валидна, но отличается от
+       зашитой в MCU. Автоматическое обновление выключено конфигом.           */
+    LOG_W(VLOG_M_AUDIO, "image stale, factory OFF by config -> playing OLD set");
+  }
+#endif
+
+  if (ap_img_ok)
+  {
+    audio_dbg_boot_stage = AP_BOOT_RUN;   /* образ есть - рабочий режим */
+  }
+  /* иначе оставляем AP_BOOT_IMG_BAD / AP_BOOT_FACTORY_ERR: по boot_stage
+     сразу видно, что плеер работает без образа (только аварийный писк) */
+
+  /* Стартовая проверка тракта (VECTOR_AUDIO_BOOT_PLAY): до первого нажатия
+     кнопки слышно, жив ли звук вообще. В боевом режиме ставится 0.          */
+#if (VECTOR_AUDIO_BOOT_PLAY == 1)
+  {
+    /* войти в состояние 0, как по команде: стартует звук и, если
+       VECTOR_AUDIO_LOOP_STATE=1, он пойдёт по кругу с паузой */
+    uint16_t snd = ap_state_map[0];
+    ap_state = 0;
+    ap_next_at = 0;
+    ap_loop_update();
+    LOG_I(VLOG_M_AUDIO, "boot: state 0, sound #%u, loop=%u pause=%u ms",
+          (uint32_t)snd, (uint32_t)ap_loop_on, ap_loop_pause);
+    if (snd != AUDIO_STATE_SILENT)
+    {
+      (void)start_now(snd);
+    }
+  }
+#elif (VECTOR_AUDIO_BOOT_PLAY == 2)
+  LOG_I(VLOG_M_AUDIO, "boot play: sound #0");
+  (void)start_now(0u);
+#elif (VECTOR_AUDIO_BOOT_PLAY == 3)
+  LOG_I(VLOG_M_AUDIO, "boot beep (SAI/amp check, no ext flash)");
+  (void)beep_now();
+#endif
+
+  for (;;)
+  {
+    ULONG msg = 0;
+
+    /* Сколько спать. База - heartbeat (или TX_WAIT_FOREVER), но если идёт
+       пауза цикла, будильник ставим ровно на её конец. Любая команда
+       (tx_semaphore_put) прерывает ожидание СРАЗУ, поэтому стоп во время
+       паузы отрабатывает мгновенно, а не через всю паузу.                    */
+    ULONG tmo = AP_WAKE_TMO;
+    if ((ap_loop_idx != -1) && (ap_next_at != 0u) && (ap_playing_idx == -1))
+    {
+      int32_t left = (int32_t)(ap_next_at - VTICK_MS());
+      if (left <= 0)
+      {
+        tmo = 1u;                          /* пора повторять */
+      }
+      else
+      {
+        ULONG t = VTICK_MS2TICKS((uint32_t)left) + 1u;
+        if (t < tmo) { tmo = t; }
+      }
+    }
+
+    audio_dbg_wakes++;
+    if (tx_semaphore_get(&ap_wake, tmo) != TX_SUCCESS)
+    {
+      audio_dbg_timeouts++;      /* событий не было - холостой проход */
+      ap_check_stuck();          /* страховка от потерянного колбэка DMA */
+    }
+
+    /* Окончание звука приходит из ISR, а лог из ISR не печатается - поэтому
+       показываем событие здесь, заметив изменение счётчика.                  */
+    if (audio_dbg_played != ap_seen_played)
+    {
+      ap_seen_played = audio_dbg_played;
+      LOG_D(VLOG_M_AUDIO, "sound finished (total %u)", ap_seen_played);
+    }
+    if (audio_dbg_stuck != 0u)
+    {
+      LOG_W(VLOG_M_AUDIO, "watchdog: stuck sound killed %u time(s), no SAI DMA callback",
+            audio_dbg_stuck);
+      audio_dbg_stuck = 0;         /* не спамим: сообщение один раз на случай */
+    }
+
+    /* 1. Разбираем ВСЕ накопившиеся команды.
+          Цикл НЕ прерывается на "занято": PLAY откладывается в ap_pending_idx,
+          а STOP/STATE/BEEP обрабатываются сразу. Раньше здесь был break -
+          из-за него стоп, пришедший сразу за play, ждал окончания длинного
+          звука (до 8 с). */
+    while (tx_queue_receive(&ap_queue, &msg, TX_NO_WAIT) == TX_SUCCESS)
+    {
+      ULONG cmd = (msg >> 16) & 0xFFu;
+      ULONG a   = msg & 0xFFFFu;
+
+      audio_dbg_keys++;
+      audio_dbg_last_cmd = cmd;
+      LOG_D(VLOG_M_AUDIO, "cmd=%u arg=%u playing=%d", cmd, a, (int32_t)ap_playing_idx);
+
+      if (cmd == CMD_STOP)
+      {
+        /* ПОЛНЫЙ стоп: гасим звук, чистим очередь, отложенный звук И цикл.
+           Чтобы снова начать цикл - audio_set_state(нужное состояние).     */
+        stop_now();
+        queue_clear();
+        ap_loop_idx = -1;
+        ap_next_at  = 0;
+        LOG_I(VLOG_M_AUDIO, "stop: loop off (state=%u)", (uint32_t)ap_state);
+      }
+      else if (cmd == CMD_STATE)
+      {
+        uint16_t snd;
+        stop_now();
+        queue_clear();
+        ap_state = (uint8_t)a;
+        snd = (a < (sizeof ap_state_map / sizeof ap_state_map[0]))
+              ? ap_state_map[a] : AUDIO_STATE_SILENT;
+        ap_next_at = 0;
+        ap_loop_update();             /* взвести/снять цикл под новое состояние */
+        if (snd != AUDIO_STATE_SILENT)
+        {
+          (void)start_now(snd);       /* смена режима прерывает текущий звук */
+        }
+        else
+        {
+          LOG_I(VLOG_M_AUDIO, "state %u = silent", (uint32_t)a);
+        }
+      }
+      else if (cmd == CMD_BEEP)
+      {
+        stop_now();
+        queue_clear();
+        (void)beep_now();
+      }
+      else if (cmd == CMD_PLAY)
+      {
+        if (ap_playing_idx == -1)
+        {
+          (void)start_now((uint16_t)a);   /* свободно - играем сразу        */
+        }
+        else
+        {
+          /* занято: текущий звук доигрывает, новый откладывается в ОДИН
+             слот ожидания (последняя команда побеждает). Так стоп остаётся
+             мгновенным, а "нажал три раза" не превращается в очередь
+             устаревших звуков. */
+          if (ap_pending_idx != -1)
+          {
+            audio_dbg_dropped++;
+          }
+          ap_pending_idx = (int32_t)a;
+        }
+      }
+      else if (cmd == CMD_LOOP)
+      {
+        /* audio_set_loop() изменил ap_loop_on: пересчитываем ap_loop_idx.
+           Текущий звук не прерываем - цикл подхватится после него.          */
+        ap_loop_update();
+        LOG_I(VLOG_M_AUDIO, "loop=%u (idx=%d pause=%u ms)", (uint32_t)ap_loop_on,
+              (int32_t)ap_loop_idx, ap_loop_pause);
+      }
+      else
+      {
+        /* неизвестная команда - игнорируем */
+      }
+    }
+
+#if VECTOR_AUDIO_STREAM
+    /* 1.5 Обслужить стриминг: дозагрузить половины, о которых попросил ISR,
+           и заметить конец звука. Делается ДО разбора "что играть дальше",
+           чтобы окончание текущего звука успело сняться в этом же проходе.   */
+    stream_service();
+#endif
+
+    /* 2. Освободились - решаем, что играть дальше.
+          приоритет: одноразовый audio_play() -> повтор цикла -> тишина.      */
+    if (ap_playing_idx == -1)
+    {
+      if (ap_pending_idx != -1)
+      {
+        int32_t nxt = ap_pending_idx;
+        ap_pending_idx = -1;
+        (void)start_now((uint16_t)nxt);      /* цикл продолжится после него */
+      }
+      else if (ap_loop_idx != -1)
+      {
+        if (ap_next_at == 0u)
+        {
+          /* звук только что закончился - стартуем отсчёт паузы. На следующем
+             проходе (по будильнику) начнём повтор. */
+          ap_next_at = VTICK_MS() + ap_loop_pause;
+          if (ap_next_at == 0u) { ap_next_at = 1u; }   /* 0 = "не задано" */
+        }
+        else if ((int32_t)(VTICK_MS() - ap_next_at) >= 0)
+        {
+          ap_next_at = 0;
+          if (start_now((uint16_t)ap_loop_idx) == AUDIO_OK)
+          {
+            audio_dbg_loops++;
+          }
+        }
+        else
+        {
+          /* пауза ещё идёт: вернёмся в ожидание, таймаут посчитаем сверху */
+        }
+      }
+      else
+      {
+        /* ничего не назначено - тишина */
+      }
+    }
+  }
+}
+
+/* Читает заголовок и таблицу образа sounds.img из внешней flash в RAM
+   (ap_hdr + ap_tab[]) и проверяет magic/version/CRC32 таблицы.
+   Контекст: audio_init() (ДО планировщика) и audio_reload_image() (поток).
+   Мьютекс не берёт намеренно: оба вызова происходят, когда шину больше никто
+   не трогает; обращение идёт напрямую через sf_read().
+   Результат: ap_img_ok = 1 только если образ валиден, иначе 0 (и плеер
+   переходит на аварийный писк). Скратч-буфер static, а не в стеке: вызов из
+   audio_init() идёт на стеке MSP до старта планировщика, 1.2 КБ кадра там
+   не нужны.                                                                 */
+static void load_image(void)
+{
+  static uint8_t raw[AUDIO_IMG_HEADER_SIZE + AP_MAX_SOUNDS * AUDIO_IMG_ENTRY_SIZE];
+  uint32_t tbl_bytes;
+
+  ap_img_ok = 0;
+  ap_img_stale = 0;
+
+  /* КРИТИЧНО: заголовок читаем СРАЗУ в ap_hdr, а не в raw. Раньше h указывал
+     внутрь raw, и ВТОРОЕ чтение (таблица) перезатирало его: к моменту
+     сравнения h->table_crc32 содержал уже байты таблицы, CRC не сходился
+     НИКОГДА, ap_img_ok оставался 0 - и прошивка на каждом старте стирала и
+     писала 195 КБ заново. В логе это выглядело ровно так:
+       "factory: done, 195544 b written and verified"
+       "image ok=0 sounds=0"                                                */
+  if (sf_read(AUDIO_IMG_BASE_ADDR, (uint8_t *)&ap_hdr, sizeof ap_hdr) == HAL_OK)
+  {
+    if ((ap_hdr.magic == AUDIO_IMG_MAGIC) && (ap_hdr.version == AUDIO_IMG_VERSION) &&
+        (ap_hdr.count > 0u) && (ap_hdr.count <= AP_MAX_SOUNDS))
+    {
+      tbl_bytes = (uint32_t)ap_hdr.count * AUDIO_IMG_ENTRY_SIZE;
+      if (sf_read(AUDIO_IMG_BASE_ADDR + AUDIO_IMG_HEADER_SIZE, raw, tbl_bytes) == HAL_OK)
+      {
+        uint32_t crc = 0;
+        uint32_t i;
+        /* crc32 таблицы считаем тем же алгоритмом, что и pack_sounds.py
+           (zlib.crc32); здесь - простая побайтовая реализация без таблицы */
+        crc = 0xFFFFFFFFu;
+        for (i = 0; i < tbl_bytes; i++)
+        {
+          uint32_t b = raw[i];
+          int k;
+          crc ^= b;
+          for (k = 0; k < 8; k++)
+          {
+            crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1u)));
+          }
+        }
+        crc ^= 0xFFFFFFFFu;
+
+        if (crc == ap_hdr.table_crc32)
+        {
+          for (i = 0; i < ap_hdr.count; i++)
+          {
+            const uint8_t *p = raw + i * AUDIO_IMG_ENTRY_SIZE;
+            audio_img_entry_t *e = &ap_tab[i];
+            e->offset   = (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+                          ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+            e->length   = (uint32_t)p[4] | ((uint32_t)p[5] << 8) |
+                          ((uint32_t)p[6] << 16) | ((uint32_t)p[7] << 24);
+            e->samples  = (uint32_t)p[8] | ((uint32_t)p[9] << 8) |
+                          ((uint32_t)p[10] << 16) | ((uint32_t)p[11] << 24);
+            e->rate     = (uint16_t)((uint32_t)p[12] | ((uint32_t)p[13] << 8));
+            e->channels = p[14];
+            e->format   = p[15];
+            e->crc32    = (uint32_t)p[16] | ((uint32_t)p[17] << 8) |
+                          ((uint32_t)p[18] << 16) | ((uint32_t)p[19] << 24);
+            for (uint32_t j = 0; j < AUDIO_IMG_NAME_LEN; j++)
+            {
+              ((char *)&e->name)[j] = (char)p[20 + j];
+            }
+          }
+          /* Частота образа обязана совпадать с настройкой SAI, иначе звук
+             пойдёт с другой скоростью и тоном (при 16 кГц в SAI образ 8 кГц
+             даст ускорение вдвое). Старый образ при этом ВАЛИДЕН по CRC,
+             поэтому без этой проверки он молча использовался бы дальше.
+             При несовпадении ap_img_ok остаётся 0 -> сработает factory-запись
+             и во внешнюю flash ляжет образ, собранный с нужным --rate.       */
+          {
+            uint32_t bad = 0;
+            for (i = 0; i < ap_hdr.count; i++)
+            {
+              if ((ap_tab[i].rate != 0u) && (ap_tab[i].rate != AUDIO_SAMPLE_RATE))
+              {
+                bad++;
+              }
+            }
+            if (bad != 0u)
+            {
+              LOG_E(VLOG_M_AUDIO,
+                    "image rate mismatch: %u of %u sounds are not %u Hz -> reprogram",
+                    bad, (uint32_t)ap_hdr.count, (uint32_t)AUDIO_SAMPLE_RATE);
+            }
+            else
+            {
+              ap_img_ok = 1;   /* таблица разобрана ЦЕЛИКОМ - образ годен */
+
+              /* Образ валиден - но ТА ЛИ ЭТО СБОРКА? Сравниваем отпечаток
+                 заголовка во внешней flash с заголовком встроенного образа.
+                 Без этой проверки прошивка вечно играла бы СТАРЫЕ звуки:
+                 пересобранный sounds.img линкуется в MCU, а во внешней flash
+                 лежит прошлая валидная сборка, и load_image() её принимает.
+                 ap_img_stale снимается только перезаписью (см. поток плеера). */
+#if VECTOR_AUDIO_FACTORY_EMBED && VECTOR_AUDIO_FACTORY_UPDATE
+              if (audio_factory_is_stale(&ap_hdr) == 1)
+              {
+                ap_img_stale = 1;
+              }
+#endif
+            }
+          }
+        }
+        else
+        {
+          LOG_E(VLOG_M_AUDIO, "image CRC mismatch: got %x want %x (table %u b)",
+                crc, ap_hdr.table_crc32, tbl_bytes);
+        }
+      }
+      else
+      {
+        LOG_E(VLOG_M_AUDIO, "image: table read fail (%u b)", tbl_bytes);
+      }
+    }
+    else
+    {
+      LOG_E(VLOG_M_AUDIO,
+            "image header bad: magic=%x want %x, ver=%u want %u, count=%u max %u",
+            ap_hdr.magic, (uint32_t)AUDIO_IMG_MAGIC, (uint32_t)ap_hdr.version,
+            (uint32_t)AUDIO_IMG_VERSION, (uint32_t)ap_hdr.count, (uint32_t)AP_MAX_SOUNDS);
+    }
+  }
+  else
+  {
+    LOG_E(VLOG_M_AUDIO, "image: header read fail (sf_probe_rc=%d)", (int32_t)sf_probe_rc);
+  }
+
+  LOG_I(VLOG_M_AUDIO, "image ok=%u stale=%u sounds=%u", (uint32_t)ap_img_ok,
+        (uint32_t)ap_img_stale, ap_img_ok ? (uint32_t)ap_hdr.count : 0u);
+}
+
+/* =============================================================== публичное */
+/* ПРЯМАЯ проверка звукового тракта: БЕЗ очереди, БЕЗ потока плеера, БЕЗ
+   состояний и БЕЗ внешней flash. Const-массив писка из внутренней flash ->
+   HAL_SAI_Transmit_DMA -> усилитель.
+   КОНТЕКСТ: любой, включая main() до старта планировщика (поэтому completion
+   ждём активным опросом состояния SAI с ограничением по числу проходов, а не
+   по тику: если тик стоит, انتظار не должно превращаться в вечный цикл).
+   Возврат: 0 = DMA стартовала и завершилась; 1 = не стартовала (код HAL в
+   логе); 2 = стартовала, но не завершилась (нет прерывания GPDMA1_Channel11).
+   Печатает затраченные миллисекунды: писк = 3840 сэмплов при 16 кГц = 240 мс.
+   Если напечатано заметно другое - системный тик идёт не 1 кГц.            */
+int audio_selftest(void)
+{
+  HAL_StatusTypeDef hs;
+  uint32_t t0 = VTICK_MS();          /* до планировщика = 0, см. лог ниже */
+  uint32_t hal_t0 = HAL_GetTick();   /* диагностика тайм-базы HAL */
+  uint32_t guard = 0;
+
+  ap_sai_blk_done = 0;
+
+  hs = HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t *)audio_beep_pcm,
+                            (uint16_t)audio_beep_samples);
+  if (hs != HAL_OK)
+  {
+    audio_dbg_errors++;
+    audio_dbg_last_err = (uint32_t)AUDIO_ERR_IO;
+    LOG_E(VLOG_M_AUDIO, "selftest: SAI DMA start FAIL hal=%d (1=err 2=busy)",
+          (int32_t)hs);
+    return 1;
+  }
+  LOG_I(VLOG_M_AUDIO, "selftest: beep %u samples via SAI DMA (no queue, no ext flash)",
+        audio_beep_samples);
+
+  /* Ждём флаг из ISR завершения блока. В circular-режиме SAI не возвращается
+     в READY сама (HAL её не гасит), поэтому проверять состояние бесполезно -
+     нужен именно флаг. Ограничение по числу проходов (~1 с на 160 МГц), чтобы
+     не зависеть от исправности системного тика. Сразу после флага гасим
+     передачу: иначе circular DMA прокрутит писк по второму кругу.            */
+  while ((ap_sai_blk_done == 0u) && (guard < 40000000u))
+  {
+    guard++;
+  }
+  (void)HAL_SAI_Abort(&hsai_BlockA1);
+
+  if (ap_sai_blk_done == 0u)
+  {
+    audio_dbg_errors++;
+    LOG_E(VLOG_M_AUDIO, "selftest: DMA started but NOT finished (GPDMA1_Channel11_IRQn?)");
+    return 2;
+  }
+
+  audio_dbg_played++;
+  /* hal_ms - НАМЕРЕННО по HAL_GetTick(): selftest выполняется до планировщика,
+     где тика RTOS ещё нет, а по этой цифре сразу видно, врёт ли тайм-база HAL
+     (норма ~240 мс для 3840 сэмплов при 16 кГц). guard - число проходов
+     ожидания: по нему видно, насколько быстро пришла DMA.                    */
+  LOG_I(VLOG_M_AUDIO, "selftest: done, hal_ms=%u (expected ~%u) guard=%u",
+        (uint32_t)(HAL_GetTick() - hal_t0),
+        (audio_beep_samples * 1000u) / AUDIO_SAMPLE_RATE, guard);
+  (void)t0;
+  return 0;
+}
+/* Инициализация плеера. Вызывать ОДИН раз из tx_application_define(), ПОСЛЕ
+   ext_init() (нужен мьютекс шины flash и отсканированный журнал).
+   Порядок внутри важен:
+     1) создаём семафор/очередь - до потока, иначе поток дёрнет несуществующие
+        объекты;
+     2) создаём поток (TX_AUTO_START - реально побежит после tx_kernel_enter);
+     3) load_image() - читаем таблицу образа из внешней flash. Без этого
+        шага ap_img_ok остаётся 0, плеер считает образ отсутствующим и на
+        каждом старте уходит в factory-запись 195 КБ (долго) либо навсегда
+        остаётся на аварийном писке.
+   Контекст: инициализация (стек MSP), планировщик ещё не запущен.          */
+void audio_init(void)
+{
+  LOG_I(VLOG_M_AUDIO, "audio init");
+
+  /* 1-2. RTOS-объекты и поток */
+  (void)tx_semaphore_create(&ap_wake, "audio wake", 0);
+  (void)tx_queue_create(&ap_queue, "audio cmd", TX_1_ULONG,
+                        ap_queue_mem, sizeof ap_queue_mem);
+  (void)tx_thread_create(&ap_thread, "Audio Player", ap_thread_entry, 0,
+                         ap_stack, AP_STACK_SIZE,
+                         AP_PRIORITY, AP_PRIORITY, TX_NO_TIME_SLICE, TX_AUTO_START);
+
+  /* 3. читаем образ (именно этот вызов терялся - см. docs/archive/FIX_REPORT.md) */
+  load_image();
+  audio_dbg_boot_stage = ap_img_ok ? AP_BOOT_IMG_OK : AP_BOOT_IMG_BAD;
+}
+
+/* Поставить звук в очередь. Контекст: ЛЮБОЙ (поток или ISR - только
+   tx_queue_send(TX_NO_WAIT) и tx_semaphore_put, оба из прерывания разрешены).
+   Звук заиграет ПОСЛЕ текущего; если ничего не играет - сразу.
+   Возврат: AUDIO_OK или AUDIO_ERR_QUEUE_FULL (очередь на AUDIO_QUEUE_LEN).  */
+audio_err_t audio_play(uint16_t idx)
+{
+  ULONG msg = MSG(CMD_PLAY, idx);
+  if (tx_queue_send(&ap_queue, &msg, TX_NO_WAIT) != TX_SUCCESS)
+  {
+    return AUDIO_ERR_QUEUE_FULL;
+  }
+  (void)tx_semaphore_put(&ap_wake);
+  return AUDIO_OK;
+}
+
+/* То же, что audio_play(), но по имени из таблицы образа (поле name[16]).
+   Контекст: только поток (читает ap_tab без блокировки).
+   Возврат: AUDIO_OK / AUDIO_ERR_NO_IMAGE / AUDIO_ERR_BAD_INDEX.            */
+audio_err_t audio_play_name(const char *name)
+{
+  uint32_t i;
+  if (!ap_img_ok)
+  {
+    return AUDIO_ERR_NO_IMAGE;
+  }
+  for (i = 0; i < ap_hdr.count; i++)
+  {
+    uint32_t j;
+    int match = 1;
+    for (j = 0; j < AUDIO_IMG_NAME_LEN; j++)
+    {
+      char c = ap_tab[i].name[j];
+      char n = name[j];
+      if (c == '\0' && n == '\0') { break; }
+      if (c != n) { match = 0; break; }
+    }
+    if (match)
+    {
+      return audio_play((uint16_t)i);
+    }
+  }
+  return AUDIO_ERR_BAD_INDEX;
+}
+
+/* Аварийный писк из const-массива во ВНУТРЕННЕЙ flash (не зависит от
+   внешней). Контекст: любой. Прерывает текущий звук и чистит очередь.      */
+void audio_beep(void)
+{
+  ULONG msg = MSG(CMD_BEEP, 0);
+  if (tx_queue_send(&ap_queue, &msg, TX_NO_WAIT) == TX_SUCCESS)
+  {
+    (void)tx_semaphore_put(&ap_wake);
+  }
+}
+
+/* Немедленный стоп + очистка очереди и отложенного звука. Контекст: любой. */
+void audio_stop(void)
+{
+  ULONG msg = MSG(CMD_STOP, 0);
+  if (tx_queue_send(&ap_queue, &msg, TX_NO_WAIT) == TX_SUCCESS)
+  {
+    (void)tx_semaphore_put(&ap_wake);
+  }
+}
+
+/* Смена РЕЖИМА: текущий звук прерывается, играется звук нового состояния из
+   ap_state_map[] (или тишина, если состоянию назначен AUDIO_STATE_SILENT).
+   Контекст: любой. st < 3, иначе берётся тишина.                          */
+void audio_set_state(uint8_t st)
+{
+  ULONG msg = MSG(CMD_STATE, st);
+  if (tx_queue_send(&ap_queue, &msg, TX_NO_WAIT) == TX_SUCCESS)
+  {
+    (void)tx_semaphore_put(&ap_wake);
+  }
+}
+
+/* Текущий режим (0..2). Контекст: любой, чтение одного байта. */
+uint8_t audio_get_state(void) { return ap_state; }
+
+/* Включить/выключить цикл звука текущего состояния. КОНТЕКСТ: любой.
+   При включении уже звучащий/следующий звук пойдёт по кругу; при выключении
+   текущий повтор доиграет и наступит тишина.                                */
+void audio_set_loop(uint8_t on)
+{
+  ULONG msg;
+  ap_loop_on = (on != 0u) ? 1u : 0u;
+  msg = MSG(CMD_LOOP, on);           /* пересчитать ap_loop_idx в потоке */
+  if (tx_queue_send(&ap_queue, &msg, TX_NO_WAIT) == TX_SUCCESS)
+  {
+    (void)tx_semaphore_put(&ap_wake);
+  }
+}
+
+uint8_t audio_get_loop(void) { return ap_loop_on; }
+
+/* Пауза между повторами цикла, мс. Применяется со следующего повтора. */
+void audio_set_loop_pause(uint16_t ms) { ap_loop_pause = (uint32_t)ms; }
+uint32_t audio_get_loop_pause(void)    { return ap_loop_pause; }
+
+/* Громкость 0..100 -> Q15 коэффициент. Контекст: любой.
+   Применяется НЕ сразу, а при следующем чтении звука в ap_buf (см.
+   apply_volume): уже играющая дорожка не меняется.                         */
+void audio_set_volume(uint8_t percent)
+{
+  uint32_t p = (percent > 100u) ? 100u : percent;
+  ap_vol_q15 = (int32_t)((p * 32767u) / 100u);
+}
+
+/* Обратное преобразование Q15 -> проценты (0..100). Контекст: любой. */
+uint8_t audio_get_volume(void)
+{
+  return (uint8_t)(((uint32_t)ap_vol_q15 * 100u) / 32767u);
+}
+
+/* Перечитать таблицу образа из внешней flash (нужно после factory-записи или
+   после обновления образа по OTA). Контекст: поток плеера.                 */
+void audio_reload_image(void)
+{
+  load_image();
+}
+
+/* Справка по образу: валиден ли, сколько звуков. Контекст: любой. */
+uint8_t  audio_image_ok(void) { return ap_img_ok; }
+uint16_t audio_count(void)    { return ap_img_ok ? ap_hdr.count : 0u; }
+
+/* Имя звука по индексу ("" если образа нет или индекс вне таблицы).
+   Контекст: поток. Возвращает указатель ВНУТРЬ ap_tab - не освобождать.    */
+const char *audio_name(uint16_t idx)
+{
+  if (!ap_img_ok || (idx >= ap_hdr.count))
+  {
+    return "";
+  }
+  return ap_tab[idx].name;
+}
+
+/* ================================================== колбэки HAL SAI (ISR) ==
+ * КОНТЕКСТ: прерывание GPDMA1_Channel11. Здесь нельзя ничего блокирующего -
+ * только счётчики, флаги и tx_semaphore_put(), который будит поток.
+ *
+ * В режиме СТРИМИНГА (circular DMA) эти колбэки приходят постоянно, по разу на
+ * каждую половину буфера:
+ *   HAL_SAI_TxHalfCpltCallback - первая половина ушла в SAI, её можно
+ *                                перезаписать (поток сделает stream_fill(0));
+ *   HAL_SAI_TxCpltCallback     - вторая половина ушла, DMA пошла по кругу,
+ *                                перезаписывать можно вторую (stream_fill(1)).
+ * Окончание звука определяет поток по ap_st.played >= ap_st.total, а НЕ приход
+ * TxCplt: в circular-режиме передача не завершается никогда.
+ *
+ * В режиме ОДНОЙ транзакции (Normal DMA) TxCplt и есть конец звука.          */
+
+/* Половина (или весь блок в Normal-режиме) выдана в SAI. */
+void HAL_SAI_TxHalfCpltCallback(SAI_HandleTypeDef *hsai)
+{
+#if VECTOR_AUDIO_STREAM
+  if (hsai->Instance == SAI1_Block_A)
+  {
+    ap_sai_blk_done = 1;
+    if (ap_st.active != 0u)
+    {
+      /* первая половина отыграна: разрешаем потоку её перезаписать.
+         Если флаг ЕЩЁ стоит - поток не успел обслужить прошлый запрос, DMA
+         прокрутила половину по второму кругу (на слух - заикание).          */
+      ap_st.played += AP_CHUNK;
+      if (ap_st.req0 != 0u) { audio_dbg_underrun++; }
+      ap_st.req0    = 1;
+      (void)tx_semaphore_put(&ap_wake);
+    }
+  }
+#else
+  (void)hsai;
+#endif
+}
+
+void HAL_SAI_TxCpltCallback(SAI_HandleTypeDef *hsai)
+{
+  if (hsai->Instance == SAI1_Block_A)
+  {
+    ap_sai_blk_done = 1;
+#if VECTOR_AUDIO_STREAM
+    if (ap_st.active != 0u)
+    {
+      /* вторая половина отыграна, DMA пошла по кругу */
+      ap_st.played += AP_CHUNK;
+      if (ap_st.req1 != 0u) { audio_dbg_underrun++; }
+      ap_st.req1    = 1;
+      (void)tx_semaphore_put(&ap_wake);
+      return;
+    }
+#endif
+    if (ap_playing_idx != -1)
+    {
+      audio_dbg_played++;
+      ap_playing_idx    = -1;
+      audio_dbg_cur_idx = -1;
+      ap_play_deadline  = 0;
+      (void)tx_semaphore_put(&ap_wake);
+    }
+  }
+}
+
+/* Ошибка SAI/DMA (OVRUDR и т.п.): снимаем флаг "играет" и будим поток, иначе
+   очередь встала бы навсегда. Код ошибки - в audio_dbg_last_err
+   (0x1000 | hsai->ErrorCode).                                              */
+void HAL_SAI_ErrorCallback(SAI_HandleTypeDef *hsai)
+{
+  if (hsai->Instance == SAI1_Block_A)
+  {
+    audio_dbg_errors++;
+    audio_dbg_last_err = 0x1000u | hsai->ErrorCode;
+    LOG_E(VLOG_M_AUDIO, "SAI error callback, code=%x", (uint32_t)hsai->ErrorCode);
+#if VECTOR_AUDIO_STREAM
+    ap_st.active = 0;
+#endif
+    if (ap_playing_idx != -1)
+    {
+      ap_playing_idx    = -1;
+      audio_dbg_cur_idx = -1;
+      ap_play_deadline  = 0;
+      (void)tx_semaphore_put(&ap_wake);
+    }
+  }
+}

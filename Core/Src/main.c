@@ -22,6 +22,7 @@
 #include "gpdma.h"
 #include "i2c.h"
 #include "icache.h"
+#include "rtc.h"
 #include "sai.h"
 #include "spi.h"
 #include "tim.h"
@@ -30,7 +31,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "vector_board.h"   /* вся бортовая инициализация до RTOS - один вызов */
+#include "vector_sys.h"     /* vector_sys_tick_hook() для Callback 1 ниже     */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -51,7 +53,8 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+/* Переменные диагностики системного времени переехали в vector_sys.c - там же
+   их extern-объявления (vector_sys.h). В сгенерированном файле их больше нет. */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -105,8 +108,12 @@ int main(void)
   MX_USART3_UART_Init();
   MX_USART2_UART_Init();
   MX_ICACHE_Init();
+  MX_RTC_Init();
   /* USER CODE BEGIN 2 */
-
+  /* Вся бортовая инициализация до RTOS: усилитель (SD_MODE), приборы времени,
+     проба внешней flash и selftest звука. Что именно делает и что из этого
+     надо перенести в CubeMX - см. vector_board.h и docs/SYSTEM.md (раздел 9).     */
+  vector_board_init();
   /* USER CODE END 2 */
 
   MX_ThreadX_Init();
@@ -142,11 +149,10 @@ void SystemClock_Config(void)
 
   /** Initializes the CPU, AHB and APB buses clocks
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE|RCC_OSCILLATORTYPE_MSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.MSIState = RCC_MSI_ON;
-  RCC_OscInitStruct.MSICalibrationValue = RCC_MSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_4;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+  RCC_OscInitStruct.LSIDiv = RCC_LSI_DIV1;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLMBOOST = RCC_PLLMBOOST_DIV1;
@@ -185,7 +191,7 @@ void SystemClock_Config(void)
 
 /**
   * @brief  Period elapsed callback in non blocking mode
-  * @note   This function is called  when TIM1 interrupt took place, inside
+  * @note   This function is called  when TIM6 interrupt took place, inside
   * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
   * a global variable "uwTick" used as application time base.
   * @param  htim : TIM handle
@@ -194,14 +200,14 @@ void SystemClock_Config(void)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   /* USER CODE BEGIN Callback 0 */
-
+  /* пусто: мигалку/счётчики сюда ставить не нужно, всё ниже в hook */
   /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM1)
+  if (htim->Instance == TIM6)
   {
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
-
+  vector_sys_tick_hook(htim);   /* счётчики тайм-базы: см. vector_sys.h */
   /* USER CODE END Callback 1 */
 }
 
