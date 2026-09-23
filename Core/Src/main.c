@@ -119,6 +119,18 @@ int main(void)
   HAL_GPIO_WritePin(SD_MODE_GPIO_Port, SD_MODE_Pin, GPIO_PIN_SET);
   HAL_Delay(5);
 
+  /* Кнопки как тестовый вход плеера: включаем EXTI1..3.
+     CubeMX эти прерывания в NVIC не включил, поэтому делаем здесь.
+     ВНИМАНИЕ: если включите EXTI1/2/3 в CubeMX (вкладка NVIC) - УДАЛИТЕ этот
+     блок и три обработчика в stm32u5xx_it.c (USER CODE 1), иначе получите
+     дублирование символов на линковке. */
+  HAL_NVIC_SetPriority(EXTI1_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI1_IRQn);
+  HAL_NVIC_SetPriority(EXTI2_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI2_IRQn);
+  HAL_NVIC_SetPriority(EXTI3_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI3_IRQn);
+
   /* Проба внешней SPI flash (MX25K6435F, DD2). Результат смотреть в отладчике:
        sf_jedec[3] - должно быть { 0xC2, .., 0x17 }  (Macronix, 64 Мбит)
        sf_rdsr     - статус-регистр

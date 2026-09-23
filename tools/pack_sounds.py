@@ -19,6 +19,7 @@ pack_sounds.py — собирает sounds.img для внешней SPI flash (
 Бюджет: 8 МБ = 8388608 байт = 524 с при 8 кГц/16 бит/моно.
 """
 import argparse
+import os
 import array
 import struct
 import sys
@@ -174,6 +175,23 @@ def main():
     ap.add_argument("--check", action="store_true", help="распарсить готовый образ")
     args = ap.parse_args()
 
+    # --- раскрытие масок (*.wav) своими руками -------------------------
+    # cmd.exe и PowerShell НЕ раскрывают '*', в отличие от bash. Без этого
+    # "pack_sounds.py assets\*.wav" падает с OSError: Invalid argument.
+    import glob as _glob
+    expanded = []
+    for a in args.wav:
+        sa = str(a)
+        if any(c in sa for c in "*?[") and not os.path.exists(sa):
+            m = sorted(_glob.glob(sa))
+            if not m:
+                sys.exit(f"[!] по маске {sa} ничего не найдено")
+            expanded += [Path(x) for x in m]
+        else:
+            expanded.append(Path(sa))
+    if not expanded:
+        sys.exit("[!] не указано ни одного WAV-файла")
+    args.wav = expanded
     if args.check or (len(args.wav) == 1 and args.wav[0].suffix == ".img"):
         parse(args.wav[0].read_bytes())
         return

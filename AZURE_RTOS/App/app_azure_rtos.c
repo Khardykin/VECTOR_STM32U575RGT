@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "sai.h"
+#include "audio_player.h"
 #include "main.h"
 #include "audio_samples.h"
 /* USER CODE END Includes */
@@ -93,78 +94,17 @@ volatile uint32_t audio_played_ok    = 0;
  * -------------------------------------------------------------------------*/
 void audio_thread_entry(ULONG thread_input)
 {
-  HAL_StatusTypeDef sai_status;
-  UINT              sem_status;
-
+  /* Воспроизведением теперь владеет поток из audio_player.c
+     (создаётся в audio_init()). Этот поток больше не нужен - усыпляем навсегда.
+     Держим объект, чтобы не править tx_thread_create ниже. */
   (void)thread_input;
-
-  while (1)
-  {
-    /* 1. Сбрасываем возможный "протухший" сигнал (от таймаута прошлой итерации) */
-    (void)tx_semaphore_get(&audio_done_sem, TX_NO_WAIT);
-
-    /* 2. Запуск one-shot DMA.
-     *
-     *    !!! Size - это ЧИСЛО СЭМПЛОВ, а НЕ байт !!!
-     *    Внутри HAL_SAI_Transmit_DMA():
-     *        dmaSrcSize = 2U * Size;            // 16 бит -> байты
-     *        HAL_DMA_Start_IT(hdmatx, src, &DR, dmaSrcSize);  // CBR1.BNDT в байтах
-     *    Поэтому умножать на 2 НЕЛЬЗЯ: раньше передавалось size*2, DMA читала
-     *    вдвое больше, чем есть в массиве, и уходила за его конец.
-     *
-     *    !!! PCM начинается не с нулевого элемента !!!
-     *    sound_gas_warning[] - это целый WAV-файл: первые 154 слова (308 байт)
-     *    занимают RIFF/fmt /LIST/data-заголовки. Их нужно пропустить.
-     */
-    sai_status = HAL_SAI_Transmit_DMA(&hsai_BlockA1,
-                                      (uint8_t *)SOUND_GAS_WARNING_PCM,
-                                      (uint16_t)SOUND_GAS_WARNING_PCM_SAMPLES);
-    if (sai_status != HAL_OK)
-    {
-      audio_start_errors++;
-      tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);   /* 1 с, чтобы не молотить */
-      continue;
-    }
-
-    /* 3. Ждём реального окончания DMA.
-     *    Звук 14768 сэмплов / 8 кГц = 1.846 с. Таймаут 4 с - с большим запасом. */
-    sem_status = tx_semaphore_get(&audio_done_sem, 4u * TX_TIMER_TICKS_PER_SECOND);
-    if (sem_status != TX_SUCCESS)
-    {
-      audio_timeouts++;
-      /* на всякий случай глушим зависший SAI, чтобы следующий запуск прошёл */
-      (void)HAL_SAI_Abort(&hsai_BlockA1);
-    }
-    else
-    {
-      audio_played_ok++;
-    }
-
-    /* 4. Пауза между повторами (5 с) */
-    tx_thread_sleep(5u * TX_TIMER_TICKS_PER_SECOND);
-  }
+  tx_thread_sleep(TX_WAIT_FOREVER);
 }
 
 /* ---------------------------------------------------------------------------
  * Колбэки HAL SAI. Вызываются из контекста ISR (GPDMA1_Channel11_IRQHandler).
  * Здесь НЕЛЬЗЯ делать ничего блокирующего - только tx_semaphore_put().
  * -------------------------------------------------------------------------*/
-void HAL_SAI_TxCpltCallback(SAI_HandleTypeDef *hsai)
-{
-  if (hsai->Instance == SAI1_Block_A)
-  {
-    (void)tx_semaphore_put(&audio_done_sem);
-  }
-}
-
-void HAL_SAI_ErrorCallback(SAI_HandleTypeDef *hsai)
-{
-  audio_sai_errors++;
-  audio_sai_errcode = hsai->ErrorCode;   /* HAL_SAI_ERROR_OVR / UDR / AFSDET.. */
-  /* освобождаем поток, иначе он будет висеть на семафоре до таймаута */
-  (void)tx_semaphore_put(&audio_done_sem);
-}
-
 /* ---------------------------------------------------------------------------
  * Поток для дисплея и LVGL
  * -------------------------------------------------------------------------*/
@@ -194,6 +134,10 @@ void lvgl_thread_entry(ULONG thread_input)
 VOID tx_application_define(VOID *first_unused_memory)
 {
   /* USER CODE BEGIN  tx_application_define_1*/
+  /* Плеер: читает sounds.img из внешней флеш, создаёт свой поток.
+     Должен вызываться ДО создания потоков приложения. */
+  audio_init();
+
   /* 0. Семафор "DMA завершила передачу". Начальное состояние 0.
         ВАЖНО: создать ДО потоков - иначе audio_thread дёрнет несуществующий
         объект. tx_semaphore_put() из ISR разрешён. */

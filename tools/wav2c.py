@@ -36,6 +36,7 @@ wav2c.py — конвертер WAV -> C-массив ГОЛЫХ PCM-данны�
 (GPDMA1_Channel12 в проекте уже настроен под DMA_LINKEDLIST_CIRCULAR, но не используется).
 """
 import argparse
+import os
 import array
 import re
 import sys
@@ -291,6 +292,23 @@ def main():
                    help=argparse.SUPPRESS)   # устаревший алиас, hex и так по умолчанию
     args = ap.parse_args()
 
+    # --- раскрытие масок (*.wav) своими руками -------------------------
+    # cmd.exe и PowerShell НЕ раскрывают '*', в отличие от bash. Без этого
+    # "pack_sounds.py assets\*.wav" падает с OSError: Invalid argument.
+    import glob as _glob
+    expanded = []
+    for a in args.wav:
+        sa = str(a)
+        if any(c in sa for c in "*?[") and not os.path.exists(sa):
+            m = sorted(_glob.glob(sa))
+            if not m:
+                sys.exit(f"[!] по маске {sa} ничего не найдено")
+            expanded += [Path(x) for x in m]
+        else:
+            expanded.append(Path(sa))
+    if not expanded:
+        sys.exit("[!] не указано ни одного WAV-файла")
+    args.wav = expanded
     hexfmt = not args.signed_decimal
 
     # ---- батч-режим ----
