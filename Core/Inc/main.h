@@ -65,10 +65,6 @@ void Error_Handler(void);
 #define LTE_STATUS_GPIO_Port GPIOC
 #define LTE_RESET_Pin GPIO_PIN_3
 #define LTE_RESET_GPIO_Port GPIOC
-#define UART4_TX_LORA_Pin GPIO_PIN_0
-#define UART4_TX_LORA_GPIO_Port GPIOA
-#define UART4_RX_LORA_Pin GPIO_PIN_1
-#define UART4_RX_LORA_GPIO_Port GPIOA
 #define USART2_TX_LTE_Pin GPIO_PIN_2
 #define USART2_TX_LTE_GPIO_Port GPIOA
 #define USART2_RX_LTE_Pin GPIO_PIN_3

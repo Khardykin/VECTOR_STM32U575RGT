@@ -56,6 +56,7 @@
 
 /* External variables --------------------------------------------------------*/
 extern DMA_HandleTypeDef handle_GPDMA1_Channel11;
+extern UART_HandleTypeDef huart4;
 extern TIM_HandleTypeDef htim1;
 
 /* USER CODE BEGIN EV */
@@ -175,6 +176,20 @@ void TIM1_UP_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles UART4 global interrupt.
+  */
+void UART4_IRQHandler(void)
+{
+  /* USER CODE BEGIN UART4_IRQn 0 */
+
+  /* USER CODE END UART4_IRQn 0 */
+  HAL_UART_IRQHandler(&huart4);
+  /* USER CODE BEGIN UART4_IRQn 1 */
+
+  /* USER CODE END UART4_IRQn 1 */
+}
+
+/**
   * @brief This function handles GPDMA1 Channel 11 global interrupt.
   */
 void GPDMA1_Channel11_IRQHandler(void)
@@ -207,4 +222,3 @@ void EXTI3_IRQHandler(void)
   HAL_GPIO_EXTI_IRQHandler(BUTTON3_Pin);
 }
 /* USER CODE END 1 */
-

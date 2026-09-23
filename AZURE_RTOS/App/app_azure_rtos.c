@@ -25,7 +25,6 @@
 #include "sai.h"
 #include "audio_player.h"
 #include "main.h"
-#include "audio_samples.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
