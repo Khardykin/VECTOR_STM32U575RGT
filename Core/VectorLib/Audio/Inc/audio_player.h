@@ -60,16 +60,39 @@ void        audio_set_volume(uint8_t percent);
 uint8_t     audio_get_volume(void);
 
 /* Справка по образу */
+void        audio_reload_image(void);   /* перечитать таблицу образа */
 uint8_t     audio_image_ok(void);
 uint16_t    audio_count(void);
 const char *audio_name(uint16_t idx);
 
-/* --- отладочные счётчики (смотреть в Expressions) ------------------------ */
+/* --- отладочные счётчики (смотреть в Expressions) ------------------------
+ * Порядок быстрой диагностики "звука нет":
+ *   boot_stage != 5  -> поток не дошёл до рабочего цикла (см. значения ниже)
+ *   keys == 0        -> команды до плеера не доходят (кнопки/EXTI/ваш код)
+ *   keys > 0,
+ *   started == 0     -> команды есть, но старт DMA не получился (last_err)
+ *   started > 0,
+ *   played == 0      -> DMA стартовала, но колбэк завершения не пришёл
+ *                      (GPDMA1_Channel11_IRQn / SAI)
+ *   timeouts растёт  -> поток жив (heartbeat), просто событий нет           */
 extern volatile uint32_t audio_dbg_played;      /* успешно доиграно          */
 extern volatile uint32_t audio_dbg_started;     /* запусков DMA              */
 extern volatile uint32_t audio_dbg_errors;      /* ошибки чтения/DMA         */
 extern volatile int32_t  audio_dbg_cur_idx;     /* -1 если не играет         */
 extern volatile uint32_t audio_dbg_last_err;    /* код audio_err_t           */
+extern volatile uint32_t audio_dbg_boot_stage;  /* 0 init, 1 образ ок,
+                                                   2 образа нет, 3 factory ок,
+                                                   4 factory провален,
+                                                   5 рабочий цикл            */
+extern volatile uint32_t audio_dbg_wakes;       /* пробуждений потока        */
+extern volatile uint32_t audio_dbg_timeouts;    /* из них по heartbeat       */
+extern volatile uint32_t audio_dbg_keys;        /* принято команд            */
+extern volatile uint32_t audio_dbg_last_cmd;    /* 1 play 2 stop 3 state 4 beep */
+extern volatile uint32_t audio_dbg_dropped;     /* play вытеснил play        */
+extern volatile uint32_t audio_dbg_stuck;       /* >0: колбэк завершения DMA не
+                                                   приходил, звук добит
+                                                   watchdog'ом - искать в
+                                                   SAI/GPDMA1_Channel11        */
 
 #ifdef __cplusplus
 }

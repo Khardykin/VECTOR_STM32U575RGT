@@ -6,3 +6,7 @@
 
 .settings/language.settings.xml
 .project
+
+# патчи и временные артефакты (в репозиторий не несём)
+*.patch
+/patches/

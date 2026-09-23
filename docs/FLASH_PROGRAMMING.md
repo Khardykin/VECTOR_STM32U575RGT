@@ -6,6 +6,29 @@
 
 ---
 
+## Способ 0. Попробовать ПРЯМО СЕЙЧАС: образ зашит в прошивку (factory)
+
+Не нужен ни external loader, ни стенд: достаточно прошить MCU по SWD.
+
+1. Собрать образ: `python tools\pack_sounds.py tools\*.wav --out tools\sounds.img`
+2. Залить его во внутреннюю flash как const-массив:
+
+```bat
+python tools\bin2c.py tools\sounds.img --name vector_factory_img ^
+       --out Core\VectorLib\Audio\Src\audio_factory_image.c
+```
+
+3. Убедиться, что `VECTOR_AUDIO_FACTORY_EMBED = 1` в `Core/VectorLib/vector_config.h`.
+4. Прошить MCU. Поток плеера при старте увидит, что во внешней flash образа нет
+   (`audio_image_ok() == 0`), вызовет `audio_factory_program()`: сотрёт секторы
+   области SOUNDS, запишет образ, верифицирует побайтно, затем
+   `audio_reload_image()` перечитает таблицу. Прогресс виден в `factory_dbg_sector`.
+5. Проверка: `audio_image_ok() == 1`, `audio_count()` = числу звуков, кнопки играют.
+
+Ограничения: образ съедает столько же внутренней flash, сколько весит (сейчас
+~191 КБ); стирание+запись 191 КБ занимают ~4-8 с на старте. Для серии ставьте
+`VECTOR_AUDIO_FACTORY_EMBED = 0` и используйте способ A или B2.
+
 ## Способ A. Программатор + external loader (отладка и мелкая серия)
 
 STM32CubeProgrammer умеет писать внешнюю SPI-флеш через тот же SWD-порт, но для этого

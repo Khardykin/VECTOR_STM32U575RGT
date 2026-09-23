@@ -22,6 +22,7 @@
 #include "gpdma.h"
 #include "i2c.h"
 #include "icache.h"
+#include "rtc.h"
 #include "sai.h"
 #include "spi.h"
 #include "tim.h"
@@ -31,6 +32,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "spiflash.h"
+#include "vector_config.h"
+#include "vector_log.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -105,6 +108,7 @@ int main(void)
   MX_USART3_UART_Init();
   MX_USART2_UART_Init();
   MX_ICACHE_Init();
+  MX_RTC_Init();
   /* USER CODE BEGIN 2 */
   /* ==========================================================================
    * Включение оконечного усилителя на I2S (PC9 = SD_MODE, MAX98357A-подобный).
@@ -119,23 +123,16 @@ int main(void)
   HAL_GPIO_WritePin(SD_MODE_GPIO_Port, SD_MODE_Pin, GPIO_PIN_SET);
   HAL_Delay(5);
 
-  /* Кнопки как тестовый вход плеера: включаем EXTI1..3.
-     CubeMX эти прерывания в NVIC не включил, поэтому делаем здесь.
-     ВНИМАНИЕ: если включите EXTI1/2/3 в CubeMX (вкладка NVIC) - УДАЛИТЕ этот
-     блок и три обработчика в stm32u5xx_it.c (USER CODE 1), иначе получите
-     дублирование символов на линковке. */
-  HAL_NVIC_SetPriority(EXTI1_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(EXTI1_IRQn);
-  HAL_NVIC_SetPriority(EXTI2_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(EXTI2_IRQn);
-  HAL_NVIC_SetPriority(EXTI3_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(EXTI3_IRQn);
-
   /* Проба внешней SPI flash (MX25K6435F, DD2). Результат смотреть в отладчике:
        sf_jedec[3] - должно быть { 0xC2, .., 0x17 }  (Macronix, 64 Мбит)
        sf_rdsr     - статус-регистр
        sf_probe_rc - 0 (HAL_OK), если чип ответил; иначе смотри SPI1/CS/питание */
   (void)sf_probe();
+
+  /* Лог старта ещё до RTOS: USART1 уже инициализирован, а vlog до vlog_init()
+     просто работает без мьютекса (исполнитель здесь один). */
+  LOG_I(VLOG_M_SYS, "probe rc=%d jedec=%x %x %x", (int32_t)sf_probe_rc,
+        (uint32_t)sf_jedec[0], (uint32_t)sf_jedec[1], (uint32_t)sf_jedec[2]);
   /* USER CODE END 2 */
 
   MX_ThreadX_Init();
@@ -171,8 +168,10 @@ void SystemClock_Config(void)
 
   /** Initializes the CPU, AHB and APB buses clocks
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+  RCC_OscInitStruct.LSIDiv = RCC_LSI_DIV1;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLMBOOST = RCC_PLLMBOOST_DIV1;

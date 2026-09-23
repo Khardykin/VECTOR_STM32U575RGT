@@ -1,26 +1,41 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-pack_sounds.py — собирает sounds.img для внешней SPI flash (MX25K6435F, 8 МБ).
+pack_sounds.py — собирает sounds.img для внешней SPI flash (MX25K6435F, 8 МБ)
+и генерирует сопутствующие файлы, по которым видно, ЧТО и В КАКОМ ПОРЯДKE собрано.
 
 Формат образа описан в Core/Inc/audio_image.h и ДОЛЖЕН совпадать с ним байт в байт:
 прошивка читает заголовок и таблицу прямо из флеш, C-массивы не нужны.
 
+Что создаётся при сборке:
+  <out>                  сам образ sounds.img
+  <out>.manifest.txt     паспорт сборки: порядок файлов, их sha256, rate, gain,
+                         sha256 результата и готовая команда для воспроизведения.
+                         Именно по нему видно, почему два образа совпали/различаются.
+  Core/Inc/audio_ids.h   enum SND_<ИМЯ> = порядковый номер + SND_COUNT,
+                         таблица-комментарий (номер, имя, сэмплы, байты, Гц, секунды)
+                         и SND_STATE_DEFAULT_0/1 для таблицы состояний плеера.
+                         Путь задаётся --ids-out (по умолчанию Core/Inc/audio_ids.h).
+
 Использование:
-    python3 tools/pack_sounds.py assets/*.wav --out build/sounds.img
-    python3 tools/pack_sounds.py a.wav b.wav --out sounds.img --rate 8000 --gain 3.0
-    python3 tools/pack_sounds.py sounds.img --check      # распарсить готовый образ
+    python3 tools/pack_sounds.py tools/*.wav --out tools/sounds.img
+    python3 tools/pack_sounds.py tools/a.wav tools/b.wav --out s.img --rate 8000 --gain 3.0
+    python3 tools/pack_sounds.py tools/b_click.wav --info      # параметры WAV без сборки
+    python3 tools/pack_sounds.py tools/sounds.img --check      # распарсить готовый образ
+
+Детерминизм: один и тот же список файлов В ТОМ ЖЕ ПОРЯДКЕ с теми же --rate/--gain
+даёт образ байт в байт. Разный gain или другой порядок => разные байты;
+сравнивать образы имеет смысл только вместе с manifest-файлами.
 
 Требования к WAV: 16 бит/сэмпл. Каналы сводятся в моно, частота приводится к --rate
-(по умолчанию 8000 — под текущую настройку SAI1). Длительность не ограничена
-(в отличие от one-shot DMA): ограничение в 65535 сэмплов здесь не действует,
-потому что воспроизведение идёт стримингом из флеш.
+(по умолчанию 8000 — под текущую настройку SAI1).
 
 Бюджет: 8 МБ = 8388608 байт = 524 с при 8 кГц/16 бит/моно.
 """
 import argparse
-import os
 import array
+import hashlib
+import os
 import struct
 import sys
 import wave
@@ -34,6 +49,7 @@ ENTRY_SIZE = 36
 NAME_LEN = 16
 FMT_PCM16 = 0
 FLASH_SIZE = 8 * 1024 * 1024
+DEFAULT_IDS = Path("Core/VectorLib/Audio/Inc/audio_ids.h")
 
 
 # --------------------------------------------------------------------------- #
@@ -84,10 +100,12 @@ def gain_clip(s, g):
     return out, clip
 
 
+def sanitize(stem):
+    return "".join(c if c.isalnum() else "_" for c in stem).strip("_").upper() or "SOUND"
+
+
 # --------------------------------------------------------------------------- #
 def build(wavs, rate, gain):
-    entries, blobs = [], []
-    cursor = 0  # заполнится после того, как узнаем data_off
     placeholders = []
     for w in wavs:
         nch, fr, s = read_wav(w)
@@ -99,36 +117,36 @@ def build(wavs, rate, gain):
         pcm = struct.pack("<%dh" % len(s), *s) if s else b""
         placeholders.append({
             "name": w.stem[:NAME_LEN - 1],
+            "enum": sanitize(w.stem),
             "pcm": pcm,
             "samples": len(s),
             "rate": rate,
             "ch": 1,
             "dur": len(s) / rate,
             "clip": clip,
-            "src": w.name,
+            "src": str(w),
+            "src_sha": hashlib.sha256(w.read_bytes()).hexdigest(),
             "src_rate": fr,
+            "src_ch": nch,
         })
         print(f"[i] {w.name}: {nch}ch {fr}Гц -> 1ch {rate}Гц, {len(s)} сэмплов, "
               f"{len(s) / rate:.2f} с" + (f", клиппинг {clip}" if clip else ""),
               file=sys.stderr)
 
+    entries, blobs = [], []
     data_off = HEADER_SIZE + ENTRY_SIZE * len(placeholders)
     addr = data_off
     for p in placeholders:
         pad = (-len(p["pcm"])) % 4
         entries.append({
-            "offset": addr,
-            "length": len(p["pcm"]),
-            "samples": p["samples"],
-            "rate": p["rate"],
-            "ch": p["ch"],
-            "crc": zlib.crc32(p["pcm"]) & 0xFFFFFFFF,
-            "name": p["name"],
+            "offset": addr, "length": len(p["pcm"]), "samples": p["samples"],
+            "rate": p["rate"], "ch": p["ch"],
+            "crc": zlib.crc32(p["pcm"]) & 0xFFFFFFFF, "name": p["name"],
+            "enum": p["enum"], "dur": p["dur"],
         })
         blobs.append(p["pcm"] + b"\x00" * pad)
         addr += len(p["pcm"]) + pad
 
-    # собираем таблицу вручную, чтобы точно совпасть с audio_image.h
     tbl = b""
     for e in entries:
         tbl += struct.pack("<IIIHBB", e["offset"], e["length"], e["samples"],
@@ -138,10 +156,77 @@ def build(wavs, rate, gain):
     assert len(tbl) == ENTRY_SIZE * len(entries)
 
     total = data_off + sum(len(b) for b in blobs)
-    hdr = struct.pack("<IHHIIII", MAGIC, VERSION, len(entries), HEADER_SIZE,
-                      data_off, total, zlib.crc32(tbl) & 0xFFFFFFFF)
-    assert len(hdr) == HEADER_SIZE
-    return hdr + tbl + b"".join(blobs), entries, total
+    img = struct.pack("<IHHIIII", MAGIC, VERSION, len(entries), HEADER_SIZE,
+                      data_off, total, zlib.crc32(tbl) & 0xFFFFFFFF) + tbl + b"".join(blobs)
+    assert len(img) == total
+    return img, entries, placeholders, total
+
+
+# --------------------------------------------------------------------------- #
+def emit_ids(entries, img_sha, out_img, path: Path):
+    lines = [
+        "/**",
+        "  * @file    audio_ids.h",
+        "  * @brief   СГЕНЕРИРОВАНО tools/pack_sounds.py — НЕ редактировать вручную.",
+        "  *",
+        f"  *          Образ: {out_img}  sha256 {img_sha}",
+        "  *          Порядковый номер звука = порядок файла в команде сборки.",
+        "  *          Вызывайте audio_play(SND_ИМЯ) — порядок не потеряется.",
+        "  *",
+        "  *          idx  имя             сэмплов     байт     Гц   секунд",
+    ]
+    for i, e in enumerate(entries):
+        lines.append(f"  *          {i:3d}  {e['name']:<15s} {e['samples']:7d} {e['length']:8d}"
+                     f" {e['rate']:6d} {e['dur']:7.2f}")
+    lines += ["  */", "#ifndef AUDIO_IDS_H", "#define AUDIO_IDS_H", ""]
+    lines.append("enum {")
+    for i, e in enumerate(entries):
+        lines.append(f"  SND_{e['enum']} = {i},")
+    lines.append(f"  SND_COUNT = {len(entries)}")
+    lines.append("};")
+    lines.append("")
+    lines.append("/* Значения по умолчанию для таблицы состояний плеера")
+    lines.append("   (ap_state_map в audio_player.c). Если звуков меньше двух,")
+    lines.append("   недостающие состояния = тишина (0xFFFF). */")
+    lines.append(f"#define SND_STATE_DEFAULT_0  {('SND_' + entries[0]['enum']) if len(entries) > 0 else '0xFFFFu'}")
+    d1 = ('SND_' + entries[1]['enum']) if len(entries) > 1 else '0xFFFFu'
+    c1 = '  /* звуков меньше двух - тишина */' if len(entries) < 2 else ''
+    lines.append(("#define SND_STATE_DEFAULT_1  " + d1 + c1).rstrip())
+    lines.append("")
+    lines.append("#endif /* AUDIO_IDS_H */")
+    lines.append("")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"[+] {path}: enum на {len(entries)} звук(ов)", file=sys.stderr)
+
+
+def emit_manifest(placeholders, entries, rate, gain, out_img: Path, img: bytes, path: Path):
+    sha = hashlib.sha256(img).hexdigest()
+    L = [
+        "# manifest сборки sounds.img (tools/pack_sounds.py)",
+        f"out        = {out_img}",
+        f"out_bytes  = {len(img)}",
+        f"out_sha256 = {sha}",
+        f"rate       = {rate}",
+        f"gain       = {gain}",
+        "",
+        "# звуки в порядке сборки (этот порядок = индексы в прошивке):",
+    ]
+    for i, (p, e) in enumerate(zip(placeholders, entries)):
+        L.append(f"  {i}  {p['src'].replace(chr(92), '/')}")
+        L.append(f"      sha256={p['src_sha']}  src={p['src_ch']}ch {p['src_rate']}Гц"
+                 f"  -> {e['samples']} сэмплов {e['rate']}Гц, {e['dur']:.2f} с")
+    L += [
+        "",
+        "# команда для ТОЧНОГО воспроизведения этой сборки:",
+        f"python tools/pack_sounds.py " +
+        " ".join(p['src'].replace(chr(92), '/') for p in placeholders) +
+        f" --rate {rate} --gain {gain} --out {out_img}",
+        "",
+    ]
+    path.write_text("\n".join(L), encoding="utf-8")
+    print(f"[+] {path}: паспорт сборки (sha256 {sha[:16]}…)", file=sys.stderr)
+    return sha
 
 
 # --------------------------------------------------------------------------- #
@@ -172,12 +257,15 @@ def main():
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--rate", type=int, default=8000)
     ap.add_argument("--gain", type=float, default=1.0)
+    ap.add_argument("--ids-out", type=Path, default=DEFAULT_IDS,
+                    help="куда писать сгенерированный enum-заголовок")
+    ap.add_argument("--no-manifest", action="store_true")
     ap.add_argument("--check", action="store_true", help="распарсить готовый образ")
+    ap.add_argument("--info", action="store_true",
+                    help="показать параметры WAV без сборки")
     args = ap.parse_args()
 
-    # --- раскрытие масок (*.wav) своими руками -------------------------
-    # cmd.exe и PowerShell НЕ раскрывают '*', в отличие от bash. Без этого
-    # "pack_sounds.py assets\*.wav" падает с OSError: Invalid argument.
+    # --- раскрытие масок (*.wav): cmd.exe и PowerShell не раскрывают '*' ---
     import glob as _glob
     expanded = []
     for a in args.wav:
@@ -192,15 +280,27 @@ def main():
     if not expanded:
         sys.exit("[!] не указано ни одного WAV-файла")
     args.wav = expanded
+
     if args.check or (len(args.wav) == 1 and args.wav[0].suffix == ".img"):
         parse(args.wav[0].read_bytes())
         return
+
+    if args.info:
+        for w in args.wav:
+            nch, fr, s = read_wav(w)
+            frames = len(s) // nch
+            peak = max(max(abs(min(s)), 1), max(s))
+            print(f"{w.name}: {nch} ch, {fr} Гц, 16 бит, {frames} кадров, "
+                  f"{frames / fr:.3f} с, пик {peak} ({100 * peak / 32768:.1f}% FS)")
+        return
+
     if not args.out:
         sys.exit("[!] нужен --out для сборки")
 
-    img, entries, total = build(args.wav, args.rate, args.gain)
+    img, entries, placeholders, total = build(args.wav, args.rate, args.gain)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_bytes(img)
+    sha = hashlib.sha256(img).hexdigest()
 
     print(f"\n[+] {args.out}: {total} байт ({total / 1024:.1f} КБ, "
           f"{100 * total / FLASH_SIZE:.2f}% от 8 МБ)", file=sys.stderr)
@@ -210,6 +310,12 @@ def main():
           file=sys.stderr)
     if total > FLASH_SIZE:
         sys.exit("[!] образ не влезает в 8 МБ")
+
+    emit_ids(entries, sha, args.out, args.ids_out)
+    if not args.no_manifest:
+        emit_manifest(placeholders, entries, args.rate, args.gain, args.out, img,
+                      args.out.with_suffix(args.out.suffix + ".manifest.txt"))
+
     print("[i] контрольное чтение образа:")
     parse(img)
 

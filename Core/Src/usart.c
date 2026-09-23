@@ -47,9 +47,9 @@ void MX_UART4_Init(void)
   huart4.Init.Parity = UART_PARITY_NONE;
   huart4.Init.Mode = UART_MODE_TX_RX;
   huart4.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart4.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart4.Init.OverSampling = UART_OVERSAMPLING_8;
   huart4.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart4.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart4.Init.ClockPrescaler = UART_PRESCALER_DIV2;
   huart4.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
   if (HAL_HalfDuplex_Init(&huart4) != HAL_OK)
   {
@@ -91,9 +91,9 @@ void MX_USART1_UART_Init(void)
   huart1.Init.Parity = UART_PARITY_NONE;
   huart1.Init.Mode = UART_MODE_TX_RX;
   huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_8;
   huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart1.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart1.Init.ClockPrescaler = UART_PRESCALER_DIV2;
   huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
   if (HAL_UART_Init(&huart1) != HAL_OK)
   {
@@ -135,9 +135,9 @@ void MX_USART2_UART_Init(void)
   huart2.Init.Parity = UART_PARITY_NONE;
   huart2.Init.Mode = UART_MODE_TX_RX;
   huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_8;
   huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart2.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart2.Init.ClockPrescaler = UART_PRESCALER_DIV2;
   huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
   if (HAL_UART_Init(&huart2) != HAL_OK)
   {
@@ -179,9 +179,9 @@ void MX_USART3_UART_Init(void)
   huart3.Init.Parity = UART_PARITY_NONE;
   huart3.Init.Mode = UART_MODE_TX_RX;
   huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_8;
   huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart3.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart3.Init.ClockPrescaler = UART_PRESCALER_DIV2;
   huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
   if (HAL_UART_Init(&huart3) != HAL_OK)
   {
@@ -240,7 +240,7 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
     /* UART4 interrupt Init */
-    HAL_NVIC_SetPriority(UART4_IRQn, 0, 0);
+    HAL_NVIC_SetPriority(UART4_IRQn, 1, 0);
     HAL_NVIC_EnableIRQ(UART4_IRQn);
   /* USER CODE BEGIN UART4_MspInit 1 */
 
@@ -311,7 +311,7 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
     /* USART2 interrupt Init */
-    HAL_NVIC_SetPriority(USART2_IRQn, 0, 0);
+    HAL_NVIC_SetPriority(USART2_IRQn, 1, 0);
     HAL_NVIC_EnableIRQ(USART2_IRQn);
   /* USER CODE BEGIN USART2_MspInit 1 */
 

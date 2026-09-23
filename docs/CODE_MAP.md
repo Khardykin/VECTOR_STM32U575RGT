@@ -1,0 +1,261 @@
+# Карта кода: кто что делает и в каком контексте
+
+Короткий ответ на вопрос «где что делается». Подробно про звуки — в `AUDIO_MAP.md`,
+про запись образа — в `FLASH_PROGRAMMING.md`, про разбор последнего «зависона» — в
+`docs/FIX_REPORT.md`.
+
+---
+
+## 1. Два слоя кода
+
+| Слой | Файлы | Кто правит |
+|---|---|---|
+| **CubeMX-генерация** | `Core/Src/{main,gpio,spi,sai,gpdma,usart,i2c,tim,stm32u5xx_it}.c`, `AZURE_RTOS/App/app_azure_rtos.c` | куб; руками — **только** внутри `/* USER CODE BEGIN … */`, иначе потеряется при перегенерации |
+| **VectorLib (наш код)** | `Core/VectorLib/**` | мы, свободно |
+
+`Core/VectorLib`:
+
+```
+Inc/vector_config.h        ВСЕ переключатели проекта (тест/рабочее, DMA, подтяжка кнопок)
+Audio/Inc, Audio/Src
+  spiflash.[ch]            драйвер MX25K6435F: команды, чтение (опрос/DMA), запись, стирание
+  extstore.[ch]            мьютекс шины + конфиг (1 страница) + кольцевой журнал поверх spiflash
+  audio_factory.[ch]       заводская запись образа из внутренней flash во внешнюю
+  audio_factory_image.c    СГЕНЕРИРОВАН tools/bin2c.py (195 КБ const) — не править
+  audio_player.[ch]        ПЛЕЕР: поток, очередь команд, состояния, громкость, старт SAI-DMA
+  audio_beep.[ch]          аварийный писк (const PCM во внутренней flash)
+Common/Src/vector_log.c    консольный лог на USART1 (выключается одним макросом)
+Comm/  uart_bridge.[ch]    ТЕСТ: прозрачный мост UART4 <-> USART2
+Test/  audio_demo.[ch]     ТЕСТ: кнопки PB1/PB2/PB3 как пульт плеера
+```
+
+---
+
+## 2. Контексты: инициализация / поток / прерывание
+
+Это главное, что нужно держать в голове. Одно и то же имя функции может означать
+разные правила (что можно вызывать, можно ли блокироваться).
+
+### 2.1 До планировщика (стек MSP, RTOS ещё не запущен)
+
+```
+main()
+ ├─ MX_GPIO_Init()          пины + NVIC EXTI1..3
+ ├─ MX_GPDMA1_Init()        такт GPDMA1 + NVIC каналов 9/10/11
+ ├─ MX_SAI1_Init()          SAI1_Block_A: I2S, 8 кГц, моно, 16 бит, master TX
+ ├─ MX_SPI1_Init()          SPI1 master 20 МГц + привязка GPDMA ch9/ch10 (USER CODE: 8 бит, /8)
+ ├─ MX_ICACHE_Init()        ICache (DCache на U5 нет — когерентность DMA не нужна)
+ ├─ SD_MODE = 1, 5 мс       включить оконечный усилитель (иначе тишина при любом раскладе)
+ ├─ sf_probe()              JEDEC ID + статус внешней flash -> sf_jedec / sf_probe_rc
+ ├─ audio_demo_buttons_init()  ОБА фронта EXTI + подтяжка кнопок
+ └─ MX_ThreadX_Init() -> tx_kernel_enter() -> tx_application_define()
+      ├─ ext_init()         мьютекс шины, sf_dma_init(), сканирование журнала
+      ├─ audio_init()       семафор ap_wake, очередь ap_queue, поток "Audio Player",
+      │                     load_image()  <-- чтение таблицы образа из внешней flash
+      ├─ uart_bridge_init() семафор + поток "UART Bridge" + HAL_UART_Receive_IT
+      ├─ tx_semaphore_create(audio_done_sem)   \  наследие фазы 0/1: поток audio_thread
+      └─ tx_thread_create(audio_thread, lvgl_thread)  /  усыплён навсегда, lvgl — заглушка
+```
+
+Здесь **нельзя** блокироваться на RTOS-объектах и нельзя спать: `sf_read()` сам
+определяет, что планировщик не запущен (`tx_thread_identify() == NULL`), и идёт
+опросом, а не DMA.
+
+### 2.2 Потоки
+
+| Поток | Приоритет | Стек | Что делает |
+|---|---|---|---|
+| `Audio Player` (`ap_thread_entry`) | 10 | 4096 | **единственный владелец** SAI/DMA и `ap_buf[]`: ждёт `ap_wake`, разбирает команды, читает звук из flash, запускает DMA |
+| `UART Bridge` | 12 | 2048 | перекладывает байты между кольцами и UART (тест) |
+| `LVGL Task` | 15 | 4096 | заглушка: спит по 100 мс |
+| `Audio Task` (старый) | 10 | 2048 | усыплён навсегда, оставлен только чтобы не править `tx_thread_create` |
+
+### 2.3 Прерывания
+
+| IRQ | Что в нём | Можно ли звать ThreadX |
+|---|---|---|
+| `EXTI1/2/3` | `audio_demo_key_handler` → `audio_set_state/play/stop` → очередь + `tx_semaphore_put(ap_wake)` | да |
+| `GPDMA1_Channel11` | DMA звука SAI1_A → `HAL_SAI_TxCpltCallback` → `ap_playing_idx = -1` + `tx_semaphore_put(ap_wake)` | да |
+| `GPDMA1_Channel10` + `SPI1` | DMA приёма SPI1 → EOT → `HAL_SPI_RxCpltCallback` → `tx_semaphore_put(sf_dma_sem)` | да |
+| `UART4` / `USART2` | 1 байт → кольцо → `tx_semaphore_put(ub_sem)` → снова `Receive_IT` | да |
+| `TIM1_UP` | `HAL_IncTick()` — тайм-база HAL (таймер ThreadX — SysTick от порта, 100 Гц) | — |
+
+> Порт ThreadX для Cortex-M33 маскирует критические секции через **PRIMASK**
+> (`TX_PORT_USE_BASEPRI` не определён), поэтому вызовы `tx_*` разрешены из ISR с
+> любым приоритетом, включая кубовский 0. Но приоритет 0 у EXTI означает, что
+> кнопка может отложить DMA-звук — при желании поднимите EXTI до 5..8 в кубе.
+
+---
+
+## 3. Три цепочки, которые надо знать наизусть
+
+**Старт**
+```
+ext_init -> audio_init -> load_image -> ap_img_ok=1
+                                      -> поток: (образ плох? factory-запись) -> цикл
+```
+
+**Кнопка → звук**
+```
+EXTI -> audio_demo_key_handler -> audio_set_state(st)
+     -> tx_queue_send(ap_queue) + tx_semaphore_put(ap_wake)
+     -> ap_thread: CMD_STATE -> stop_now -> start_now(idx)
+        -> ext_read(адрес из ap_tab[idx]) -> ap_buf[]   [большие блоки: DMA, поток спит]
+        -> apply_volume -> HAL_SAI_Transmit_DMA -> звук
+```
+
+**Звук доиграл → следующий**
+```
+GPDMA1_Channel11 -> HAL_SAI_TxCpltCallback -> ap_playing_idx=-1, put(ap_wake)
+     -> ap_thread: очередь пуста, ap_pending_idx >= 0? -> start_now(следующий)
+```
+
+---
+
+## 4. Ресурсы и кто за ними следит
+
+| Ресурс | Владелец | Защита |
+|---|---|---|
+| SPI1 + внешняя flash | `extstore` | `ext_mtx` (мьютекс на всю операцию, включая стирание) |
+| SAI1_A + GPDMA ch11 + `ap_buf[]` | поток `Audio Player` | один владелец, из ISR только флаги |
+| UART4/USART2 | `uart_bridge` | кольца single-producer/single-consumer |
+| USART1 | консольный лог `vector_log.c` (`VECTOR_LOG_ENABLE`) | только инициализация/поток, из ISR вызов отбрасывается |
+
+Внешняя flash поделена без пересечений (`sfmap.h`): `SOUNDS 0..4 МБ`,
+`CONFIG 0x400000 (4 КБ)`, `LOG 0x401000..8 МБ`.
+
+---
+
+## 5. Что смотреть в отладчике (Expressions)
+
+| Переменная | О чём говорит |
+|---|---|
+| `sf_jedec[3]`, `sf_probe_rc` | жива ли внешняя flash (`C2 ?? 17`, `rc == 0`) |
+| `audio_dbg_boot_stage` | 1 = образ найден, 2 = образа нет, 3 = factory записал, 4 = factory провалился, 5 = рабочий цикл |
+| `demo_dbg_edges` / `_press` | доходят ли кнопки: 0 / 0 — EXTI молчит, >0 / 0 — не та полярность или подтяжка |
+| `audio_dbg_keys` / `_last_cmd` | доходят ли команды до плеера (1 play, 2 stop, 3 state, 4 beep) |
+| `audio_dbg_started` / `_played` | стартовала ли DMA / доиграла ли (0 при started>0 — нет колбэка GPDMA1_Channel11) |
+| `audio_dbg_wakes` / `_timeouts` | поток жив: `timeouts` растёт = heartbeat, событий просто нет |
+| `audio_dbg_errors` / `_last_err` | код `audio_err_t` или `0x1000|SAI.ErrorCode` |
+| `sf_dbg_dma_chunks` / `_fallback` / `_tmo` | работает ли SPI-DMA и сколько раз откатились на опрос |
+| `factory_dbg_sector` | прогресс заводской записи (если вдруг она legitimately идёт) |
+| `ub_rx4_bytes` / `ub_tx2_bytes` | жив ли мост UART (подробно — `docs/UART_BRIDGE.md`) |
+| `ub_dbg_err4` / `_rearm4` | ошибки приёма UART4: 8 = ORE, 4 = FE (скорость!), 2 = NE |
+| `ub_dbg_echo` | сколько байт собственного эха выброшено (UART4 = полудуплекс) |
+| `sf_dbg_dma_chunks` / `_fallback` | идёт ли чтение flash по DMA и были ли откаты на опрос |
+| `vlog_dbg_lines` | сколько строк ушло в консоль USART1 |
+
+---
+
+## 6. Консольный лог (`vector_log.c`)
+
+Куда выводится — два **независимых** переключателя в `vector_config.h`, можно
+оба сразу:
+
+| Куда | Макрос | Где видно |
+|---|---|---|
+| ITM/SWO | `VECTOR_LOG_ITM 1` | **консоль внутри CubeIDE** (вкладка SWV / Serial Wire Viewer). Нужен подключённый ST-LINK и **свободный PB3**: PB3 = JTDO/TRACESWO, а сейчас там BUTTON3 (EXTI + pull-up), поэтому SWO-вывода физически нет, пока кнопка на PB3 |
+| UART | `VECTOR_LOG_UART 4` | ваш терминал на UART4 (PC10). `0` = не печатать в UART, `1/2/3` = USART1/2/3 |
+
+Конфликт, о котором надо помнить: `VECTOR_LOG_UART 4` + `VECTOR_UART_BRIDGE_TEST 1`
+— это один и тот же UART4, поэтому в терминале будет смесь лога и данных моста
+(строки не рвутся: мост берёт ту же блокировку `vlog_bus_lock()`, но байты
+чередуются). На время теста моста ставьте `VECTOR_LOG_UART 0`. Компилятор
+напомнит об этом через `#warning`.
+
+Три выключателя:
+
+| Выключатель | Где | Что делает |
+|---|---|---|
+| `VECTOR_LOG_ENABLE 0` | `vector_config.h`, компиляция | все `LOG_*()` → `((void)0)`, `vector_log.c` пустой: в прошивке не остаётся ни кода, ни строк |
+| `VECTOR_LOG_ITM` / `VECTOR_LOG_UART` | `vector_config.h`, компиляция | выбор канала вывода |
+| `vlog_set_level()` / `vlog_set_mask()` | рантайм | порог важности и набор модулей без пересборки |
+
+Уровни: `VLOG_DEBUG`(1) → `VLOG_INFO`(2, по умолчанию) → `VLOG_WARN`(3) →
+`VLOG_ERROR`(4). Маски: `VLOG_M_SYS`, `VLOG_M_FLASH`, `VLOG_M_AUDIO`,
+`VLOG_M_BRIDGE` (или `VLOG_M_ALL`).
+
+Пример вывода старта:
+
+```
+[0.128] 2/S: probe rc=0 jedec=c2 20 17
+[0.131] 2/S: --- vector log on (115200 8N1 USART1) ---
+[0.132] 2/S: level=2 mask=ffffffff
+[0.204] 2/A: audio init
+[0.287] 2/A: image ok=1 sounds=4
+[0.288] 2/B: bridge on: uart4(hd=1) <-> usart2, ring=256
+[3.412] 2/A: cmd=3 arg=1 playing=-1        (это DEBUG, виден при level=1)
+[3.498] 2/F: read 65536 b @0x1a8 ok, 52 ms
+[3.501] 2/A: play #1 'b_click' 8192 samples @8000 Hz
+```
+
+Что где печатается:
+
+| Модль | События |
+|---|---|
+| `main.c` | результат `sf_probe()` (JEDEC ID) — ещё до RTOS |
+| `spiflash.c` | чтение ≥ 1 КБ (адрес, объём, миллисекунды), каждая запись и стирание сектора, верификация, откат с DMA на опрос |
+| `extstore.c` | загрузка/сохранение конфига, добавление записи в журнал (DEBUG) |
+| `audio_factory.c` | старт/прогресс/результат заводской записи образа |
+| `audio_player.c` | старт, состояние образа, команды, запуск и ошибки звука, «звук доигран», watchdog |
+| `uart_bridge.c` | каждый перенесённый чанк (DEBUG), ошибки передачи |
+
+Правила модуля (важно при доработке):
+
+* из **ISR лог не печатается** — вызов отбрасывается и плюсит
+  `vlog_dbg_isr_skipped` (блокирующая передача в прерывании недопустима).
+  События из ISR показываются из потока: например, «звук доигран» поток
+  печатает, заметив изменение `audio_dbg_played`;
+* строка собирается в один статический буфер 160 Б под мьютексом, поэтому
+  два потока не перемешают вывод. До `vlog_init()` (и до планировщика) мьютекс
+  не используется — исполнитель тогда один;
+* формат только `%s %d %u %x %X %c %%`, числа 32-битные: своя печать, чтобы не
+  тянуть в прошивку `vsnprintf` (десятки КБ flash).
+
+---
+
+## 7. Тактовые источники: кто с какой частотой тикает
+
+В проекте **три независимых тика**, их легко перепутать:
+
+| Источник | Частота | Кто настроил | Для чего |
+|---|---|---|---|
+| **TIM1** (TIM1_UP_IRQn, приоритет 15) | **1 кГц = 1 мс** | `stm32u5xx_hal_timebase_tim.c` (куб, `NVIC.TimeBase=TIM1_UP_IRQn`) | тайм-база HAL: `HAL_GetTick()`, `HAL_Delay()`, все таймауты HAL и наши (`wait_busy`, антидребезг кнопок, watchdog плеера) |
+| **SysTick** (приоритет 0x40) | **100 Гц = 10 мс** | `Core/Src/tx_initialize_low_level.S` (порт ThreadX, `SYSTEM_CLOCK = 160000000`) | тик ядра ThreadX: `tx_thread_sleep()`, таймеры, `TX_TIMER_TICKS_PER_SECOND = 100` |
+| **RTC WakeUp** (включён в `.ioc`, код ещё не сгенерирован) | **1 Гц** | `RTC_WAKEUPCLOCK_CK_SPRE_17BITS` | счётчик wake-up тикает **секундами**, не миллисекундами: CK_SPRE = 1 Гц, период = (WUT + 1) с |
+
+Расчёт TIM1 (проверяется в рантайме — строка лога `tick: PCLK2=... PSC=... ARR=... -> ... us`):
+
+```
+TIM1CLK = PCLK2 = 160 МГц      (APB2 = HCLK/1, SYSCLK = HSE 16 МГц x PLLN 10 / PLLR 1)
+PSC = 160 000 000 / 1 000 000 - 1 = 159   -> счётчик тикает на 1 МГц
+ARR = 1 000 000 / 1 000 - 1     = 999     -> переполнение раз в 1000 мкс = 1 мс
+```
+
+То есть тайм-база HAL **уже** 1 мс. Как убедиться самому, без расчётов:
+
+* `sys_dbg_ticks` (Live Expressions) — инкремент в `HAL_TIM_PeriodElapsedCallback`,
+  должен расти на ~1000 в секунду;
+* `HAL_GetTick()` — растёт на 1000 в секунду;
+* префикс строк лога `[12.345]` — это `HAL_GetTick()`, секунды и миллисекунды:
+  если тик не 1 мс, метки времени поедут сразу;
+* косвенный признак: `HAL_Delay(5)` в `main()` (включение усилителя) длится
+  5 мс, а не 5 с; стирание сектора flash укладывается в таймаут 500 мс.
+
+Если когда-нибудь поменяете тактовую частоту ядра — **обязательно** поправьте
+`SYSTEM_CLOCK` в `tx_initialize_low_level.S`, иначе тик ThreadX уедет
+пропорционально (на 160 МГц он ровно 100 Гц).
+
+---
+
+## 8. Документы
+
+| Файл | О чём |
+|---|---|
+| `docs/CODE_MAP.md` | этот: слои кода, контексты, цепочки, тики, лог |
+| `docs/AUDIO_HOWTO.md` | как запустить звук, состояния, значения по умолчанию |
+| `docs/FIX_REPORT.md` | разбор «зависания» в `tx_semaphore_get`, SPI-DMA, что проверено |
+| `docs/UART_BRIDGE.md` | мост UART4↔USART2, полудуплекс, почему 0x99 приходит как 0xFD |
+| `docs/AUDIO_MAP.md` | где лежат звуки и как они попадают в устройство |
+| `docs/FLASH_PROGRAMMING.md` | запись образа во внешнюю flash |
+| `docs/SCRIPT_PRACTICE.md` | работа со скриптами tools/ |

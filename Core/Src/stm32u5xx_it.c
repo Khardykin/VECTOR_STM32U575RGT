@@ -321,21 +321,5 @@ void GPDMA1_Channel11_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-/* Обработчики кнопок (EXTI1..3). CubeMX их не сгенерировал, т.к. прерывания
-   не были включены в NVIC. Если включите их в CubeMX - УДАЛИТЕ эти три
-   функции и блок HAL_NVIC_EnableIRQ в main.c (USER CODE 2). */
-void EXTI1_IRQHandler(void)
-{
-  HAL_GPIO_EXTI_IRQHandler(BUTTON1_Pin);
-}
 
-void EXTI2_IRQHandler(void)
-{
-  HAL_GPIO_EXTI_IRQHandler(BUTTON2_Pin);
-}
-
-void EXTI3_IRQHandler(void)
-{
-  HAL_GPIO_EXTI_IRQHandler(BUTTON3_Pin);
-}
 /* USER CODE END 1 */

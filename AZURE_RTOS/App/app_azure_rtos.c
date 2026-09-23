@@ -26,6 +26,8 @@
 #include "audio_player.h"
 #include "extstore.h"
 #include "uart_bridge.h"
+#include "vector_config.h"
+#include "vector_log.h"
 #include "main.h"
 /* USER CODE END Includes */
 
@@ -136,12 +138,16 @@ VOID tx_application_define(VOID *first_unused_memory)
 {
   /* USER CODE BEGIN  tx_application_define_1*/
   /* Порядок важен:
+       0) vlog_init - консольный лог (USART1), чтобы шаги ниже были видны
        1) ext_init  - мьютекс шины flash + сканирование журнала (до потоков!)
        2) audio_init- читает sounds.img, создаёт поток плеера
        3) uart_bridge_init - мост UART4<->USART2                       */
+  vlog_init();
   ext_init();
   audio_init();
+#if VECTOR_UART_BRIDGE_TEST
   uart_bridge_init();
+#endif
 
   /* 0. Семафор "DMA завершила передачу". Начальное состояние 0.
         ВАЖНО: создать ДО потоков - иначе audio_thread дёрнет несуществующий

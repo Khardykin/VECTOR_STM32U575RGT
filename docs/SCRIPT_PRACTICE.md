@@ -25,23 +25,28 @@ python tools\pack_sounds.py tools\sounds.img --check
 
 ---
 
-## Задание 2. Пересобрать и убедиться в детерминизме
+## Задание 2. Детерминизм и паспорт сборки (manifest)
 
 ```bat
-python tools\pack_sounds.py tools\a_gas.wav tools\b_click.wav tools\c_voice_gas.wav --out build\sounds_test.img
-fc /b tools\sounds.img build\sounds_test.img
+python tools\pack_sounds.py tools\a_gas.wav tools\b_click.wav tools\c_voice_gas.wav tools\d_myvoice.wav --out build\rb.img
+fc /b tools\sounds.img build\rb.img
+type build\rb.img.manifest.txt
 ```
 
-**Ожидаю:** `total=65828` и `fc` сообщает, что файлы **идентичны**.Pack_sounds детерминирован:
-тот же список файлов в том же порядке даёт тот же образ байт в байт. Это важно для
-производства: образ можно пересобрать на любом компьютере и сверить хэшем.
+**Ожидаю:** файлы **идентичны** (committed `sounds.img` собран без `--gain`), а в
+manifest видно порядок файлов, sha256 каждого исходника и sha256 результата.
 
-**Эксперимент:** поменяйте порядок файлов местами и пересоберите. Что изменилось в
-таблице (`--check`)? Почему в коде лучше обращаться к звукам по имени, а не по индексу?
+**Эксперимент, объясняющий прошлую ошибку:** пересоберите то же самое с `--gain 2.0`
+и сравните с `tools\sounds.img` — байты **разойдутся**, хотя список файлов тот же.
+Детерминизм означает «те же входы И те же параметры», а не «те же файлы».
+Сравнивать образы вслепую через `fc /b` нельзя — сначала сверьте manifest'ы:
+в них написаны rate и gain, которыми собирался каждый образ.
 
----
+**Вопрос:** поменяйте порядок двух файлов местами, пересоберите и посмотрите
+`--check`. Что случилось с индексами и почему после этого старый вызов
+`audio_play(2)` заиграет не тот звук?
 
-## Задание 3. Громкость и клиппинг
+## Задание 3. Громкость и клиппинг (`--info` без сборки)
 
 ```bat
 python tools\pack_sounds.py tools\b_click.wav --info
@@ -110,6 +115,23 @@ python tools\wav2c.py tools\b_click.wav --rate 8000 --out Core\Src\tmp_click.c -
 
 ---
 
+## Задание 7. Вызов по имени через сгенерированный enum
+
+Откройте `Core/Inc/audio_ids.h` — он создан скриптом при последней сборке. В нём
+enum `SND_<ИМЯ> = порядковый номер` и таблица-комментарий (номер, имя, сэмплы,
+секунды). Найдите в `audio_player.c` обработчик BUTTON2 и замените вызов по
+индексу на вызов по имени:
+
+```c
+(void)audio_play(SND_D_MYVOICE);   /* вместо audio_play(ap_test_next_idx) */
+```
+
+Соберите проект. Теперь добавьте в команду сборки новый WAV **в середину** списка,
+пересоберите образ и заголовок, верните в обработчике перебор по индексу и посмотрите:
+`SND_D_MYVOICE` по-прежнему указывает на тот же звук, а «сырой» индекс 3 — уже нет.
+Это и есть причина вызывать по имени. Закоммитьте получившийся `audio_ids.h`.
+
+---
 ## Шпаргалка команд
 
 | Хочу | Команда |
@@ -117,6 +139,8 @@ python tools\wav2c.py tools\b_click.wav --rate 8000 --out Core\Src\tmp_click.c -
 | посмотреть образ | `python tools\pack_sounds.py tools\sounds.img --check` |
 | собрать образ | `python tools\pack_sounds.py tools\*.wav --out tools\sounds.img` |
 | параметры WAV без сборки | `python tools\pack_sounds.py файл.wav --info` |
+| паспорт сборки | `type tools\sounds.img.manifest.txt` |
+| enum звуков | генерируется сам в `Core\Inc\audio_ids.h`, путь меняется `--ids-out` |
 | усилить при сборке | `... --gain 3.0` |
 | собрать на 16 кГц | `... --rate 16000` (и не забыть SAI1 на 16K в CubeMX) |
 | WAV → C-массив (legacy) | `python tools\wav2c.py файл.wav --out путь.c --name имя` |
