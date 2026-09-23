@@ -127,7 +127,7 @@ void audio_thread_entry(ULONG thread_input)
     }
 
     /* 3. Ждём реального окончания DMA.
-     *    Звук 29536 сэмплов / 16 кГц = 1.846 с. Таймаут 4 с - с большим запасом. */
+     *    Звук 14768 сэмплов / 8 кГц = 1.846 с. Таймаут 4 с - с большим запасом. */
     sem_status = tx_semaphore_get(&audio_done_sem, 4u * TX_TIMER_TICKS_PER_SECOND);
     if (sem_status != TX_SUCCESS)
     {

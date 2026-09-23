@@ -30,7 +30,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "spiflash.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -118,6 +118,12 @@ int main(void)
    * ========================================================================== */
   HAL_GPIO_WritePin(SD_MODE_GPIO_Port, SD_MODE_Pin, GPIO_PIN_SET);
   HAL_Delay(5);
+
+  /* Проба внешней SPI flash (MX25K6435F, DD2). Результат смотреть в отладчике:
+       sf_jedec[3] - должно быть { 0xC2, .., 0x17 }  (Macronix, 64 Мбит)
+       sf_rdsr     - статус-регистр
+       sf_probe_rc - 0 (HAL_OK), если чип ответил; иначе смотри SPI1/CS/питание */
+  (void)sf_probe();
   /* USER CODE END 2 */
 
   MX_ThreadX_Init();
