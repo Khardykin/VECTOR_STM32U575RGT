@@ -79,8 +79,10 @@ void Error_Handler(void);
 #define STATE_LED_GPIO_Port GPIOB
 #define BUTTON1_Pin GPIO_PIN_1
 #define BUTTON1_GPIO_Port GPIOB
+#define BUTTON1_EXTI_IRQn EXTI1_IRQn
 #define BUTTON2_Pin GPIO_PIN_2
 #define BUTTON2_GPIO_Port GPIOB
+#define BUTTON2_EXTI_IRQn EXTI2_IRQn
 #define LCD_DC_Pin GPIO_PIN_10
 #define LCD_DC_GPIO_Port GPIOB
 #define LCD_RST_Pin GPIO_PIN_12
@@ -107,6 +109,7 @@ void Error_Handler(void);
 #define BLE_RESET_GPIO_Port GPIOC
 #define BUTTON3_Pin GPIO_PIN_3
 #define BUTTON3_GPIO_Port GPIOB
+#define BUTTON3_EXTI_IRQn EXTI3_IRQn
 #define GNSS_MODE_Pin GPIO_PIN_4
 #define GNSS_MODE_GPIO_Port GPIOB
 #define GNSS_RST_Pin GPIO_PIN_5

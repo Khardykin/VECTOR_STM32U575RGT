@@ -24,6 +24,8 @@
 /* USER CODE BEGIN Includes */
 #include "sai.h"
 #include "audio_player.h"
+#include "extstore.h"
+#include "uart_bridge.h"
 #include "main.h"
 /* USER CODE END Includes */
 
@@ -133,9 +135,13 @@ void lvgl_thread_entry(ULONG thread_input)
 VOID tx_application_define(VOID *first_unused_memory)
 {
   /* USER CODE BEGIN  tx_application_define_1*/
-  /* Плеер: читает sounds.img из внешней флеш, создаёт свой поток.
-     Должен вызываться ДО создания потоков приложения. */
+  /* Порядок важен:
+       1) ext_init  - мьютекс шины flash + сканирование журнала (до потоков!)
+       2) audio_init- читает sounds.img, создаёт поток плеера
+       3) uart_bridge_init - мост UART4<->USART2                       */
+  ext_init();
   audio_init();
+  uart_bridge_init();
 
   /* 0. Семафор "DMA завершила передачу". Начальное состояние 0.
         ВАЖНО: создать ДО потоков - иначе audio_thread дёрнет несуществующий

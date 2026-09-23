@@ -17,6 +17,8 @@
 #include "audio_player.h"
 #include "audio_image.h"
 #include "spiflash.h"
+#include "extstore.h"
+#include "audio_beep.h"
 #include "sai.h"
 #include "main.h"
 #include "tx_api.h"
@@ -35,6 +37,7 @@ static TX_SEMAPHORE ap_wake;
 #define CMD_PLAY    1u
 #define CMD_STOP    2u
 #define CMD_STATE   3u
+#define CMD_BEEP    4u
 #define MSG(cmd, arg)   ((((ULONG)(cmd)) << 16) | ((ULONG)(arg) & 0xFFFFu))
 
 /* ---------------------------------------------------------------- образ --- */
@@ -81,12 +84,34 @@ static void apply_volume(int16_t *p, uint32_t n)
   }
 }
 
+/* Аварийный писк: DMA прямо из const-массива во внутренней flash */
+static audio_err_t beep_now(void)
+{
+  if (HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t *)audio_beep_pcm,
+                           (uint16_t)audio_beep_samples) != HAL_OK)
+  {
+    audio_dbg_errors++;
+    audio_dbg_last_err = (uint32_t)AUDIO_ERR_IO;
+    return AUDIO_ERR_IO;
+  }
+  ap_playing_idx    = -2;      /* маркер: играет писк */
+  audio_dbg_cur_idx = -2;
+  audio_dbg_started++;
+  return AUDIO_OK;
+}
+
 static audio_err_t start_now(uint16_t idx)
 {
   const audio_img_entry_t *e;
   audio_err_t rc = AUDIO_OK;
 
-  if (!ap_img_ok)                    { rc = AUDIO_ERR_NO_IMAGE;  }
+  if (!ap_img_ok)
+  {
+    /* Внешняя flash мертва или образ битый: аварийный писк из внутренней
+       flash, чтобы устройство не молчало совсем. */
+    audio_dbg_last_err = (uint32_t)AUDIO_ERR_NO_IMAGE;
+    return beep_now();
+  }
   else if (idx >= ap_hdr.count)      { rc = AUDIO_ERR_BAD_INDEX; }
   else
   {
@@ -95,7 +120,7 @@ static audio_err_t start_now(uint16_t idx)
     {
       rc = AUDIO_ERR_TOO_LONG;
     }
-    else if (sf_read(AUDIO_IMG_BASE_ADDR + e->offset, (uint8_t *)ap_buf, e->length) != HAL_OK)
+    else if (ext_read(AUDIO_IMG_BASE_ADDR + e->offset, (uint8_t *)ap_buf, e->length) != 0)
     {
       rc = AUDIO_ERR_IO;
     }
@@ -126,7 +151,7 @@ static audio_err_t start_now(uint16_t idx)
 
 static void stop_now(void)
 {
-  if (ap_playing_idx >= 0)
+  if (ap_playing_idx != -1)
   {
     (void)HAL_SAI_Abort(&hsai_BlockA1);
     ap_playing_idx    = -1;
@@ -175,9 +200,15 @@ static void ap_thread_entry(ULONG arg)
           (void)start_now(snd);       /* смена режима прерывает текущий звук */
         }
       }
+      else if (cmd == CMD_BEEP)
+      {
+        stop_now();
+        queue_clear();
+        (void)beep_now();
+      }
       else if (cmd == CMD_PLAY)
       {
-        if (ap_playing_idx < 0)
+        if (ap_playing_idx == -1)
         {
           (void)start_now((uint16_t)a);   /* свободно - играем сразу        */
         }
@@ -200,7 +231,7 @@ static void ap_thread_entry(ULONG arg)
     }
 
     /* 2. Если освободились и в очереди что-то стоит - берём следующее */
-    if (ap_playing_idx < 0)
+    if (ap_playing_idx == -1)
     {
       ULONG next = 0;
       if (tx_queue_receive(&ap_queue, &next, TX_NO_WAIT) == TX_SUCCESS)
@@ -319,6 +350,15 @@ audio_err_t audio_play_name(const char *name)
   return AUDIO_ERR_BAD_INDEX;
 }
 
+void audio_beep(void)
+{
+  ULONG msg = MSG(CMD_BEEP, 0);
+  if (tx_queue_send(&ap_queue, &msg, TX_NO_WAIT) == TX_SUCCESS)
+  {
+    (void)tx_semaphore_put(&ap_wake);
+  }
+}
+
 void audio_stop(void)
 {
   ULONG msg = MSG(CMD_STOP, 0);
@@ -367,7 +407,7 @@ void HAL_SAI_TxCpltCallback(SAI_HandleTypeDef *hsai)
 {
   if (hsai->Instance == SAI1_Block_A)
   {
-    if (ap_playing_idx >= 0)
+    if (ap_playing_idx != -1)
     {
       audio_dbg_played++;
       ap_playing_idx    = -1;
@@ -383,7 +423,7 @@ void HAL_SAI_ErrorCallback(SAI_HandleTypeDef *hsai)
   {
     audio_dbg_errors++;
     audio_dbg_last_err = 0x1000u | hsai->ErrorCode;
-    if (ap_playing_idx >= 0)
+    if (ap_playing_idx != -1)
     {
       ap_playing_idx    = -1;
       audio_dbg_cur_idx = -1;

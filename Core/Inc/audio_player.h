@@ -51,6 +51,7 @@ void audio_init(void);
 audio_err_t audio_play(uint16_t idx);
 audio_err_t audio_play_name(const char *name);
 void        audio_stop(void);
+void        audio_beep(void);      /* аварийный писк из внутренней flash */
 void        audio_set_state(uint8_t st);
 uint8_t     audio_get_state(void);
 
