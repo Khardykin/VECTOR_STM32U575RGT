@@ -159,6 +159,7 @@ NVIC.TIM1_UP_IRQn=true\:15\:0\:false\:false\:true\:false\:false\:true\:true
 NVIC.TimeBase=TIM1_UP_IRQn
 NVIC.TimeBaseIP=TIM1
 NVIC.UART4_IRQn=true\:0\:0\:false\:false\:true\:false\:true\:true\:true
+NVIC.USART2_IRQn=true\:0\:0\:false\:false\:true\:false\:true\:true\:true
 NVIC.UsageFault_IRQn=true\:0\:0\:false\:false\:true\:false\:false\:false\:false
 PA10.Locked=true
 PA10.Mode=SAI_A_Master
