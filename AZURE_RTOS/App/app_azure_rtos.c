@@ -23,6 +23,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "sai.h"
+#include "main.h"
+#include "audio_samples.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -33,16 +35,19 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 /* Размеры стека для задач (в байтах) */
-#define AUDIO_STACK_SIZE   1024
+#define AUDIO_STACK_SIZE   2048   /* было 1024 - слишком впритык, см. отчёт   */
 #define LVGL_STACK_SIZE    4096
 
 /* Дескрипторы потоков ThreadX */
-TX_THREAD audio_thread;
-TX_THREAD lvgl_thread;
+static TX_THREAD audio_thread;
+static TX_THREAD lvgl_thread;
 
-/* Выделение памяти под стеки потоков */
-uint8_t audio_stack[AUDIO_STACK_SIZE];
-uint8_t lvgl_stack[LVGL_STACK_SIZE];
+/* Выделение памяти под стеки потоков (выравнивание обязательно для ThreadX) */
+static uint8_t audio_stack[AUDIO_STACK_SIZE] __attribute__((aligned(8)));
+static uint8_t lvgl_stack[LVGL_STACK_SIZE]   __attribute__((aligned(8)));
+
+/* Семафор: взводится из HAL_SAI_TxCpltCallback / HAL_SAI_ErrorCallback (ISR) */
+static TX_SEMAPHORE audio_done_sem;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -69,45 +74,114 @@ static TX_BYTE_POOL tx_app_byte_pool;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
-extern const uint16_t sound_gas_warning[];
-extern const uint32_t sound_gas_warning_size;
-/* Поток для воспроизведения звуков */
+/* ---------------------------------------------------------------------------
+ * Счётчики для диагностики (смотреть в отладчике / выводить в UART)
+ * -------------------------------------------------------------------------*/
+volatile uint32_t audio_start_errors = 0;  /* HAL_SAI_Transmit_DMA != HAL_OK   */
+volatile uint32_t audio_timeouts     = 0;  /* DMA не завершилась за 4 с        */
+volatile uint32_t audio_sai_errors   = 0;  /* HAL_SAI_ErrorCallback (OVRUDR..) */
+volatile uint32_t audio_sai_errcode  = 0;
+volatile uint32_t audio_played_ok    = 0;
+
+/* ---------------------------------------------------------------------------
+ * Поток воспроизведения звука.
+ *
+ * Схема: поток запускает one-shot DMA, затем БЛОКИРУЕТСЯ на семафоре, который
+ * взводит ISR по факту окончания передачи. Это надёжнее, чем спать
+ * "расчётное" время: при малейшем рассинхроне следующий вызов
+ * HAL_SAI_Transmit_DMA() вернул бы HAL_BUSY и звук молча пропал.
+ * -------------------------------------------------------------------------*/
 void audio_thread_entry(ULONG thread_input)
 {
+  HAL_StatusTypeDef sai_status;
+  UINT              sem_status;
 
-	uint32_t play_duration_ticks = (sound_gas_warning_size * 100) / 16000;
+  (void)thread_input;
 
-  while(1)
+  while (1)
   {
-	/* 1. Запускаем одиночную трансляцию массива сирены в динамик по DMA.
-		  Умножаем размер на 2, так как функция принимает размер в БАЙТАХ,
-		  а наш массив состоит из 16-битных элементов! */
-//	HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t*)sound_gas_warning, sound_gas_warning_size * 2);
+    /* 1. Сбрасываем возможный "протухший" сигнал (от таймаута прошлой итерации) */
+    (void)tx_semaphore_get(&audio_done_sem, TX_NO_WAIT);
 
-	/* 2. Отправляем текущий поток "спать" ровно на время звучания сирены.
-		  Пока поток спит, контроллер DMA сам качает звук в динамик,
-		  а процессор полностью свободен для других задач (например, будущей графики) */
-	tx_thread_sleep(play_duration_ticks);
+    /* 2. Запуск one-shot DMA.
+     *
+     *    !!! Size - это ЧИСЛО СЭМПЛОВ, а НЕ байт !!!
+     *    Внутри HAL_SAI_Transmit_DMA():
+     *        dmaSrcSize = 2U * Size;            // 16 бит -> байты
+     *        HAL_DMA_Start_IT(hdmatx, src, &DR, dmaSrcSize);  // CBR1.BNDT в байтах
+     *    Поэтому умножать на 2 НЕЛЬЗЯ: раньше передавалось size*2, DMA читала
+     *    вдвое больше, чем есть в массиве, и уходила за его конец.
+     *
+     *    !!! PCM начинается не с нулевого элемента !!!
+     *    sound_gas_warning[] - это целый WAV-файл: первые 154 слова (308 байт)
+     *    занимают RIFF/fmt /LIST/data-заголовки. Их нужно пропустить.
+     */
+    sai_status = HAL_SAI_Transmit_DMA(&hsai_BlockA1,
+                                      (uint8_t *)SOUND_GAS_WARNING_PCM,
+                                      (uint16_t)SOUND_GAS_WARNING_PCM_SAMPLES);
+    if (sai_status != HAL_OK)
+    {
+      audio_start_errors++;
+      tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);   /* 1 с, чтобы не молотить */
+      continue;
+    }
 
-	/* 3. Делаем паузу между повторениями звука.
-		  Например, подождем 5 секунд перед следующим включением сирены.
-		  5 секунд * 100 тиков/сек = 500 тиков. */
-	tx_thread_sleep(500);
+    /* 3. Ждём реального окончания DMA.
+     *    Звук 29536 сэмплов / 16 кГц = 1.846 с. Таймаут 4 с - с большим запасом. */
+    sem_status = tx_semaphore_get(&audio_done_sem, 4u * TX_TIMER_TICKS_PER_SECOND);
+    if (sem_status != TX_SUCCESS)
+    {
+      audio_timeouts++;
+      /* на всякий случай глушим зависший SAI, чтобы следующий запуск прошёл */
+      (void)HAL_SAI_Abort(&hsai_BlockA1);
+    }
+    else
+    {
+      audio_played_ok++;
+    }
+
+    /* 4. Пауза между повторами (5 с) */
+    tx_thread_sleep(5u * TX_TIMER_TICKS_PER_SECOND);
   }
 }
 
-/* Поток для дисплея и LVGL */
+/* ---------------------------------------------------------------------------
+ * Колбэки HAL SAI. Вызываются из контекста ISR (GPDMA1_Channel11_IRQHandler).
+ * Здесь НЕЛЬЗЯ делать ничего блокирующего - только tx_semaphore_put().
+ * -------------------------------------------------------------------------*/
+void HAL_SAI_TxCpltCallback(SAI_HandleTypeDef *hsai)
+{
+  if (hsai->Instance == SAI1_Block_A)
+  {
+    (void)tx_semaphore_put(&audio_done_sem);
+  }
+}
+
+void HAL_SAI_ErrorCallback(SAI_HandleTypeDef *hsai)
+{
+  audio_sai_errors++;
+  audio_sai_errcode = hsai->ErrorCode;   /* HAL_SAI_ERROR_OVR / UDR / AFSDET.. */
+  /* освобождаем поток, иначе он будет висеть на семафоре до таймаута */
+  (void)tx_semaphore_put(&audio_done_sem);
+}
+
+/* ---------------------------------------------------------------------------
+ * Поток для дисплея и LVGL
+ * -------------------------------------------------------------------------*/
 void lvgl_thread_entry(ULONG thread_input)
 {
+  (void)thread_input;
   /* Тут в будущем инициализируем LVGL и дисплей */
-  // lv_init();
+  /* lv_init(); */
 
-  while(1)
+  while (1)
   {
     /* Вызов периодического обработчика таймеров LVGL */
-    // lv_timer_handler();
+    /* lv_timer_handler(); */
 
-    tx_thread_sleep(1); // Спим 10 миллисекунд для плавной отрисовки интерфейса
+    /* Пока LVGL нет, поток только жрёт CPU: 100 пробуждений в секунду впустую.
+       До подключения LVGL лучше спать подольше. */
+    tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND / 10u);   /* 100 мс */
   }
 }
 /* USER CODE END PFP */
@@ -120,16 +194,35 @@ void lvgl_thread_entry(ULONG thread_input)
 VOID tx_application_define(VOID *first_unused_memory)
 {
   /* USER CODE BEGIN  tx_application_define_1*/
-  /* 1. Создаем поток для Аудио (Приоритет 10 — высокий) */
-  tx_thread_create(&audio_thread, "Audio Task", audio_thread_entry, 0,
-				   audio_stack, AUDIO_STACK_SIZE,
-				   10, 10, TX_NO_TIME_SLICE, TX_AUTO_START);
+  /* 0. Семафор "DMA завершила передачу". Начальное состояние 0.
+        ВАЖНО: создать ДО потоков - иначе audio_thread дёрнет несуществующий
+        объект. tx_semaphore_put() из ISR разрешён. */
+  if (tx_semaphore_create(&audio_done_sem, "audio done sem", 0) != TX_SUCCESS)
+  {
+    /* USER CODE BEGIN Semaphore_Error */
+    while (1) { }
+    /* USER CODE END Semaphore_Error */
+  }
 
-  /* 2. Создаем поток для Графики LVGL (Приоритет 15 — средний) */
-  tx_thread_create(&lvgl_thread, "LVGL Task", lvgl_thread_entry, 0,
-				   lvgl_stack, LVGL_STACK_SIZE,
-				   15, 15, TX_NO_TIME_SLICE, TX_AUTO_START);
+  /* 1. Создаем поток для Аудио (Приоритет 10 - выше графики) */
+  if (tx_thread_create(&audio_thread, "Audio Task", audio_thread_entry, 0,
+                       audio_stack, AUDIO_STACK_SIZE,
+                       10, 10, TX_NO_TIME_SLICE, TX_AUTO_START) != TX_SUCCESS)
+  {
+    /* USER CODE BEGIN AudioThread_Error */
+    while (1) { }
+    /* USER CODE END AudioThread_Error */
+  }
 
+  /* 2. Создаем поток для Графики LVGL (Приоритет 15 - средний) */
+  if (tx_thread_create(&lvgl_thread, "LVGL Task", lvgl_thread_entry, 0,
+                       lvgl_stack, LVGL_STACK_SIZE,
+                       15, 15, TX_NO_TIME_SLICE, TX_AUTO_START) != TX_SUCCESS)
+  {
+    /* USER CODE BEGIN LvglThread_Error */
+    while (1) { }
+    /* USER CODE END LvglThread_Error */
+  }
   /* USER CODE END  tx_application_define_1 */
 #if (USE_STATIC_ALLOCATION == 1)
   UINT status = TX_SUCCESS;

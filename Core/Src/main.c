@@ -106,7 +106,18 @@ int main(void)
   MX_USART2_UART_Init();
   MX_ICACHE_Init();
   /* USER CODE BEGIN 2 */
-
+  /* ==========================================================================
+   * Включение оконечного усилителя на I2S (PC9 = SD_MODE, MAX98357A-подобный).
+   *
+   * MX_GPIO_Init() пишет в SD_MODE уровень RESET, а у MAX98357A
+   * "Drive SD_MODE low to put the IC into shutdown" -> усилитель выключен и
+   * звука НЕ БУДЕТ ВООБЩЕ, даже если SAI/DMA работают идеально.
+   *
+   * После подачи 1 на SD_MODE нужно выдержать время выхода из shutdown
+   * (порядка единиц мс по datasheet), иначе первые сэмплы проглатываются.
+   * ========================================================================== */
+  HAL_GPIO_WritePin(SD_MODE_GPIO_Port, SD_MODE_Pin, GPIO_PIN_SET);
+  HAL_Delay(5);
   /* USER CODE END 2 */
 
   MX_ThreadX_Init();
@@ -142,11 +153,8 @@ void SystemClock_Config(void)
 
   /** Initializes the CPU, AHB and APB buses clocks
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE|RCC_OSCILLATORTYPE_MSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.MSIState = RCC_MSI_ON;
-  RCC_OscInitStruct.MSICalibrationValue = RCC_MSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_4;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLMBOOST = RCC_PLLMBOOST_DIV1;
