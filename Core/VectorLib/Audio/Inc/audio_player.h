@@ -55,6 +55,19 @@ void        audio_beep(void);      /* аварийный писк из внут�
 void        audio_set_state(uint8_t st);
 uint8_t     audio_get_state(void);
 
+/* --- ЦИКЛ: звук состояния повторяется с паузой ---------------------------
+ * audio_set_state(st) включает звук состояния st и, если цикл включён,
+ * повторяет его с паузой audio_set_loop_pause() БЕСКОНЕЧНО, пока не будет:
+ *   - audio_stop()            (полный стоп: звук + очередь + цикл)
+ *   - audio_set_state(2)      (состояние "тишина" = пустая ячейка таблицы)
+ *   - audio_set_loop(0)       (цикл снять, текущий повтор доиграет)
+ * Одноразовый audio_play() встраивается в цикл: звучит вместо повтора,
+ * после чего цикл продолжается.                                             */
+void        audio_set_loop(uint8_t on);
+uint8_t     audio_get_loop(void);
+void        audio_set_loop_pause(uint16_t ms);
+uint32_t    audio_get_loop_pause(void);
+
 /* 0..100. Применяется при загрузке звука в RAM (до DMA), стоимость < 1 мс. */
 void        audio_set_volume(uint8_t percent);
 uint8_t     audio_get_volume(void);
@@ -89,6 +102,7 @@ extern volatile uint32_t audio_dbg_timeouts;    /* из них по heartbeat   
 extern volatile uint32_t audio_dbg_keys;        /* принято команд            */
 extern volatile uint32_t audio_dbg_last_cmd;    /* 1 play 2 stop 3 state 4 beep */
 extern volatile uint32_t audio_dbg_dropped;     /* play вытеснил play        */
+extern volatile uint32_t audio_dbg_loops;       /* сколько повторов цикла сыграно */
 extern volatile uint32_t audio_dbg_stuck;       /* >0: колбэк завершения DMA не
                                                    приходил, звук добит
                                                    watchdog'ом - искать в

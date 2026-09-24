@@ -65,7 +65,7 @@ main()
 
 | Поток | Приоритет | Стек | Что делает |
 |---|---|---|---|
-| `Audio Player` (`ap_thread_entry`) | 10 | 4096 | **единственный владелец** SAI/DMA и `ap_buf[]`: ждёт `ap_wake`, разбирает команды, читает звук из flash, запускает DMA |
+| `Audio Player` (`ap_thread_entry`) | 10 | 4096 | **единственный владелец** SAI/DMA и `ap_buf[]`: ждёт `ap_wake` (heartbeat или будильник паузы цикла), разбирает команды, читает звук из flash, запускает DMA, повторяет звук состояния по кругу |
 | `UART Bridge` | 12 | 2048 | перекладывает байты между кольцами и UART (тест) |
 | `LVGL Task` | 15 | 4096 | заглушка: спит по 100 мс |
 | `Audio Task` (старый) | 10 | 2048 | усыплён навсегда, оставлен только чтобы не править `tx_thread_create` |
@@ -99,16 +99,22 @@ ext_init -> audio_init -> load_image -> ap_img_ok=1
 ```
 EXTI -> audio_demo_key_handler -> audio_set_state(st)
      -> tx_queue_send(ap_queue) + tx_semaphore_put(ap_wake)
-     -> ap_thread: CMD_STATE -> stop_now -> start_now(idx)
+     -> ap_thread: CMD_STATE -> stop_now -> ap_loop_update -> start_now(idx)
         -> ext_read(адрес из ap_tab[idx]) -> ap_buf[]   [большие блоки: DMA, поток спит]
         -> apply_volume -> HAL_SAI_Transmit_DMA -> звук
 ```
 
-**Звук доиграл → следующий**
+**Звук доиграл → следующий (или повтор цикла)**
 ```
 GPDMA1_Channel11 -> HAL_SAI_TxCpltCallback -> ap_playing_idx=-1, put(ap_wake)
-     -> ap_thread: очередь пуста, ap_pending_idx >= 0? -> start_now(следующий)
+     -> ap_thread: приоритет "что играть дальше":
+          1) ap_pending_idx >= 0        -> одноразовый audio_play()
+          2) ap_loop_idx >= 0           -> пауза ap_loop_pause, затем повтор
+                                           (budильник = таймаут tx_semaphore_get)
+          3) иначе                      -> тишина
 ```
+Цикл снимается `audio_stop()` (CMD_STOP гасит и `ap_loop_idx`) или состоянием
+«тишина» (`ap_state_map[] = AUDIO_STATE_SILENT`). Подробно — `AUDIO_HOWTO.md`.
 
 ---
 
@@ -136,6 +142,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxCpltCallback -> ap_playing_idx=-1, put(ap_wake)
 | `audio_dbg_keys` / `_last_cmd` | доходят ли команды до плеера (1 play, 2 stop, 3 state, 4 beep) |
 | `audio_dbg_started` / `_played` | стартовала ли DMA / доиграла ли (0 при started>0 — нет колбэка GPDMA1_Channel11) |
 | `audio_dbg_wakes` / `_timeouts` | поток жив: `timeouts` растёт = heartbeat, событий просто нет |
+| `audio_dbg_loops` | сколько повторов цикла сыграно (растёт раз в «звук + пауза») |
 | `audio_dbg_errors` / `_last_err` | код `audio_err_t` или `0x1000|SAI.ErrorCode` |
 | `sf_dbg_dma_chunks` / `_fallback` / `_tmo` | работает ли SPI-DMA и сколько раз откатились на опрос |
 | `factory_dbg_sector` | прогресс заводской записи (если вдруг она legitimately идёт) |

@@ -42,11 +42,15 @@
 #define AP_STACK_SIZE   4096u
 #define AP_PRIORITY     10u
 
-/* Сколько тиков ThreadX ждать события, если VECTOR_AUDIO_WAKE_TIMEOUT_MS > 0.
-   TX_TIMER_TICKS_PER_SECOND = 100 (10 мс/тик), округление вверх.            */
+/* Миллисекунды -> тики ThreadX (TX_TIMER_TICKS_PER_SECOND = 100, тик 10 мс),
+   округление вверх: лучше подождать на тик дольше, чем не дождаться.        */
+#define AP_MS2TICKS(ms) (((uint32_t)(ms) * TX_TIMER_TICKS_PER_SECOND + 999u) / 1000u)
+
+/* Сколько ждать события, если heartbeat включён (VECTOR_AUDIO_WAKE_TIMEOUT_MS).
+   0 = честное TX_WAIT_FOREVER. Пауза цикла считает свой таймаут отдельно и
+   просто уменьшает это значение (см. цикл потока).                          */
 #if (VECTOR_AUDIO_WAKE_TIMEOUT_MS > 0u)
-#define AP_WAKE_TICKS   (((VECTOR_AUDIO_WAKE_TIMEOUT_MS * TX_TIMER_TICKS_PER_SECOND) + 999u) / 1000u)
-#define AP_WAKE_TMO     ((ULONG)AP_WAKE_TICKS)
+#define AP_WAKE_TMO     ((ULONG)AP_MS2TICKS(VECTOR_AUDIO_WAKE_TIMEOUT_MS))
 #else
 #define AP_WAKE_TMO     TX_WAIT_FOREVER
 #endif
@@ -62,6 +66,7 @@ static TX_SEMAPHORE ap_wake;
 #define CMD_STOP    2u
 #define CMD_STATE   3u
 #define CMD_BEEP    4u
+#define CMD_LOOP    5u   /* пересчитать цикл (audio_set_loop) */
 #define MSG(cmd, arg)   ((((ULONG)(cmd)) << 16) | ((ULONG)(arg) & 0xFFFFu))
 
 /* ---------------------------------------------------------------- образ --- */
@@ -115,6 +120,22 @@ static volatile int32_t ap_vol_q15 = 32767;   /* 100% */
 static volatile int32_t ap_playing_idx = -1;
 static volatile int32_t ap_pending_idx = -1;
 
+/* ------------------------------------------------------- ЦИКЛ состояния ---
+ * Режим "один звук по кругу": звук ТЕКУЩЕГО СОСТОЯНИЯ повторяется с паузой,
+ * пока состояние не сменят (audio_set_state) или не остановят (audio_stop /
+ * состояние "тишина"). Одноразовые audio_play() встраиваются в этот цикл:
+ * звучат вместо повтора, после чего цикл продолжается.
+ *
+ *   ap_loop_on      0/1 - режим включён (audio_set_loop, дефолт из конфига)
+ *   ap_loop_idx     звук, который повторяется; -1 = цикла нет
+ *   ap_loop_pause   пауза между повторами, мс (audio_set_loop_pause)
+ *   ap_next_at      момент (HAL_GetTick) следующего повтора; 0 = ещё не задан,
+ *                   то есть звук только что закончился и пауза не началась    */
+static volatile uint8_t  ap_loop_on    = (uint8_t)VECTOR_AUDIO_LOOP_STATE;
+static volatile int32_t  ap_loop_idx   = -1;
+static volatile uint32_t ap_loop_pause = (uint32_t)VECTOR_AUDIO_LOOP_PAUSE_MS;
+static volatile uint32_t ap_next_at    = 0;
+
 /* Дедлайн текущего звучания (HAL_GetTick() + длительность + запас). Нужен
    только watchdog'у ap_check_stuck(): если колбэк завершения DMA так и не
    пришёл, поток не встаёт навсегда, а гасит "залипший" звук сам.            */
@@ -151,12 +172,36 @@ volatile uint32_t audio_dbg_timeouts  = 0;  /* проснулись по тай�
 volatile uint32_t audio_dbg_keys      = 0;  /* команд принято из очереди     */
 volatile uint32_t audio_dbg_last_cmd  = 0;  /* последняя команда (CMD_*)     */
 volatile uint32_t audio_dbg_dropped   = 0;  /* play вытеснил предыдущий play */
+volatile uint32_t audio_dbg_loops     = 0;  /* сколько повторов цикла сыграно */
 volatile uint32_t audio_dbg_stuck     = 0;  /* звук добит watchdog'ом: колбэк
                                                завершения DMA не пришёл      */
 
 
 
 /* ============================================================ внутреннее == */
+/* Пересчитать ap_loop_idx по текущему состоянию. КОНТЕКСТ: поток плеера.
+   Цикл взводится только если: режим включён, образ прочитан и состоянию
+   назначен звук (AUDIO_STATE_SILENT = "пустая ячейка" таблицы -> тишина).
+   Вызывается из CMD_STATE, CMD_LOOP и после factory-записи образа.          */
+static void ap_loop_update(void)
+{
+  uint16_t snd = (ap_state < (sizeof ap_state_map / sizeof ap_state_map[0]))
+                 ? ap_state_map[ap_state] : AUDIO_STATE_SILENT;
+
+  /* ap_img_ok обязателен: без образа start_now() каждый раз уходил бы в
+     аварийный писк, и цикл превратился бы в бесконечную пищалку. После
+     успешной factory-записи ap_loop_update() вызывается ещё раз.            */
+  if ((ap_loop_on != 0u) && (ap_img_ok != 0u) && (snd != AUDIO_STATE_SILENT))
+  {
+    ap_loop_idx = (int32_t)snd;
+  }
+  else
+  {
+    ap_loop_idx = -1;
+    ap_next_at  = 0;
+  }
+}
+
 /* Watchdog звучания. КОНТЕКСТ: поток плеера, вызывается только на
    heartbeat-проходе (событий не было). Если звук "играет" дольше расчётного
    времени + запас, значит колбэк HAL_SAI_TxCpltCallback не пришёл (не включён
@@ -334,6 +379,7 @@ static void ap_thread_entry(ULONG arg)
     if (audio_factory_program() == 0)
     {
       audio_reload_image();
+      ap_loop_update();      /* образ появился - цикл можно взводить */
       audio_dbg_boot_stage = ap_img_ok ? AP_BOOT_FACTORY_OK : AP_BOOT_FACTORY_ERR;
       LOG_I(VLOG_M_AUDIO, "factory ok, sounds=%u", (uint32_t)ap_hdr.count);
     }
@@ -359,10 +405,16 @@ static void ap_thread_entry(ULONG arg)
      кнопки слышно, жив ли звук вообще. В боевом режиме ставится 0.          */
 #if (VECTOR_AUDIO_BOOT_PLAY == 1)
   {
+    /* войти в состояние 0, как по команде: стартует звук и, если
+       VECTOR_AUDIO_LOOP_STATE=1, он пойдёт по кругу с паузой */
     uint16_t snd = ap_state_map[0];
+    ap_state = 0;
+    ap_next_at = 0;
+    ap_loop_update();
+    LOG_I(VLOG_M_AUDIO, "boot: state 0, sound #%u, loop=%u pause=%u ms",
+          (uint32_t)snd, (uint32_t)ap_loop_on, ap_loop_pause);
     if (snd != AUDIO_STATE_SILENT)
     {
-      LOG_I(VLOG_M_AUDIO, "boot play: state 0 sound #%u", (uint32_t)snd);
       (void)start_now(snd);
     }
   }
@@ -378,12 +430,27 @@ static void ap_thread_entry(ULONG arg)
   {
     ULONG msg = 0;
 
-    /* Ждём любого события: команда ИЛИ завершение DMA.
-       AP_WAKE_TMO != TX_WAIT_FOREVER (VECTOR_AUDIO_WAKE_TIMEOUT_MS > 0) -
-       тогда это heartbeat: раз в секунду поток просыпается сам, и потерянное
-       событие превращается в задержку, а не в вечный "завис".               */
+    /* Сколько спать. База - heartbeat (или TX_WAIT_FOREVER), но если идёт
+       пауза цикла, будильник ставим ровно на её конец. Любая команда
+       (tx_semaphore_put) прерывает ожидание СРАЗУ, поэтому стоп во время
+       паузы отрабатывает мгновенно, а не через всю паузу.                    */
+    ULONG tmo = AP_WAKE_TMO;
+    if ((ap_loop_idx != -1) && (ap_next_at != 0u) && (ap_playing_idx == -1))
+    {
+      int32_t left = (int32_t)(ap_next_at - HAL_GetTick());
+      if (left <= 0)
+      {
+        tmo = 1u;                          /* пора повторять */
+      }
+      else
+      {
+        ULONG t = AP_MS2TICKS((uint32_t)left) + 1u;
+        if (t < tmo) { tmo = t; }
+      }
+    }
+
     audio_dbg_wakes++;
-    if (tx_semaphore_get(&ap_wake, AP_WAKE_TMO) != TX_SUCCESS)
+    if (tx_semaphore_get(&ap_wake, tmo) != TX_SUCCESS)
     {
       audio_dbg_timeouts++;      /* событий не было - холостой проход */
       ap_check_stuck();          /* страховка от потерянного колбэка DMA */
@@ -419,8 +486,13 @@ static void ap_thread_entry(ULONG arg)
 
       if (cmd == CMD_STOP)
       {
+        /* ПОЛНЫЙ стоп: гасим звук, чистим очередь, отложенный звук И цикл.
+           Чтобы снова начать цикл - audio_set_state(нужное состояние).     */
         stop_now();
         queue_clear();
+        ap_loop_idx = -1;
+        ap_next_at  = 0;
+        LOG_I(VLOG_M_AUDIO, "stop: цикл остановлен (state=%u)", (uint32_t)ap_state);
       }
       else if (cmd == CMD_STATE)
       {
@@ -430,9 +502,15 @@ static void ap_thread_entry(ULONG arg)
         ap_state = (uint8_t)a;
         snd = (a < (sizeof ap_state_map / sizeof ap_state_map[0]))
               ? ap_state_map[a] : AUDIO_STATE_SILENT;
+        ap_next_at = 0;
+        ap_loop_update();             /* взвести/снять цикл под новое состояние */
         if (snd != AUDIO_STATE_SILENT)
         {
           (void)start_now(snd);       /* смена режима прерывает текущий звук */
+        }
+        else
+        {
+          LOG_I(VLOG_M_AUDIO, "state %u = тишина", (uint32_t)a);
         }
       }
       else if (cmd == CMD_BEEP)
@@ -460,20 +538,55 @@ static void ap_thread_entry(ULONG arg)
           ap_pending_idx = (int32_t)a;
         }
       }
+      else if (cmd == CMD_LOOP)
+      {
+        /* audio_set_loop() изменил ap_loop_on: пересчитываем ap_loop_idx.
+           Текущий звук не прерываем - цикл подхватится после него.          */
+        ap_loop_update();
+        LOG_I(VLOG_M_AUDIO, "loop=%u (idx=%d pause=%u ms)", (uint32_t)ap_loop_on,
+              (int32_t)ap_loop_idx, ap_loop_pause);
+      }
       else
       {
         /* неизвестная команда - игнорируем */
       }
     }
 
-    /* 2. Если освободились и есть отложенный звук - запускаем его */
+    /* 2. Освободились - решаем, что играть дальше.
+          приоритет: одноразовый audio_play() -> повтор цикла -> тишина.      */
     if (ap_playing_idx == -1)
     {
       if (ap_pending_idx != -1)
       {
         int32_t nxt = ap_pending_idx;
         ap_pending_idx = -1;
-        (void)start_now((uint16_t)nxt);
+        (void)start_now((uint16_t)nxt);      /* цикл продолжится после него */
+      }
+      else if (ap_loop_idx != -1)
+      {
+        if (ap_next_at == 0u)
+        {
+          /* звук только что закончился - стартуем отсчёт паузы. На следующем
+             проходе (по будильнику) начнём повтор. */
+          ap_next_at = HAL_GetTick() + ap_loop_pause;
+          if (ap_next_at == 0u) { ap_next_at = 1u; }   /* 0 = "не задано" */
+        }
+        else if ((int32_t)(HAL_GetTick() - ap_next_at) >= 0)
+        {
+          ap_next_at = 0;
+          if (start_now((uint16_t)ap_loop_idx) == AUDIO_OK)
+          {
+            audio_dbg_loops++;
+          }
+        }
+        else
+        {
+          /* пауза ещё идёт: вернёмся в ожидание, таймаут посчитаем сверху */
+        }
+      }
+      else
+      {
+        /* ничего не назначено - тишина */
       }
     }
   }
@@ -661,6 +774,26 @@ void audio_set_state(uint8_t st)
 
 /* Текущий режим (0..2). Контекст: любой, чтение одного байта. */
 uint8_t audio_get_state(void) { return ap_state; }
+
+/* Включить/выключить цикл звука текущего состояния. КОНТЕКСТ: любой.
+   При включении уже звучащий/следующий звук пойдёт по кругу; при выключении
+   текущий повтор доиграет и наступит тишина.                                */
+void audio_set_loop(uint8_t on)
+{
+  ULONG msg;
+  ap_loop_on = (on != 0u) ? 1u : 0u;
+  msg = MSG(CMD_LOOP, on);           /* пересчитать ap_loop_idx в потоке */
+  if (tx_queue_send(&ap_queue, &msg, TX_NO_WAIT) == TX_SUCCESS)
+  {
+    (void)tx_semaphore_put(&ap_wake);
+  }
+}
+
+uint8_t audio_get_loop(void) { return ap_loop_on; }
+
+/* Пауза между повторами цикла, мс. Применяется со следующего повтора. */
+void audio_set_loop_pause(uint16_t ms) { ap_loop_pause = (uint32_t)ms; }
+uint32_t audio_get_loop_pause(void)    { return ap_loop_pause; }
 
 /* Громкость 0..100 -> Q15 коэффициент. Контекст: любой.
    Применяется НЕ сразу, а при следующем чтении звука в ap_buf (см.
