@@ -51,7 +51,7 @@
 /* Лог и мост на одном UART4: предупреждение на этапе компиляции, чтобы потом
    не разбирать "почему в терминале каша". См. vector_config.h.              */
 #if (VECTOR_LOG_UART == 4) && VECTOR_UART_BRIDGE_TEST
-#warning "vector_log: лог и мост UART на одном UART4 - выключите одно из двух (VECTOR_LOG_UART 0 или VECTOR_UART_BRIDGE_TEST 0)"
+#warning "vector_log: log and bridge share UART4 - disable one of them (VECTOR_LOG_UART 0 or VECTOR_UART_BRIDGE_TEST 0)"
 #endif
 
 static TX_MUTEX        vlog_mtx;

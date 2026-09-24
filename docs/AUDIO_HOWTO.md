@@ -195,7 +195,7 @@ void gas_thread_entry(ULONG arg)
 Проверьте по порядку:
 
 1. `VECTOR_AUDIO_BOOT_PLAY` — если `3`, при старте вызывается `beep_now()`, а
-   не `start_now()`. Поставьте `1`.
+   не `start_now()`. Поставьте `1` (по умолчанию так и есть).
 2. `audio_dbg_boot_stage` — должно быть `5` (рабочий цикл). `2`/`4` = во
    внешней flash нет валидного образа, тогда вместо звука будет писк.
 3. `demo_dbg_edges` / `demo_dbg_press` — доходят ли кнопки (см. таблицу в
@@ -213,7 +213,10 @@ void gas_thread_entry(ULONG arg)
 | `audio_dbg_started` не растёт | `start_now()` вернул ошибку: `audio_dbg_last_err` (`1` нет образа, `2` индекс, `3` длинный звук, `4` DMA/flash) |
 | `started` растёт, `played` нет | не пришёл колбэк завершения SAI-DMA: `GPDMA1_Channel11_IRQn`, а `audio_dbg_stuck > 0` значит звук добил watchdog |
 | всё растёт, тишина | `SD_MODE` (PC9) = 0 → усилитель в shutdown; или `audio_get_volume()` = 0 |
-| лог `flash probe FAIL` / `jedec` не `c2 ?? 17` | внешняя memory не отвечает: SPI1, CS PA4, питание |
+| лог `flash probe FAIL` / `jedec` не `c2 ?? 17` | внешняя flash не отвечает: SPI1, CS PA4, питание |
+| `factory: done ... verified` и сразу `image ok=0` | было: `load_image()` перезатирал заголовок таблицей, CRC не сходился никогда — исправлено; если повторится, в логе будет конкретная причина (`image header bad:` / `image CRC mismatch:`) |
+| `beep DMA fail: hal=2` | SAI занята предыдущей передачей (`HAL_BUSY`): не был вызван `HAL_SAI_Abort` |
+| `play #...` в логе есть, `audio_dbg_played` растёт, а звука нет | тракт аналоговый: `SD_MODE` (PC9) = 1? усилитель запитан? I2S-пины PA8/PA9/PA10 (AF13)? PLL3 запущен? |
 | `sf_dbg_dma_fallback` растёт | чтение ушло в опрос (данные целы, просто медленнее): смотрите `sf_dbg_dma_tmo`, включён ли `SPI1_IRQn` |
 
 ### 7.3 Цикл не повторяется

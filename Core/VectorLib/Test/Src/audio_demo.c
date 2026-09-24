@@ -30,7 +30,8 @@
 #include "audio_player.h"
 #include "main.h"
 
-#define DEMO_DEBOUNCE_MS   200u
+#define DEMO_DEBOUNCE_MS   VECTOR_KEY_DEBOUNCE_MS
+#define DEMO_KEYS          3u
 
 /* Активный уровень пина берём из vector_config.h. Он ОБЯЗАН соответствовать
    подтяжке, которую задаёт CubeMX в gpio.c:
@@ -41,8 +42,19 @@
    нажатию (демо ловит оба фронта и выбирает из них "активный").            */
 #define DEMO_PRESSED_LEVEL (VECTOR_KEY_PRESSED_LEVEL & 1u)
 
-static uint32_t demo_last_ms = 0;
+/* Отдельный отсчёт антидребезга НА КАЖДУЮ кнопку: общий интервал на все три
+   приводил к тому, что второе нажатие другой кнопкой в течение 200 мс съедалось. */
+static uint32_t demo_last_ms[DEMO_KEYS] = { 0, 0, 0 };
 static uint8_t  demo_next_idx = 0;
+
+/* Номер кнопки (0..2) по пину; 0xFF - не наша. */
+static uint8_t demo_key_index(uint16_t pin)
+{
+  if (pin == BUTTON1_Pin) { return 0u; }
+  if (pin == BUTTON2_Pin) { return 1u; }
+  if (pin == BUTTON3_Pin) { return 2u; }
+  return 0xFFu;
+}
 
 /* ---------------------------------------------------------------- отладка --
  * Счётчики для быстрой диагностики "кнопки не работают":
@@ -67,25 +79,28 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
 {
   uint32_t now = HAL_GetTick();
   GPIO_PinState lv;
-  uint8_t level, pressed;
+  uint8_t level, pressed, key;
 
   demo_dbg_edges++;
   demo_dbg_last_pin = GPIO_Pin;
 
-  /* защита от дребезга по интервалу */
-  if ((now - demo_last_ms) < DEMO_DEBOUNCE_MS)
+  key = demo_key_index(GPIO_Pin);
+  if (key == 0xFFu)
+  {
+    return;            /* не наша кнопка */
+  }
+
+  /* защита от дребезга: интервал свой для каждой кнопки.
+     HAL_GetTick() в ISR читать можно - это обычная переменная, которую
+     инкрементит прерывание тайм-базы; разрешение 1 мс, для антидребезга
+     этого достаточно.                                                      */
+  if ((now - demo_last_ms[key]) < DEMO_DEBOUNCE_MS)
   {
     demo_dbg_debounce++;
     return;
   }
 
-  switch (GPIO_Pin)
-  {
-    case BUTTON1_Pin: lv = HAL_GPIO_ReadPin(BUTTON1_GPIO_Port, BUTTON1_Pin); break;
-    case BUTTON2_Pin: lv = HAL_GPIO_ReadPin(BUTTON2_GPIO_Port, BUTTON2_Pin); break;
-    case BUTTON3_Pin: lv = HAL_GPIO_ReadPin(BUTTON3_GPIO_Port, BUTTON3_Pin); break;
-    default: return;   /* не наша кнопка */
-  }
+  lv = HAL_GPIO_ReadPin(GPIOB, GPIO_Pin);   /* все три кнопки на порту B */
 
   level   = (lv == GPIO_PIN_SET) ? 1u : 0u;
   pressed = (level == DEMO_PRESSED_LEVEL);
@@ -94,7 +109,7 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
     demo_dbg_level0++;
     return;            /* этот фронт - отбой, событие не считаем */
   }
-  demo_last_ms  = now;
+  demo_last_ms[key] = now;
   demo_dbg_press++;
 
   if (GPIO_Pin == BUTTON1_Pin)

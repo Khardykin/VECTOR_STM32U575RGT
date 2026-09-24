@@ -207,7 +207,7 @@ int cfg_load(void *data, uint16_t max_len, uint16_t *out_len)  /* лог в ко
     }
   }
   if (rc == 0) { LOG_I(VLOG_M_FLASH, "cfg loaded: seq=%u len=%u", best_seq, (uint32_t)best_len); }
-  else         { LOG_W(VLOG_M_FLASH, "cfg not found - будут значения по умолчанию"); }
+  else         { LOG_W(VLOG_M_FLASH, "cfg not found - defaults will be used"); }
   unlock();
   return rc;
 }
@@ -240,7 +240,7 @@ int cfg_save(const void *data, uint16_t len)
   {
     ext_dbg_cfg_seq = best_seq + 1u;
     LOG_I(VLOG_M_FLASH, "cfg saved: seq=%u len=%u%s", ext_dbg_cfg_seq, (uint32_t)len,
-          ((end + CFG_HDR + len) > SF_SECTOR_SIZE) ? " (страница стёрта)" : "");
+          ((end + CFG_HDR + len) > SF_SECTOR_SIZE) ? " (page erased)" : "");
   }
   else
   {

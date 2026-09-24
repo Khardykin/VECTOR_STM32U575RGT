@@ -34,6 +34,7 @@
 #include "spiflash.h"
 #include "vector_config.h"
 #include "vector_log.h"
+#include "vector_time.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -54,7 +55,31 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+/* ------------------------------------------------------------------------
+ * ПРИБОРЫ для проверки системного тика. Тайм-база HAL сейчас - TIM6
+ * (NVIC.TimeBase=TIM6_IRQn в .ioc, stm32u5xx_hal_timebase_tim.c), 1 кГц:
+ * PCLK1 160 МГц / PSC 159 -> 1 МГц, ARR 999 -> прерывание раз в 1 мс.
+ *
+ *   sys_dbg_ticks            сколько раз сработало прерывание тайм-базы
+ *   sys_dbg_tick_min_us      минимальный период между ними (норма 1000)
+ *   sys_dbg_tick_max_us      максимальный период (норма ~1000; если сильно
+ *                            больше - прерывание тика задерживают: приоритет
+ *                            TIM6_IRQn = 15, самый низкий, а ядро ThreadX
+ *                            закрывает прерывания через PRIMASK внутри
+ *                            каждого своего вызова)
+ *   sys_dbg_hal_tick         HAL_GetTick() на момент последнего замера -
+ *                            сверяем счётчик прерываний с uwTick: они должны
+ *                            совпадать, иначе тики теряются
+ * Период между замерами меряется по DWT->CYCCNT (vector_time.h, 6.25 нс),
+ * а НЕ по HAL_GetTick - иначе прибор измерял бы сам себя.
+ * Раз в VECTOR_LOG_TICK_REPORT_S секунд всё это печатается в лог из потока
+ * (см. lvgl_thread_entry): из прерывания лог не печатается принципиально.
+ * ------------------------------------------------------------------------ */
+volatile uint32_t sys_dbg_ticks       = 0;
+volatile uint32_t sys_dbg_tick_min_us = 0xFFFFFFFFu;
+volatile uint32_t sys_dbg_tick_max_us = 0;
+volatile uint32_t sys_dbg_hal_tick    = 0;
+static   uint32_t sys_tick_last_us    = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -133,6 +158,28 @@ int main(void)
      просто работает без мьютекса (исполнитель здесь один). */
   LOG_I(VLOG_M_SYS, "probe rc=%d jedec=%x %x %x", (int32_t)sf_probe_rc,
         (uint32_t)sf_jedec[0], (uint32_t)sf_jedec[1], (uint32_t)sf_jedec[2]);
+
+  /* Микросекунды по счётчику циклов ядра (DWT->CYCCNT, 160 МГц): чем мерить
+     длительности и дрожание тика вместо HAL_GetTick (у того разрешение 1 мс
+     и он сам зависит от прерывания тайм-базы).                              */
+  vtime_init();
+
+  /* Чем реально тикает система. Регистры TIM6 читаем напрямую, чтобы не
+     зависеть от имени хендла в сгенерированном файле (оно уже менялось
+     TIM1 -> TIM7 -> TIM6). Ожидание при PCLK1 = 160 МГц: PSC = 159,
+     ARR = 999, период = 1000 us.
+     Другие источники времени в проекте: SysTick = тик ThreadX, 100 Гц (10 мс,
+     настраивает tx_initialize_low_level.S, SYSTEM_CLOCK = 160000000), и
+     RTC WakeUp = CK_SPRE 1 Гц, то есть его счётчик в СЕКУНДАХ.
+     Подробно - docs/CODE_MAP.md, раздел 7.                                  */
+  {
+    uint32_t pclk1 = HAL_RCC_GetPCLK1Freq();
+    uint64_t us    = ((uint64_t)(TIM6->PSC + 1u) * (uint64_t)(TIM6->ARR + 1u)
+                      * 1000000ull) / pclk1;
+    LOG_I(VLOG_M_SYS, "tick: PCLK1=%u Hz TIM6 PSC=%u ARR=%u -> %u us (core %u Hz)",
+          pclk1, (uint32_t)TIM6->PSC, (uint32_t)TIM6->ARR, (uint32_t)us,
+          vtime_clock_hz());
+  }
   /* USER CODE END 2 */
 
   MX_ThreadX_Init();
@@ -226,7 +273,26 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
+  if (htim->Instance == TIM6)
+  {
+    /* КОНТЕКСТ: прерывание тайм-базы, 1 кГц. Здесь можно только читать
+       регистр, инкрементить счётчики и дёргать пин - НИКАКОГО лога и ничего
+       блокирующего (лог из ISR отбрасывается намеренно, см. vector_log.c).
+       Мигалку отсюда убрали: если нужен ровный меандр, его даёт аппаратный
+       выход таймера (PWM/OC), а не переключение пина в прерывании - у ISR
+       приоритет 15 (ниже всех) и его сдвигает любое другое прерывание.      */
+    uint32_t now = vtime_us();
 
+    if (sys_dbg_ticks != 0u)
+    {
+      uint32_t d = (uint32_t)(now - sys_tick_last_us);
+      if (d < sys_dbg_tick_min_us) { sys_dbg_tick_min_us = d; }
+      if (d > sys_dbg_tick_max_us) { sys_dbg_tick_max_us = d; }
+    }
+    sys_tick_last_us = now;
+    sys_dbg_ticks++;
+    sys_dbg_hal_tick = HAL_GetTick();
+  }
   /* USER CODE END Callback 1 */
 }
 

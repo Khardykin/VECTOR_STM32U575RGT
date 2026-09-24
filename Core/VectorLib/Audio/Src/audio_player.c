@@ -252,13 +252,17 @@ static void apply_volume(int16_t *p, uint32_t n)
    Возврат: AUDIO_OK или AUDIO_ERR_IO (DMA не запустилась).                  */
 static audio_err_t beep_now(void)
 {
-  if (HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t *)audio_beep_pcm,
-                           (uint16_t)audio_beep_samples) != HAL_OK)
+  HAL_StatusTypeDef hs = HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t *)audio_beep_pcm,
+                                              (uint16_t)audio_beep_samples);
+  if (hs != HAL_OK)
   {
     audio_dbg_errors++;
     audio_dbg_last_err = (uint32_t)AUDIO_ERR_IO;
+    LOG_E(VLOG_M_AUDIO, "beep DMA fail: hal=%d (1=err 2=busy) sai_err=%x SD_MODE?",
+          (int32_t)hs, (uint32_t)hsai_BlockA1.ErrorCode);
     return AUDIO_ERR_IO;
   }
+  LOG_I(VLOG_M_AUDIO, "beep started, %u samples", audio_beep_samples);
   ap_playing_idx    = -2;      /* маркер: играет писк */
   audio_dbg_cur_idx = -2;
   audio_dbg_started++;
@@ -283,6 +287,7 @@ static audio_err_t start_now(uint16_t idx)
     /* Внешняя flash мертва или образ битый: аварийный писк из внутренней
        flash, чтобы устройство не молчало совсем. */
     audio_dbg_last_err = (uint32_t)AUDIO_ERR_NO_IMAGE;
+    LOG_W(VLOG_M_AUDIO, "no valid image -> beep instead of sound #%u", (uint32_t)idx);
     return beep_now();
   }
   else if (idx >= ap_hdr.count)      { rc = AUDIO_ERR_BAD_INDEX; }
@@ -300,22 +305,27 @@ static audio_err_t start_now(uint16_t idx)
     else
     {
       apply_volume(ap_buf, e->length / 2u);
-      if (HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t *)ap_buf,
-                               (uint16_t)(e->length / 2u)) != HAL_OK)
       {
-        rc = AUDIO_ERR_IO;
-      }
-      else
-      {
-        LOG_I(VLOG_M_AUDIO, "play #%u '%s' %u samples @%u Hz",
+        HAL_StatusTypeDef hs = HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t *)ap_buf,
+                                                    (uint16_t)(e->length / 2u));
+        if (hs != HAL_OK)
+        {
+          rc = AUDIO_ERR_IO;
+          LOG_E(VLOG_M_AUDIO, "SAI DMA fail: hal=%d (1=err 2=busy) sai_err=%x",
+                (int32_t)hs, (uint32_t)hsai_BlockA1.ErrorCode);
+        }
+        else
+        {
+          LOG_I(VLOG_M_AUDIO, "play #%u '%s' %u samples @%u Hz",
               (uint32_t)idx, (const char *)e->name, (e->length / 2u), (uint32_t)e->rate);
-        uint32_t rate = (e->rate != 0u) ? e->rate : 8000u;
-        ap_playing_idx     = (int32_t)idx;
-        audio_dbg_cur_idx  = (int32_t)idx;
-        audio_dbg_started++;
-        /* сколько звук должен играть + запас: порог для ap_check_stuck() */
-        ap_play_deadline   = HAL_GetTick() +
-                             (((e->length / 2u) * 1000u) / rate) + AP_STUCK_MARGIN_MS;
+          uint32_t rate = (e->rate != 0u) ? e->rate : 8000u;
+          ap_playing_idx     = (int32_t)idx;
+          audio_dbg_cur_idx  = (int32_t)idx;
+          audio_dbg_started++;
+          /* сколько звук должен играть + запас: порог для ap_check_stuck() */
+          ap_play_deadline   = HAL_GetTick() +
+                               (((e->length / 2u) * 1000u) / rate) + AP_STUCK_MARGIN_MS;
+        }
       }
     }
   }
@@ -324,7 +334,7 @@ static audio_err_t start_now(uint16_t idx)
   {
     audio_dbg_errors++;
     audio_dbg_last_err = (uint32_t)rc;
-    LOG_E(VLOG_M_AUDIO, "start #%u failed, err=%d (2=no image 3=bad idx 4=too long 5=io)",
+    LOG_E(VLOG_M_AUDIO, "start #%u failed, err=%d (1=no image 2=bad idx 3=too long 4=io)",
           (uint32_t)idx, (int32_t)rc);
   }
   return rc;
@@ -337,9 +347,11 @@ static void stop_now(void)
 {
   if (ap_playing_idx != -1)
   {
+    int32_t was = ap_playing_idx;
     (void)HAL_SAI_Abort(&hsai_BlockA1);
     ap_playing_idx    = -1;
     audio_dbg_cur_idx = -1;
+    LOG_I(VLOG_M_AUDIO, "stop (aborted idx=%d)", was);
   }
   ap_pending_idx   = -1;      /* отложенный звук тоже отменяем */
   ap_play_deadline = 0;       /* watchdog больше не нужен */
@@ -375,7 +387,7 @@ static void ap_thread_entry(ULONG arg)
   {
     ap_factory_tried = 1;
     audio_dbg_boot_stage = AP_BOOT_IMG_BAD;
-    LOG_W(VLOG_M_AUDIO, "образа нет -> factory-запись (это секунды)");
+    LOG_W(VLOG_M_AUDIO, "no image -> factory program (takes seconds)");
     if (audio_factory_program() == 0)
     {
       audio_reload_image();
@@ -389,7 +401,7 @@ static void ap_thread_entry(ULONG arg)
          писк из внутренней flash (см. start_now). Причина - в sf_probe_rc,
          factory_dbg_sector и audio_dbg_last_err. */
       audio_dbg_boot_stage = AP_BOOT_FACTORY_ERR;
-      LOG_E(VLOG_M_AUDIO, "factory FAILED -> только аварийный писк");
+      LOG_E(VLOG_M_AUDIO, "factory FAILED -> beep only");
     }
   }
 #endif
@@ -422,7 +434,7 @@ static void ap_thread_entry(ULONG arg)
   LOG_I(VLOG_M_AUDIO, "boot play: sound #0");
   (void)start_now(0u);
 #elif (VECTOR_AUDIO_BOOT_PLAY == 3)
-  LOG_I(VLOG_M_AUDIO, "boot beep (проверка SAI/усилителя, без внешней flash)");
+  LOG_I(VLOG_M_AUDIO, "boot beep (SAI/amp check, no ext flash)");
   (void)beep_now();
 #endif
 
@@ -461,11 +473,11 @@ static void ap_thread_entry(ULONG arg)
     if (audio_dbg_played != ap_seen_played)
     {
       ap_seen_played = audio_dbg_played;
-      LOG_D(VLOG_M_AUDIO, "sound finished (всего доиграно %u)", ap_seen_played);
+      LOG_D(VLOG_M_AUDIO, "sound finished (total %u)", ap_seen_played);
     }
     if (audio_dbg_stuck != 0u)
     {
-      LOG_W(VLOG_M_AUDIO, "watchdog: звук добит %u раз(а) - нет колбэка SAI DMA",
+      LOG_W(VLOG_M_AUDIO, "watchdog: stuck sound killed %u time(s), no SAI DMA callback",
             audio_dbg_stuck);
       audio_dbg_stuck = 0;         /* не спамим: сообщение один раз на случай */
     }
@@ -492,7 +504,7 @@ static void ap_thread_entry(ULONG arg)
         queue_clear();
         ap_loop_idx = -1;
         ap_next_at  = 0;
-        LOG_I(VLOG_M_AUDIO, "stop: цикл остановлен (state=%u)", (uint32_t)ap_state);
+        LOG_I(VLOG_M_AUDIO, "stop: loop off (state=%u)", (uint32_t)ap_state);
       }
       else if (cmd == CMD_STATE)
       {
@@ -510,7 +522,7 @@ static void ap_thread_entry(ULONG arg)
         }
         else
         {
-          LOG_I(VLOG_M_AUDIO, "state %u = тишина", (uint32_t)a);
+          LOG_I(VLOG_M_AUDIO, "state %u = silent", (uint32_t)a);
         }
       }
       else if (cmd == CMD_BEEP)
@@ -607,13 +619,20 @@ static void load_image(void)
   uint32_t tbl_bytes;
 
   ap_img_ok = 0;
-  if (sf_read(AUDIO_IMG_BASE_ADDR, raw, sizeof ap_hdr) == HAL_OK)
+
+  /* КРИТИЧНО: заголовок читаем СРАЗУ в ap_hdr, а не в raw. Раньше h указывал
+     внутрь raw, и ВТОРОЕ чтение (таблица) перезатирало его: к моменту
+     сравнения h->table_crc32 содержал уже байты таблицы, CRC не сходился
+     НИКОГДА, ap_img_ok оставался 0 - и прошивка на каждом старте стирала и
+     писала 195 КБ заново. В логе это выглядело ровно так:
+       "factory: done, 195544 b written and verified"
+       "image ok=0 sounds=0"                                                */
+  if (sf_read(AUDIO_IMG_BASE_ADDR, (uint8_t *)&ap_hdr, sizeof ap_hdr) == HAL_OK)
   {
-    const audio_img_header_t *h = (const audio_img_header_t *)raw;
-    if ((h->magic == AUDIO_IMG_MAGIC) && (h->version == AUDIO_IMG_VERSION) &&
-        (h->count > 0u) && (h->count <= AP_MAX_SOUNDS))
+    if ((ap_hdr.magic == AUDIO_IMG_MAGIC) && (ap_hdr.version == AUDIO_IMG_VERSION) &&
+        (ap_hdr.count > 0u) && (ap_hdr.count <= AP_MAX_SOUNDS))
     {
-      tbl_bytes = (uint32_t)h->count * AUDIO_IMG_ENTRY_SIZE;
+      tbl_bytes = (uint32_t)ap_hdr.count * AUDIO_IMG_ENTRY_SIZE;
       if (sf_read(AUDIO_IMG_BASE_ADDR + AUDIO_IMG_HEADER_SIZE, raw, tbl_bytes) == HAL_OK)
       {
         uint32_t crc = 0;
@@ -633,10 +652,9 @@ static void load_image(void)
         }
         crc ^= 0xFFFFFFFFu;
 
-        if (crc == h->table_crc32)
+        if (crc == ap_hdr.table_crc32)
         {
-          ap_hdr = *h;
-          for (i = 0; i < h->count; i++)
+          for (i = 0; i < ap_hdr.count; i++)
           {
             const uint8_t *p = raw + i * AUDIO_IMG_ENTRY_SIZE;
             audio_img_entry_t *e = &ap_tab[i];
@@ -658,8 +676,28 @@ static void load_image(void)
           }
           ap_img_ok = 1;   /* таблица разобрана ЦЕЛИКОМ - образ годен */
         }
+        else
+        {
+          LOG_E(VLOG_M_AUDIO, "image CRC mismatch: got %x want %x (table %u b)",
+                crc, ap_hdr.table_crc32, tbl_bytes);
+        }
+      }
+      else
+      {
+        LOG_E(VLOG_M_AUDIO, "image: table read fail (%u b)", tbl_bytes);
       }
     }
+    else
+    {
+      LOG_E(VLOG_M_AUDIO,
+            "image header bad: magic=%x want %x, ver=%u want %u, count=%u max %u",
+            ap_hdr.magic, (uint32_t)AUDIO_IMG_MAGIC, (uint32_t)ap_hdr.version,
+            (uint32_t)AUDIO_IMG_VERSION, (uint32_t)ap_hdr.count, (uint32_t)AP_MAX_SOUNDS);
+    }
+  }
+  else
+  {
+    LOG_E(VLOG_M_AUDIO, "image: header read fail (sf_probe_rc=%d)", (int32_t)sf_probe_rc);
   }
 
   LOG_I(VLOG_M_AUDIO, "image ok=%u sounds=%u", (uint32_t)ap_img_ok,

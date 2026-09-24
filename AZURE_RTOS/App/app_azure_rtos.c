@@ -88,6 +88,53 @@ volatile uint32_t audio_sai_errcode  = 0;
 volatile uint32_t audio_played_ok    = 0;
 
 /* ---------------------------------------------------------------------------
+ * Отчёт о системном тике (см. VECTOR_LOG_TICK_REPORT_S в vector_config.h).
+ * Счётчики ведёт прерывание тайм-базы TIM6 в main.c (USER CODE Callback 1),
+ * а печатаем мы отсюда - ИЗ ПОТОКА, потому что vlog из ISR вызовы
+ * отбрасывает (блокирующая передача в прерывании недопустима).
+ *
+ * Что должно быть в норме за 10 секунд:
+ *   irq=+10000 hal=+10000  (прерываний столько же, сколько тиков HAL)
+ *   min=999..1001 max=1000..1100 us
+ * Если hal растёт медленнее irq - тики теряются (прерывание тайм-базы
+ * заблокировано дольше 1 мс). Если max_us большой - тик задерживают, но не
+ * теряют: приоритет TIM6_IRQn = 15 (ниже всех), а ThreadX закрывает
+ * прерывания через PRIMASK внутри каждого своего вызова.
+ * -------------------------------------------------------------------------*/
+#if VECTOR_LOG_TICK_REPORT_S
+extern volatile uint32_t sys_dbg_ticks;
+extern volatile uint32_t sys_dbg_tick_min_us;
+extern volatile uint32_t sys_dbg_tick_max_us;
+extern volatile uint32_t sys_dbg_hal_tick;
+
+static void tick_report(void)
+{
+  static uint32_t last_ms  = 0;
+  static uint32_t prev_irq = 0;
+  static uint32_t prev_hal = 0;
+  uint32_t now = HAL_GetTick();
+
+  if ((uint32_t)(now - last_ms) < (VECTOR_LOG_TICK_REPORT_S * 1000u))
+  {
+    return;
+  }
+  last_ms = now;
+
+  {
+    uint32_t irq = sys_dbg_ticks;
+    uint32_t hal = sys_dbg_hal_tick;
+    LOG_I(VLOG_M_SYS, "tick %u s: irq=+%u hal=+%u min=%u max=%u us",
+          (uint32_t)VECTOR_LOG_TICK_REPORT_S, irq - prev_irq, hal - prev_hal,
+          sys_dbg_tick_min_us, sys_dbg_tick_max_us);
+    prev_irq = irq;
+    prev_hal = hal;
+  }
+  sys_dbg_tick_min_us = 0xFFFFFFFFu;   /* дальше меряем следующий интервал */
+  sys_dbg_tick_max_us = 0;
+}
+#endif /* VECTOR_LOG_TICK_REPORT_S */
+
+/* ---------------------------------------------------------------------------
  * Поток воспроизведения звука.
  *
  * Схема: поток запускает one-shot DMA, затем БЛОКИРУЕТСЯ на семафоре, который
@@ -121,6 +168,10 @@ void lvgl_thread_entry(ULONG thread_input)
   {
     /* Вызов периодического обработчика таймеров LVGL */
     /* lv_timer_handler(); */
+
+#if VECTOR_LOG_TICK_REPORT_S
+    tick_report();      /* раз в N секунд - состояние системного тика */
+#endif
 
     /* Пока LVGL нет, поток только жрёт CPU: 100 пробуждений в секунду впустую.
        До подключения LVGL лучше спать подольше. */

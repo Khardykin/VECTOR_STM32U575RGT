@@ -42,7 +42,7 @@ int audio_factory_program(void)
     return -1;
   }
 
-  LOG_I(VLOG_M_FLASH, "factory: programming %u b (%u sectors) - это секунды",
+  LOG_I(VLOG_M_FLASH, "factory: programming %u b (%u sectors), takes seconds",
         vector_factory_img_size, (vector_factory_img_size + SF_SECTOR_SIZE - 1u) / SF_SECTOR_SIZE);
 
   /* 1. Стирание: NOR стирается секторами по 4 КБ, только свою область SOUNDS */

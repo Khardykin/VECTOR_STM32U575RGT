@@ -267,7 +267,7 @@ HAL_StatusTypeDef sf_probe(void)
   }
   else
   {
-    LOG_E(VLOG_M_FLASH, "flash probe FAIL rc=%d (SPI1/CS PA4/питание)", (int32_t)st);
+    LOG_E(VLOG_M_FLASH, "flash probe FAIL rc=%d (check SPI1/CS PA4/power)", (int32_t)st);
   }
   return st;
 }
@@ -382,7 +382,7 @@ HAL_StatusTypeDef sf_read(uint32_t addr, uint8_t *dst, uint32_t len)
   }
   else
   {
-    LOG_E(VLOG_M_FLASH, "read %u b @%x FAIL st=%d (%u б прочитано)",
+    LOG_E(VLOG_M_FLASH, "read %u b @%x FAIL st=%d (%u b done)",
           len, addr, (int32_t)st, off);
   }
   return st;
@@ -417,11 +417,11 @@ HAL_StatusTypeDef sf_sector_erase(uint32_t addr)
     st = wait_busy(SF_ERASE_TMO_MS);
     if (st == HAL_OK)
     {
-      LOG_I(VLOG_M_FLASH, "erase sector %x ok, %u ms", addr, HAL_GetTick() - t0);
+      LOG_I(VLOG_M_FLASH, "erase @%x ok, %u ms", addr, HAL_GetTick() - t0);
     }
     else
     {
-      LOG_E(VLOG_M_FLASH, "erase sector %x TIMEOUT", addr);
+      LOG_E(VLOG_M_FLASH, "erase @%x TIMEOUT", addr);
     }
   }
   return st;
@@ -487,7 +487,7 @@ HAL_StatusTypeDef sf_program(uint32_t addr, const uint8_t *src, uint32_t len)
   }
   else
   {
-    LOG_E(VLOG_M_FLASH, "write %u b @%x FAIL st=%d (записано %u)",
+    LOG_E(VLOG_M_FLASH, "write %u b @%x FAIL st=%d (%u b done)",
           len, addr0, (int32_t)st, done);
   }
   return st;
