@@ -66,8 +66,8 @@ void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(BLE_RESET_GPIO_Port, BLE_RESET_Pin, GPIO_PIN_SET);
 
-  /*Configure GPIO pin : PC13 */
-  GPIO_InitStruct.Pin = GPIO_PIN_13;
+  /*Configure GPIO pins : PC13 PC11 */
+  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_11;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
@@ -115,11 +115,11 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(ALRT_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : CHARGE_STATE_Pin ACCEL_INT_Pin */
-  GPIO_InitStruct.Pin = CHARGE_STATE_Pin|ACCEL_INT_Pin;
+  /*Configure GPIO pin : CHARGE_STATE_Pin */
+  GPIO_InitStruct.Pin = CHARGE_STATE_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+  HAL_GPIO_Init(CHARGE_STATE_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PD2 */
   GPIO_InitStruct.Pin = GPIO_PIN_2;

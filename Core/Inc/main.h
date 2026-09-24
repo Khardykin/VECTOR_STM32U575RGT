@@ -103,8 +103,6 @@ void Error_Handler(void);
 #define ALARM_LED_2_GPIO_Port GPIOA
 #define VIBRO_Pin GPIO_PIN_15
 #define VIBRO_GPIO_Port GPIOA
-#define ACCEL_INT_Pin GPIO_PIN_11
-#define ACCEL_INT_GPIO_Port GPIOC
 #define BLE_RESET_Pin GPIO_PIN_12
 #define BLE_RESET_GPIO_Port GPIOC
 #define BUTTON3_Pin GPIO_PIN_3
