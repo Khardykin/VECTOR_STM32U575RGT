@@ -62,7 +62,7 @@ extern DMA_HandleTypeDef handle_GPDMA1_Channel9;
 extern SPI_HandleTypeDef hspi1;
 extern UART_HandleTypeDef huart4;
 extern UART_HandleTypeDef huart2;
-extern TIM_HandleTypeDef htim1;
+extern TIM_HandleTypeDef htim7;
 
 /* USER CODE BEGIN EV */
 
@@ -209,17 +209,17 @@ void EXTI3_IRQHandler(void)
 }
 
 /**
-  * @brief This function handles TIM1 Update interrupt.
+  * @brief This function handles TIM7 global interrupt.
   */
-void TIM1_UP_IRQHandler(void)
+void TIM7_IRQHandler(void)
 {
-  /* USER CODE BEGIN TIM1_UP_IRQn 0 */
+  /* USER CODE BEGIN TIM7_IRQn 0 */
 
-  /* USER CODE END TIM1_UP_IRQn 0 */
-  HAL_TIM_IRQHandler(&htim1);
-  /* USER CODE BEGIN TIM1_UP_IRQn 1 */
+  /* USER CODE END TIM7_IRQn 0 */
+  HAL_TIM_IRQHandler(&htim7);
+  /* USER CODE BEGIN TIM7_IRQn 1 */
 
-  /* USER CODE END TIM1_UP_IRQn 1 */
+  /* USER CODE END TIM7_IRQn 1 */
 }
 
 /**
