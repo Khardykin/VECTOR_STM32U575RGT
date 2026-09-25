@@ -1,8 +1,8 @@
-# Карта кода: кто что делает и в каком контексте
+# Система: карта кода, контексты, время, CubeMX
 
-Короткий ответ на вопрос «где что делается». Подробно про звуки — в `AUDIO_MAP.md`,
-про запись образа — в `FLASH_PROGRAMMING.md`, про разбор последнего «зависона» — в
-`docs/FIX_REPORT.md`.
+Короткий ответ на вопрос «где что делается» и «что настраивается в CubeMX».
+Про звук (управление, образ, сборка, диагностика) — `AUDIO.md`, про мост UART —
+`UART_BRIDGE.md`, история правок — `archive/`.
 
 ---
 
@@ -24,7 +24,10 @@ Audio/Inc, Audio/Src
   audio_factory_image.c    СГЕНЕРИРОВАН tools/bin2c.py (195 КБ const) — не править
   audio_player.[ch]        ПЛЕЕР: поток, очередь команд, состояния, громкость, старт SAI-DMA
   audio_beep.[ch]          аварийный писк (const PCM во внутренней flash)
-Common/Src/vector_log.c    консольный лог на USART1 (выключается одним макросом)
+Common/Src/vector_log.c    консольный лог: ITM/SWO и/или UART (выключается макросом)
+Common/Src/vector_sys.c    приборы времени: счётчики тайм-базы, отчёт, DBGMCU
+Common/Src/vector_board.c  всё, что делается в main() до RTOS (усилитель, проба, selftest)
+Inc/vector_tick.h          ЕДИНСТВЕННЫЙ источник времени - тик RTOS
 Comm/  uart_bridge.[ch]    ТЕСТ: прозрачный мост UART4 <-> USART2
 Test/  audio_demo.[ch]     ТЕСТ: кнопки PB1/PB2/PB3 как пульт плеера
 ```
@@ -42,7 +45,7 @@ Test/  audio_demo.[ch]     ТЕСТ: кнопки PB1/PB2/PB3 как пульт 
 main()
  ├─ MX_GPIO_Init()          пины + NVIC EXTI1..3
  ├─ MX_GPDMA1_Init()        такт GPDMA1 + NVIC каналов 9/10/11
- ├─ MX_SAI1_Init()          SAI1_Block_A: I2S, 8 кГц, моно, 16 бит, master TX
+ ├─ MX_SAI1_Init()          SAI1_Block_A: I2S, 16 кГц, моно, 16 бит, master TX
  ├─ MX_SPI1_Init()          SPI1 master 20 МГц + привязка GPDMA ch9/ch10 (USER CODE: 8 бит, /8)
  ├─ MX_ICACHE_Init()        ICache (DCache на U5 нет — когерентность DMA не нужна)
  ├─ SD_MODE = 1, 5 мс       включить оконечный усилитель (иначе тишина при любом раскладе)
@@ -114,7 +117,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxCpltCallback -> ap_playing_idx=-1, put(ap_wake)
           3) иначе                      -> тишина
 ```
 Цикл снимается `audio_stop()` (CMD_STOP гасит и `ap_loop_idx`) или состоянием
-«тишина» (`ap_state_map[] = AUDIO_STATE_SILENT`). Подробно — `AUDIO_HOWTO.md`.
+«тишина» (`ap_state_map[] = AUDIO_STATE_SILENT`). Подробно — `AUDIO.md`.
 
 ---
 
@@ -146,7 +149,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxCpltCallback -> ap_playing_idx=-1, put(ap_wake)
 | `audio_dbg_errors` / `_last_err` | код `audio_err_t` или `0x1000|SAI.ErrorCode` |
 | `sf_dbg_dma_chunks` / `_fallback` / `_tmo` | работает ли SPI-DMA и сколько раз откатились на опрос |
 | `factory_dbg_sector` | прогресс заводской записи (если она действительно идёт) |
-| `ub_rx4_bytes` / `ub_tx2_bytes` | жив ли мост UART (подробно — `docs/UART_BRIDGE.md`) |
+| `ub_rx4_bytes` / `ub_tx2_bytes` | жив ли мост UART (подробно — `UART_BRIDGE.md`) |
 | `ub_dbg_err4` / `_rearm4` | ошибки приёма UART4: 8 = ORE, 4 = FE (скорость!), 2 = NE |
 | `ub_dbg_echo` | сколько байт собственного эха выброшено (UART4 = полудуплекс) |
 | `sf_dbg_dma_chunks` / `_fallback` | идёт ли чтение flash по DMA и были ли откаты на опрос |
@@ -379,7 +382,7 @@ if (VTICK_IN_THREAD()) { ... }       /* можно ли спать/брать м
 |---|---|
 | `wait_busy()` в `spiflash.c` | 20000 опросов RDSR (~1 с); в потоке дополнительно спит по 2 мс и ограничен 1000 мс по тику RTOS |
 | `audio_selftest()` | 40 000 000 проходов ожидания состояния SAI (~1 с) |
-| задержка на пробуждение усилителя в `main.c` | цикл ~5 мс (исчезнет, когда PC9 = High сделает куб — `docs/CUBEMX_TODO.md`) |
+| задержка на пробуждение усилителя в `main.c` | цикл ~5 мс (исчезнет, когда PC9 = High сделает куб — раздел 9 этого документа) |
 
 Два места, где `HAL_GetTick()` остался **намеренно**, и оба только измеряют,
 ничего не решая:
@@ -406,10 +409,185 @@ TX_NO_WAIT)` вообще не блокируется. Блокирующий `t
 
 | Файл | О чём |
 |---|---|
-| `docs/CODE_MAP.md` | этот: слои кода, контексты, цепочки, тики, лог |
-| `docs/AUDIO_HOWTO.md` | как запустить звук, состояния, значения по умолчанию |
-| `docs/FIX_REPORT.md` | разбор «зависания» в `tx_semaphore_get`, SPI-DMA, что проверено |
-| `docs/UART_BRIDGE.md` | мост UART4↔USART2, полудуплекс, почему 0x99 приходит как 0xFD |
-| `docs/AUDIO_MAP.md` | где лежат звуки и как они попадают в устройство |
-| `docs/FLASH_PROGRAMMING.md` | запись образа во внешнюю flash |
-| `docs/SCRIPT_PRACTICE.md` | работа со скриптами tools/ |
+| `README.md` | индекс, быстрый старт, все переключатели одним списком |
+| `AUDIO.md` | как запустить/остановить звук, 16 кГц, набор звуков, сборка образа, запись во flash, диагностика |
+| `SYSTEM.md` | этот: слои кода, контексты, цепочки, IRQ, три источника времени, лог, что настраивать в CubeMX |
+| `UART_BRIDGE.md` | мост UART4 ↔ USART2: полудуплекс, `0x99` → `0xFD`, счётчики |
+| `archive/FIX_REPORT.md` | история: разбор «зависания» в `tx_semaphore_get`, SPI-DMA, что проверено и НЕ является причиной |
+| `archive/AUDIO_MAP.md` | исторический справочник по фазам разработки |
+
+---
+
+## 9. Что настраивается в CubeMX (и что после этого удалить из кода)
+
+Правило проекта: **конфигурацию периферии делает CubeMX**, в сгенерированных
+файлах остаются только вызовы наших модулей внутри `USER CODE`. Ниже — что
+сейчас дописано руками, где это настраивается в кубе и что удалить после
+перегенерации.
+
+## 1. SPI1: 8 бит, 20 МГц, быстрые пины — `spi.c`, `USER CODE SPI1_Init 2`
+
+Сейчас куб генерирует SPI1 с 4-битными фреймами и делителем /2 (80 МГц) —
+внешняя flash так не разговаривает, поэтому блок переинициализирует SPI1 и
+пины руками.
+
+**В CubeMX** (Connectivity → SPI1 → Mode: Full-Duplex Master → Parameter
+Settings):
+
+| Параметр | Значение |
+|---|---|
+| Frame Format | Motorola |
+| Data Size | **8 Bits** |
+| First Bit | MSB First |
+| Clock Polarity (CPOL) | Low |
+| Clock Phase (CPHA) | 1 Edge |
+| NSS Signal | Software Management |
+| Baud Rate Prescaler | **8** → 160 МГц / 8 = **20 МГц** |
+| Master SS Idleness | 00 cycle |
+| Master Inter-Data Idleness | 00 cycle |
+
+**Пины** (System Core → GPIO или клик по PA5/PA6/PA7):
+
+| Параметр | Значение |
+|---|---|
+| GPIO mode | Alternate Function Push Pull |
+| GPIO Pull-up/Pull-down | No pull-up and no pull-down |
+| **Maximum output speed** | **High** (сейчас Low — на 20 МГц фронты пологие, биты плывут) |
+| User Label | SCK / MISO / MOSI |
+
+**CS (PA4)**: System Core → GPIO → PA4 → GPIO_Output → *GPIO output level =
+**High*** (чтобы до первого обращения чип не был выбран).
+
+После этого из `spi.c` можно удалить весь блок `USER CODE BEGIN SPI1_Init 2`.
+
+---
+
+## 2. PC9 (SD_MODE) = High при старте — `main.c`, `USER CODE 2`
+
+Усилитель сидит в shutdown, пока SD_MODE низкий: звука не будет вообще, даже
+при полностью рабочем SAI/DMA. Сейчас пин поднимается руками + грубая задержка
+циклом на ~5 мс.
+
+**В CubeMX**: System Core → GPIO → PC9 → GPIO_Output →
+**GPIO output level = High**, Maximum output speed = Low.
+
+После этого из `main.c` удаляются `HAL_GPIO_WritePin(SD_MODE...)` и блок
+задержки: `MX_GPIO_Init()` вызывается в самом начале `main()`, к моменту
+первого звука пройдёт не один миллисекунд.
+
+---
+
+## 3. Приоритет тайм-базы TIM6: 15 → 5
+
+TIM6 (тайм-база HAL) имеет **самый низкий** приоритет в проекте, поэтому его
+прерывание теряется на фоне EXTI/SPI/GPDMA/UART (приоритеты 0–1) и остановок
+ядра отладчиком. В логе от 11:19 за 10 реальных секунд пришло 148 прерываний
+вместо 10000.
+
+**В CubeMX**: вкладка **NVIC** → `TIM6 global interrupt` → Preemption Priority
+**15 → 5** (Sub Priority 0). Для ThreadX это безопасно: порт Cortex-M33
+маскирует критические секции через PRIMASK, а не по порогу приоритета, поэтому
+вызовы `tx_*` из ISR допустимы при любом приоритете.
+
+Основной код на HAL-тик больше не опирается (всё время — от тика RTOS,
+`vector_tick.h`), но таймауты внутри HAL-драйверов (`HAL_SPI_Transmit(...,
+250)`) считаются по `HAL_GetTick()`, так что ровный тик всё равно полезен.
+
+---
+
+## 4. UART4: однопроводный полудуплекс → обычный асинхронный
+
+Сейчас в `.ioc`: `PC10.Mode = Half_duplex(single_wire_mode)`, приёмника нет
+(PC11 был занят `ACCEL_INT`, теперь он свободен — `GPIO_MODE_ANALOG`).
+Отсюда три проблемы: приёмник слышит собственную передачу (эхо), линия
+открытый сток без подтяжки, обычный 2-проводный терминал не подключить.
+
+**В CubeMX**: Connectivity → **UART4** → Mode: **Asynchronous**;
+пины PC10 = UART4_TX, PC11 = UART4_RX (если куб предложит другие — поменяйте
+в Pinout). В GPIO для обоих: Alternate Function Push Pull, speed Low, **No
+pull-up/pull-down** (или Pull-up, если линия длинная).
+
+Результат: `HAL_UART_Init` вместо `HAL_HalfDuplex_Init`, push-pull выходы,
+эха нет. Код моста подстроится сам: `ub_transmit()` проверяет бит `HDSEL` в
+рантайме и глушит свой приём только в полудуплексе.
+
+После этого лог и мост смогут жить на UART4 одновременно без оговорок.
+
+---
+
+## 5. PB3: BUTTON3 или SWO-консоль — что-то одно
+
+PB3 = **JTDO/TRACESWO**. Пока на нём кнопка, вывод ITM/SWO физически
+невозможен, то есть `VECTOR_LOG_ITM 1` ничего не печатает в консоль CubeIDE.
+
+* Хотите лог **в консоли CubeIDE** без проводов: уберите BUTTON3 с PB3 (или
+  вообще снимите с него EXTI), оставьте PB3 как `SYS_JTDO-SWV`, и в
+  Run Configurations → Debugger включите **Serial Wire Viewer (SWV)** с
+  Core Clock = 160 MHz.
+* Хотите оставить кнопку: используйте `VECTOR_LOG_UART 4` (терминал) и
+  не включайте SWV.
+
+---
+
+## 6. EXTI8 (CHARGE_STATE, PC8) настроен, но прерывание не включено
+
+В `gpio.c` PC8 сконфигурирован как `GPIO_MODE_IT_RISING_FALLING` + `NOPULL`,
+но в NVIC `EXTI8_IRQn` не включён — события от зарядного устройства никуда не
+приходят.
+
+**В CubeMX**: вкладка NVIC → `EXTI line[8] interrupt` → **Enabled**,
+Preemption Priority 5–8. И заодно решите подтяжку: `NOPULL` на входе, к
+которому ничего не подключено, даёт плавающий уровень и ложные срабатывания —
+поставьте Pull-up/Pull-down по схеме.
+
+---
+
+## 7. RTC WakeUp: счётчик в секундах
+
+В `.ioc` включён `RTC_WAKEUPCLOCK_CK_SPRE_17BITS`. CK_SPRE = **1 Гц**, поэтому
+период = (WUT + 1) **секунд** — это источник «таймера на 1 секунду», который
+легко спутать с системным тиком. Если нужен более мелкий шаг —
+`RTC_WAKEUPCLOCK_RTCCLK_DIV16` (LSI 32 кГц / 16 ≈ 2 кГц, шаг ~0.5 мс).
+
+---
+
+## Что должно остаться в `USER CODE` (это не конфигурация периферии)
+
+`main.c`, `USER CODE BEGIN 2`:
+
+```c
+  vector_sys_init();     /* приборы времени + заморозка тайм-базы под отладчиком */
+  (void)sf_probe();      /* проба внешней flash */
+  LOG_I(VLOG_M_SYS, "probe rc=%d jedec=%x %x %x", ...);
+  audio_selftest();      /* N писков напрямую, без RTOS */
+```
+
+`main.c`, `USER CODE BEGIN Callback 1`:
+
+```c
+  vector_sys_tick_hook(htim);
+```
+
+`AZURE_RTOS/App/app_azure_rtos.c`, `tx_application_define`:
+
+```c
+  vlog_init();  ext_init();  audio_init();  uart_bridge_init();
+```
+
+и в потоке LVGL: `vector_sys_tick_report();`
+
+Всё остальное (пины, тактирование, DMA, NVIC, режимы UART/SPI/SAI) — из куба.
+
+---
+
+## Проверено и трогать не нужно
+
+* SAI1_Block_A: I2S standard, 16 бит, 2 слота, 16 кГц, MCK выключен, PLL3
+  4.096 МГц — `HAL_SAI_InitProtocol` считает делитель сам;
+* GPDMA1: ch9 = SPI1_TX, ch10 = SPI1_RX, ch11 = SAI1_A, все три IRQ включены;
+* SPI1_IRQn включён — он **обязателен** для DMA-чтения: HAL вызывает
+  `HAL_SPI_RxCpltCallback` из прерывания EOT самого SPI, а не из DMA;
+* тайм-база HAL = TIM6, `NVIC.TimeBase = TIM6_IRQn`;
+* тик ThreadX = SysTick 100 Гц, настраивается в `tx_initialize_low_level.S`
+  (`SYSTEM_CLOCK = 160000000`) — **если поменяете частоту ядра, правьте эту
+  константу**, иначе `tx_thread_sleep()` поедет.

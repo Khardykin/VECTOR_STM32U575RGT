@@ -56,7 +56,7 @@ void vector_board_init(void)
         Возврат: 0 = DMA стартовала И завершилась, 1 = не стартовала,
         2 = стартовала, но не завершилась (нет GPDMA1_Channel11_IRQn).
         Если 0, а звука нет - проблема аналоговая: SD_MODE / питание /
-        обвязка / динамик (чек-лист в docs/AUDIO_HOWTO.md, раздел 7.4).      */
+        обвязка / динамик (чек-лист в docs/AUDIO.md, раздел 7.4).      */
   for (i = 0; i < (uint32_t)VECTOR_AUDIO_SELFTEST; i++)
   {
     if (audio_selftest() != 0)

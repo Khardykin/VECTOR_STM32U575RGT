@@ -112,7 +112,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   /* Вся бортовая инициализация до RTOS: усилитель (SD_MODE), приборы времени,
      проба внешней flash и selftest звука. Что именно делает и что из этого
-     надо перенести в CubeMX - см. vector_board.h и docs/CUBEMX_TODO.md.     */
+     надо перенести в CubeMX - см. vector_board.h и docs/SYSTEM.md (раздел 9).     */
   vector_board_init();
   /* USER CODE END 2 */
 

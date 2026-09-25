@@ -13,7 +13,7 @@
   *            BUTTON2 (PB2) - проиграть следующий звук образа по очереди
   *            BUTTON3 (PB3) - стоп
   *
-  *          ПОРЯДОК СТАРТА (важно, см. также docs/CODE_MAP.md):
+  *          ПОРЯДОК СТАРТА (важно, см. также docs/SYSTEM.md):
   *            main()                    - периферия, sf_probe(), кнопки
   *            tx_application_define()   - ext_init() -> audio_init()
   *            audio_init()              - RTOS-объекты, ПОТОК, load_image()
@@ -78,8 +78,9 @@ static uint8_t            ap_factory_tried = 0;
 
 /* ---------------------------------------------------------------- буфер ---
  * ap_buf - ОДИН на всё устройство: звук читается из flash ЦЕЛИКОМ сюда и
- * одной DMA-транзакцией уходит в SAI. 131070 байт (65535 сэмплов = 8.19 с
- * при 8 кГц). Второй звук в это же место не читается, поэтому одновременное
+ * одной DMA-транзакцией уходит в SAI. 131070 байт = 65535 сэмплов, то есть
+ * 4.09 с при 16 кГц (это же предел uint16_t Size у HAL_SAI_Transmit_DMA).
+ * Второй звук в это же место не читается, поэтому одновременное
  * воспроизведение двух дорожек невозможно by design.                        */
 static int16_t ap_buf[AUDIO_BUF_SAMPLES];
 
@@ -90,7 +91,7 @@ static int16_t ap_buf[AUDIO_BUF_SAMPLES];
  * скриптом pack_sounds.py вместе с образом.
  *
  * Хотите другую привязку - подставьте имена SND_* из audio_ids.h, например:
- *     { SND_D_MYVOICE, SND_A_GAS, AUDIO_STATE_SILENT }
+ *     { SND_C_VOICE_GAS, SND_POESHL, AUDIO_STATE_SILENT }
  * Кнопка BUTTON1 крутит состояния по кругу (см. HAL_GPIO_EXTI_Rising_Callback).
  */
 static volatile uint8_t  ap_state = 0;
@@ -265,7 +266,7 @@ static audio_err_t beep_now(void)
   audio_dbg_cur_idx = -2;
   audio_dbg_started++;
   ap_play_deadline  = VTICK_MS() +
-                      ((audio_beep_samples * 1000u) / 8000u) + AP_STUCK_MARGIN_MS;
+                      ((audio_beep_samples * 1000u) / AUDIO_SAMPLE_RATE) + AP_STUCK_MARGIN_MS;
   return AUDIO_OK;
 }
 
@@ -295,6 +296,10 @@ static audio_err_t start_now(uint16_t idx)
     if ((e->length / 2u) > AUDIO_BUF_SAMPLES)
     {
       rc = AUDIO_ERR_TOO_LONG;
+      LOG_E(VLOG_M_AUDIO, "sound #%u too long: %u samples > %u (limit %.2f s @%u Hz)",
+            (uint32_t)idx, (e->length / 2u), (uint32_t)AUDIO_BUF_SAMPLES,
+            (uint32_t)AUDIO_BUF_SAMPLES / (AUDIO_SAMPLE_RATE / 100u) / 10u,
+            (uint32_t)AUDIO_SAMPLE_RATE);
     }
     else if (ext_read(AUDIO_IMG_BASE_ADDR + e->offset, (uint8_t *)ap_buf, e->length) != 0)
     {
@@ -316,7 +321,7 @@ static audio_err_t start_now(uint16_t idx)
         {
           LOG_I(VLOG_M_AUDIO, "play #%u '%s' %u samples @%u Hz",
               (uint32_t)idx, (const char *)e->name, (e->length / 2u), (uint32_t)e->rate);
-          uint32_t rate = (e->rate != 0u) ? e->rate : 8000u;
+          uint32_t rate = (e->rate != 0u) ? e->rate : AUDIO_SAMPLE_RATE;
           ap_playing_idx     = (int32_t)idx;
           audio_dbg_cur_idx  = (int32_t)idx;
           audio_dbg_started++;
@@ -681,7 +686,32 @@ static void load_image(void)
               ((char *)&e->name)[j] = (char)p[20 + j];
             }
           }
-          ap_img_ok = 1;   /* таблица разобрана ЦЕЛИКОМ - образ годен */
+          /* Частота образа обязана совпадать с настройкой SAI, иначе звук
+             пойдёт с другой скоростью и тоном (при 16 кГц в SAI образ 8 кГц
+             даст ускорение вдвое). Старый образ при этом ВАЛИДЕН по CRC,
+             поэтому без этой проверки он молча использовался бы дальше.
+             При несовпадении ap_img_ok остаётся 0 -> сработает factory-запись
+             и во внешнюю flash ляжет образ, собранный с нужным --rate.       */
+          {
+            uint32_t bad = 0;
+            for (i = 0; i < ap_hdr.count; i++)
+            {
+              if ((ap_tab[i].rate != 0u) && (ap_tab[i].rate != AUDIO_SAMPLE_RATE))
+              {
+                bad++;
+              }
+            }
+            if (bad != 0u)
+            {
+              LOG_E(VLOG_M_AUDIO,
+                    "image rate mismatch: %u of %u sounds are not %u Hz -> reprogram",
+                    bad, (uint32_t)ap_hdr.count, (uint32_t)AUDIO_SAMPLE_RATE);
+            }
+            else
+            {
+              ap_img_ok = 1;   /* таблица разобрана ЦЕЛИКОМ - образ годен */
+            }
+          }
         }
         else
         {
@@ -720,7 +750,7 @@ static void load_image(void)
    по тику: если тик стоит, انتظار не должно превращаться в вечный цикл).
    Возврат: 0 = DMA стартовала и завершилась; 1 = не стартовала (код HAL в
    логе); 2 = стартовала, но не завершилась (нет прерывания GPDMA1_Channel11).
-   Печатает затраченные миллисекунды: писк = 1920 сэмплов при 8 кГц = 240 мс.
+   Печатает затраченные миллисекунды: писк = 3840 сэмплов при 16 кГц = 240 мс.
    Если напечатано заметно другое - системный тик идёт не 1 кГц.            */
 int audio_selftest(void)
 {
@@ -761,10 +791,11 @@ int audio_selftest(void)
   audio_dbg_played++;
   /* hal_ms - НАМЕРЕННО по HAL_GetTick(): selftest выполняется до планировщика,
      где тика RTOS ещё нет, а по этой цифре сразу видно, врёт ли тайм-база HAL
-     (норма ~240 мс для 1920 сэмплов при 8 кГц). guard - число проходов
+     (норма ~240 мс для 3840 сэмплов при 16 кГц). guard - число проходов
      ожидания: по нему видно, насколько быстро пришла DMA.                    */
   LOG_I(VLOG_M_AUDIO, "selftest: done, hal_ms=%u (expected ~%u) guard=%u",
-        (uint32_t)(HAL_GetTick() - hal_t0), (audio_beep_samples * 1000u) / 8000u, guard);
+        (uint32_t)(HAL_GetTick() - hal_t0),
+        (audio_beep_samples * 1000u) / AUDIO_SAMPLE_RATE, guard);
   (void)t0;
   return 0;
 }
@@ -791,7 +822,7 @@ void audio_init(void)
                          ap_stack, AP_STACK_SIZE,
                          AP_PRIORITY, AP_PRIORITY, TX_NO_TIME_SLICE, TX_AUTO_START);
 
-  /* 3. читаем образ (именно этот вызов терялся - см. docs/FIX_REPORT.md) */
+  /* 3. читаем образ (именно этот вызов терялся - см. docs/archive/FIX_REPORT.md) */
   load_image();
   audio_dbg_boot_stage = ap_img_ok ? AP_BOOT_IMG_OK : AP_BOOT_IMG_BAD;
 }
