@@ -122,18 +122,35 @@ extern volatile uint32_t sys_dbg_ticks;
 extern volatile uint32_t sys_dbg_hal_tick;
 #if VECTOR_AUDIO_DEMO_KEYS
 extern volatile uint32_t demo_dbg_press;
+extern volatile uint32_t demo_dbg_edges;
+#endif
+#if VECTOR_UART_BRIDGE_TEST
+extern volatile uint32_t ub_rx4_bytes;   /* принято байт из UART4  */
+extern volatile uint32_t ub_rx2_bytes;   /* принято байт из USART2 */
+extern volatile uint32_t ub_dbg_rearm4;  /* перезапусков приёма после ошибок */
 #endif
 
 static void tick_report(void)
 {
-  static uint32_t last_tx  = 0;
-  static uint32_t prev_cb  = 0;
-  static uint32_t prev_irq = 0;
-  static uint32_t prev_hal = 0;
-#if VECTOR_AUDIO_DEMO_KEYS
-  static uint32_t prev_key = 0;
-#endif
-  uint32_t tx = tx_time_get();
+  static uint32_t last_tx    = 0;
+  static uint32_t prev_cb    = 0;
+  static uint32_t prev_irq   = 0;
+  static uint32_t prev_hal   = 0;
+  static uint32_t prev_key   = 0;
+  static uint32_t prev_edges = 0;
+  static uint32_t prev_rx4   = 0;
+  static uint32_t prev_rx2   = 0;
+  static uint32_t prev_rearm = 0;
+
+  uint32_t tx    = tx_time_get();
+  uint32_t cb    = sys_dbg_cb_all;
+  uint32_t irq   = sys_dbg_ticks;
+  uint32_t hal   = sys_dbg_hal_tick;
+  uint32_t key   = 0;
+  uint32_t edges = 0;
+  uint32_t rx4   = 0;
+  uint32_t rx2   = 0;
+  uint32_t rearm = 0;
 
   if ((uint32_t)(tx - last_tx) < (VECTOR_LOG_TICK_REPORT_S * TX_TIMER_TICKS_PER_SECOND))
   {
@@ -141,27 +158,38 @@ static void tick_report(void)
   }
   last_tx = tx;
 
-  {
-    uint32_t cb  = sys_dbg_cb_all;
-    uint32_t irq = sys_dbg_ticks;
-    uint32_t hal = sys_dbg_hal_tick;
 #if VECTOR_AUDIO_DEMO_KEYS
-    uint32_t key = demo_dbg_press;
-    LOG_I(VLOG_M_SYS, "tick %u s: tx=+%u hal=+%u irq=+%u cb=+%u keys=+%u",
-          (uint32_t)VECTOR_LOG_TICK_REPORT_S,
-          (uint32_t)(VECTOR_LOG_TICK_REPORT_S * TX_TIMER_TICKS_PER_SECOND),
-          hal - prev_hal, irq - prev_irq, cb - prev_cb, key - prev_key);
-    prev_key = key;
-#else
-    LOG_I(VLOG_M_SYS, "tick %u s: tx=+%u hal=+%u irq=+%u cb=+%u",
-          (uint32_t)VECTOR_LOG_TICK_REPORT_S,
-          (uint32_t)(VECTOR_LOG_TICK_REPORT_S * TX_TIMER_TICKS_PER_SECOND),
-          hal - prev_hal, irq - prev_irq, cb - prev_cb);
+  key   = demo_dbg_press;
+  edges = demo_dbg_edges;
 #endif
-    prev_cb  = cb;
-    prev_irq = irq;
-    prev_hal = hal;
-  }
+#if VECTOR_UART_BRIDGE_TEST
+  rx4   = ub_rx4_bytes;
+  rx2   = ub_rx2_bytes;
+  rearm = ub_dbg_rearm4;
+#endif
+
+  /* Интервал отсчитан по тику ThreadX (SysTick), поэтому tx=+N - это и есть
+     "сколько тиков RTOS прошло". hal/irq/cb должны быть в 10 раз больше
+     (тайм-база HAL 1 кГц против SysTick 100 Гц).                            */
+  LOG_I(VLOG_M_SYS, "tick %u s: tx=+%u hal=+%u irq=+%u cb=+%u keys=+%u",
+        (uint32_t)VECTOR_LOG_TICK_REPORT_S,
+        (uint32_t)(VECTOR_LOG_TICK_REPORT_S * TX_TIMER_TICKS_PER_SECOND),
+        hal - prev_hal, irq - prev_irq, cb - prev_cb, key - prev_key);
+
+  /* Детектор "шквала прерываний": если edges/rx4/rx2/rearm4 растут тысячами
+     за интервал при отсутствии нажатий и трафика, значит какое-то прерывание
+     с приоритетом 0..1 не отдаёт CPU, и тайм-база (приоритет 15) голодает.  */
+  LOG_I(VLOG_M_SYS, "irq load: edges=+%u rx4=+%u rx2=+%u rearm4=+%u",
+        edges - prev_edges, rx4 - prev_rx4, rx2 - prev_rx2, rearm - prev_rearm);
+
+  prev_cb    = cb;
+  prev_irq   = irq;
+  prev_hal   = hal;
+  prev_key   = key;
+  prev_edges = edges;
+  prev_rx4   = rx4;
+  prev_rx2   = rx2;
+  prev_rearm = rearm;
 }
 #endif /* VECTOR_LOG_TICK_REPORT_S */
 

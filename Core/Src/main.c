@@ -168,6 +168,18 @@ int main(void)
   DBGMCU->APB1FZR1 |= DBGMCU_APB1FZR1_DBG_TIM6_STOP;
 #endif
 
+  /* Конфигурация тайм-базы HAL фактическими регистрами (TIM6): при PCLK1 =
+     160 МГц должно быть PSC=159, ARR=999, период 1000 us. Строка нужна, чтобы
+     отличить "таймер неверно настроен" от "прерывания теряются".            */
+  {
+    uint32_t pclk1 = HAL_RCC_GetPCLK1Freq();
+    uint64_t us    = ((uint64_t)(TIM6->PSC + 1u) * (uint64_t)(TIM6->ARR + 1u)
+                      * 1000000ull) / pclk1;
+    LOG_I(VLOG_M_SYS, "tick cfg: PCLK1=%u TIM6 PSC=%u ARR=%u -> %u us (src=%u)",
+          pclk1, (uint32_t)TIM6->PSC, (uint32_t)TIM6->ARR, (uint32_t)us,
+          (uint32_t)VECTOR_TICK_SOURCE);
+  }
+
 #if VECTOR_AUDIO_SELFTEST
   /* ПРЯМАЯ проверка звукового тракта: const-PCM из ВНУТРЕННЕЙ flash ->
      SAI DMA -> усилитель. Без очереди, без потока плеера, без состояний и
@@ -176,7 +188,17 @@ int main(void)
      SD_MODE (PC9), питание усилителя, I2S-пины PA8/PA9/PA10, PLL3.
      Заодно печатает затраченное время: писк длится ~240 мс, и если в логе
      цифра заметно другая - системный тик идёт не 1 кГц.                   */
-  (void)audio_selftest();
+  {
+    uint32_t i;
+    for (i = 0; i < (uint32_t)VECTOR_AUDIO_SELFTEST; i++)
+    {
+      if (audio_selftest() != 0)
+      {
+        break;                 /* тракт не работает - повторять бессмысленно */
+      }
+      VTICK_BUSYWAIT_MS(300);  /* пауза между писками, чтобы было слышно */
+    }
+  }
 #endif
   /* USER CODE END 2 */
 
