@@ -126,7 +126,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxCpltCallback -> ap_playing_idx=-1, put(ap_wake)
 | Ресурс | Владелец | Защита |
 |---|---|---|
 | SPI1 + внешняя flash | `extstore` | `ext_mtx` (мьютекс на всю операцию, включая стирание) |
-| SAI1_A + GPDMA ch11 + `ap_buf[]` | поток `Audio Player` | один владелец, из ISR только флаги |
+| SAI1_A + GPDMA ch11 + `ap_buf[]` (2 × 4096 сэмплов при стриминге) | поток `Audio Player` | один владелец: ISR ставит только флаги «половина освободилась» и счётчик, дозагружает всегда поток |
 | UART4/USART2 | `uart_bridge` | кольца single-producer/single-consumer |
 | USART1 | консольный лог `vector_log.c` (`VECTOR_LOG_ENABLE`) | только инициализация/поток, из ISR вызов отбрасывается |
 
@@ -419,6 +419,19 @@ TX_NO_WAIT)` вообще не блокируется. Блокирующий `t
 ---
 
 ## 9. Что настраивается в CubeMX (и что после этого удалить из кода)
+
+### 9.0. ОБЯЗАТЕЛЬНО для стриминга звука: SAI1_A DMA → Mode = Circular
+
+Multimedia → SAI1 → SAI_A_Master → (вкладка DMA Settings) → GPDMA1 Channel11 →
+**Mode = Circular**. На U5 у GPDMA нет классического circular: он реализуется
+связным списком, и куб генерирует `HAL_DMAEx_List_BuildNode()` +
+`HAL_DMAEx_List_SetCircularModeConfig()`, после чего `hdmatx->Mode ==
+DMA_LINKEDLIST_CIRCULAR`. Только в этом режиме HAL не гасит SAI по завершении
+блока, поэтому подкачка кусков идёт без щелей.
+
+Без Circular плеер сам откатится на старую схему (одна транзакция на звук,
+предел 4.09 с при 16 кГц) и один раз напечатает в лог подсказку. Подробно —
+`AUDIO.md` раздел 3.
 
 Правило проекта: **конфигурацию периферии делает CubeMX**, в сгенерированных
 файлах остаются только вызовы наших модулей внутри `USER CODE`. Ниже — что

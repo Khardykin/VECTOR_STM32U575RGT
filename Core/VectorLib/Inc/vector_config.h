@@ -162,7 +162,45 @@
 #endif
 
 #ifndef VECTOR_AUDIO_BOOT_PLAY
-#define VECTOR_AUDIO_BOOT_PLAY    1
+#define VECTOR_AUDIO_BOOT_PLAY    0
+#endif
+
+/* --- РАБОЧЕЕ: стриминг звука через circular DMA ---------------------------
+ * 1 = звук читается из внешней flash КУСКАМИ в две половины небольшого буфера
+ *     (ping-pong): DMA в circular mode непрерывно выдаёт буфер в SAI, а поток
+ *     дозагружает ту половину, которая только что отыграла
+ *     (HAL_SAI_TxHalfCpltCallback -> первая половина, HAL_SAI_TxCpltCallback
+ *     -> вторая). Это снимает оба прежних ограничения: длина звука больше не
+ *     упирается в 65535 сэмплов / uint16_t Size, а RAM-буфер вместо 131 КБ
+ *     занимает 2 x VECTOR_AUDIO_STREAM_CHUNK сэмплов.
+ *     ТРЕБУЕТ в CubeMX: SAI1_A -> DMA -> GPDMA1 Channel11 -> Mode = Circular
+ *     (тогда hdmatx->Mode = DMA_LINKEDLIST_CIRCULAR и HAL не гасит SAI на TC -
+ *     стыки между кусками без щелей и щелчков). Если канал остался в Normal,
+ *     плеер сам это определит и пойдёт старым путём одной транзакцией
+ *     (с ограничением 4.09 с при 16 кГц) и напечатает подсказку в лог.
+ * 0 = стриминг выключен, всегда одна DMA-транзакция на звук.
+ *
+ * VECTOR_AUDIO_STREAM_CHUNK - сэмплов в ОДНОЙ половине буфера. Определяет:
+ *   запас времени на дозагрузку = CHUNK / 16000 с (4096 -> 256 мс при том,
+ *   что чтение 8 КБ из flash по DMA занимает ~3 мс, то есть запас в 80 раз);
+ *   точность окончания звука - хвост добивается тишиной, максимум CHUNK
+ *   сэмплов (256 мс); RAM = 2 x CHUNK x 2 байта (4096 -> 16 КБ).            */
+#ifndef VECTOR_AUDIO_STREAM
+#define VECTOR_AUDIO_STREAM        1
+#endif
+
+#ifndef VECTOR_AUDIO_STREAM_CHUNK
+#define VECTOR_AUDIO_STREAM_CHUNK  4096u
+#endif
+
+/* 0 = буфер плеера остаётся ПОЛНЫМ (AUDIO_BUF_SAMPLES, 131 КБ), хотя стриминг
+ *     использует только первые 2 x VECTOR_AUDIO_STREAM_CHUNK. Так сделано
+ *     намеренно: если в CubeMX забыли Mode = Circular для SAI DMA, плеер
+ *     откатывается на одну транзакцию и должен уметь прочитать звук целиком.
+ * 1 = буфер урезается до двух кусков (16 КБ, экономия 115 КБ RAM). Ставить
+ *     только убедившись, что стриминг работает (в логе есть слово "stream"). */
+#ifndef VECTOR_AUDIO_STREAM_SMALLBUF
+#define VECTOR_AUDIO_STREAM_SMALLBUF 0
 #endif
 
 /* --- РАБОЧЕЕ: цикл звука текущего состояния ------------------------------

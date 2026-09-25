@@ -265,6 +265,35 @@ def main():
                     help="показать параметры WAV без сборки")
     args = ap.parse_args()
 
+    # --- отсев мусорных аргументов от переноса строки -----------------------
+    # В cmd.exe/PowerShell символ '\' НЕ переносит строку (это bash-приём),
+    # поэтому команда вида
+    #     python tools/pack_sounds.py a.wav b.wav \
+    #         --rate 16000 --out s.img
+    # в Windows превращает '\' в отдельный аргумент, и wave.open падает с
+    # FileNotFoundError: '\\'. В cmd.exe перенос - это '^', в PowerShell - '`'.
+    # Молча отбрасываем такие "аргументы" и пишем подсказку.
+    _junk = {"\\", "^", "`", "|", "&"}
+    _wav = []
+    for a in args.wav:
+        sa = str(a).strip()
+        if sa in _junk or sa == "":
+            print(f"[!] пропущен аргумент {sa!r} - это символ переноса строки. "
+                  f"В Windows пишите команду в ОДНУ строку (перенос в cmd.exe - "
+                  f"'^', в PowerShell - '`', а '\\' работает только в bash).")
+            continue
+        _wav.append(Path(sa))
+    if not _wav:
+        sys.exit("[!] не осталось ни одного WAV-файла после разбора аргументов")
+    args.wav = _wav
+
+    # --- понятная ошибка вместо traceback, если файла нет ---
+    for a in args.wav:
+        if not a.exists():
+            sys.exit(f"[!] файл не найден: {a}\n"
+                     f"    Текущий каталог: {os.getcwd()}\n"
+                     f"    Запускайте из корня проекта: python tools/pack_sounds.py tools/x.wav ...")
+
     # --- раскрытие масок (*.wav): cmd.exe и PowerShell не раскрывают '*' ---
     import glob as _glob
     expanded = []

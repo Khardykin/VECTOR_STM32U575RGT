@@ -1,17 +1,17 @@
 # manifest сборки sounds.img (tools/pack_sounds.py)
-out        = tools/sounds.img
-out_bytes  = 197456
-out_sha256 = c0cc0b717feaae11cc48bb6bd64f153c5394129c999cd81695347bebb4ec8f25
+out        = tools\sounds.img
+out_bytes  = 331808
+out_sha256 = 89109e170705a85c34c441bc54458f7d86d9bd6a91d5f053239cec097577e0d6
 rate       = 16000
 gain       = 1.0
 
 # звуки в порядке сборки (этот порядок = индексы в прошивке):
-  0  tools/poeshl.wav
-      sha256=c327a183715785a4fb71d384b6b47e3b047d6af4e41e5d935dd607cf7e9abce9  src=1ch 16000Гц  -> 62502 сэмплов 16000Гц, 3.91 с
-  1  tools/b_click.wav
+  0  tools/b_click.wav
       sha256=33a001535fde6b6cdaa604b17f2c15072a0c4e9b34e5e648b48040a9735dcfc1  src=1ch 16000Гц  -> 960 сэмплов 16000Гц, 0.06 с
-  2  tools/c_voice_gas.wav
+  1  tools/c_voice_gas.wav
       sha256=c4f875c61e40d0dfa54ba7a825a2372890ca40edb4f4512355e9253aeeef0bf5  src=1ch 16000Гц  -> 35200 сэмплов 16000Гц, 2.20 с
+  2  tools/d_myvoice.wav
+      sha256=6a2599e5dcd02ea1107d7a87d4c55ccbd0c8f680f1f8df00d09ea9d203f4fcbf  src=1ch 16000Гц  -> 129678 сэмплов 16000Гц, 8.10 с
 
 # команда для ТОЧНОГО воспроизведения этой сборки:
-python tools/pack_sounds.py tools/poeshl.wav tools/b_click.wav tools/c_voice_gas.wav --rate 16000 --gain 1.0 --out tools/sounds.img
+python tools/pack_sounds.py tools/b_click.wav tools/c_voice_gas.wav tools/d_myvoice.wav --rate 16000 --gain 1.0 --out tools\sounds.img
