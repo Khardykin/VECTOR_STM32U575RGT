@@ -217,7 +217,7 @@ DBGMCU->APB1FZR1 |= DBGMCU_APB1FZR1_DBG_TIM6_STOP;
 | Замечание | Сделано |
 |---|---|
 | «убери `vector_time`, не понял зачем» | модуль удалён; для проверки тика остались счётчики прерываний и отчёт в логе |
-| «не использовать `HAL_GetTick` в коде, сделай define на все тайминговые функции» | `vector_tick.h`: `VTICK_MS()`, `VTICK_ELAPSED_MS()`, `VTICK_SLEEP_MS()`, `VTICK_BUSYWAIT_MS()`; источник — один макрос `VECTOR_TICK_SOURCE` (0 = HAL/TIM6 1 мс, 1 = RTOS/SysTick 10 мс). В VectorLib прямых `HAL_GetTick`/`HAL_Delay` больше нет |
+| «не использовать `HAL_GetTick` в коде, сделай define на все тайминговые функции» | `vector_tick.h`: `VTICK_MS()`, `VTICK_ELAPSED_MS()`, `VTICK_SLEEP_MS()`, `VTICK_MS2TICKS()`, `VTICK_IN_THREAD()`. Источник теперь **всегда тик RTOS** (SysTick, 10 мс) — переключателя на HAL нет намеренно, чтобы его случайно не вернули. До планировщика тика нет, поэтому там ограничения по числу проходов цикла (`wait_busy`, `audio_selftest`), а не по времени |
 | «в `uart_bridge` убери `LOG_D`» | убраны оба `LOG_D`; ошибки передачи остались в `LOG_W`, остальное в счётчиках |
 | «нужно втупую проверить, идёт ли звук не с микросхемы, а из flash МК» | `audio_selftest()` — const-PCM из внутренней flash → SAI DMA, без очереди/потока/состояний, вызывается из `main()` до RTOS |
 

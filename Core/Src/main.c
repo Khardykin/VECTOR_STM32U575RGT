@@ -31,11 +31,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "spiflash.h"
-#include "vector_config.h"
-#include "vector_log.h"
-#include "vector_tick.h"
-#include "audio_player.h"
+#include "vector_board.h"   /* вся бортовая инициализация до RTOS - один вызов */
+#include "vector_sys.h"     /* vector_sys_tick_hook() для Callback 1 ниже     */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -56,27 +53,8 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-/* ------------------------------------------------------------------------
- * ПРИБОРЫ для проверки системного тика. Тайм-база HAL - TIM6
- * (NVIC.TimeBase=TIM6_IRQn в .ioc, stm32u5xx_hal_timebase_tim.c), 1 кГц:
- * PCLK1 160 МГц / PSC 159 -> 1 МГц, ARR 999 -> прерывание раз в 1 мс.
- *
- *   sys_dbg_cb_all    сколько раз вообще вызван HAL_TIM_PeriodElapsedCallback
- *                     (от любого таймера). Если сильно больше sys_dbg_ticks -
- *                     колбэк дёргает ещё какой-то таймер.
- *   sys_dbg_ticks     сколько раз прерывание пришло именно от тайм-базы TIM6
- *   sys_dbg_hal_tick  HAL_GetTick() на тот же момент: должен совпадать с
- *                     sys_dbg_ticks (иначе HAL_IncTick не вызывается)
- *
- * Все три должны расти на 1000 за секунду РЕАЛЬНОГО времени. Отчёт "tick:"
- * печатает поток LVGL раз в VECTOR_LOG_TICK_REPORT_S секунд своего (ThreadX)
- * времени, сравнивая ТРИ независимых источника: SysTick (тик ThreadX),
- * прерывания TIM6 и HAL_GetTick. Из прерывания лог не печатается -
- * блокирующая передача UART в ISR недопустима.
- * ------------------------------------------------------------------------ */
-volatile uint32_t sys_dbg_cb_all   = 0;
-volatile uint32_t sys_dbg_ticks    = 0;
-volatile uint32_t sys_dbg_hal_tick = 0;
+/* Переменные диагностики системного времени переехали в vector_sys.c - там же
+   их extern-объявления (vector_sys.h). В сгенерированном файле их больше нет. */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -132,74 +110,10 @@ int main(void)
   MX_ICACHE_Init();
   MX_RTC_Init();
   /* USER CODE BEGIN 2 */
-  /* ==========================================================================
-   * Включение оконечного усилителя на I2S (PC9 = SD_MODE, MAX98357A-подобный).
-   *
-   * MX_GPIO_Init() пишет в SD_MODE уровень RESET, а у MAX98357A
-   * "Drive SD_MODE low to put the IC into shutdown" -> усилитель выключен и
-   * звука НЕ БУДЕТ ВООБЩЕ, даже если SAI/DMA работают идеально.
-   *
-   * После подачи 1 на SD_MODE нужно выдержать время выхода из shutdown
-   * (порядка единиц мс по datasheet), иначе первые сэмплы проглатываются.
-   * ========================================================================== */
-  HAL_GPIO_WritePin(SD_MODE_GPIO_Port, SD_MODE_Pin, GPIO_PIN_SET);
-  HAL_Delay(5);
-
-  /* Проба внешней SPI flash (MX25K6435F, DD2). Результат смотреть в отладчике:
-       sf_jedec[3] - должно быть { 0xC2, .., 0x17 }  (Macronix, 64 Мбит)
-       sf_rdsr     - статус-регистр
-       sf_probe_rc - 0 (HAL_OK), если чип ответил; иначе смотри SPI1/CS/питание */
-  (void)sf_probe();
-
-  /* Лог старта ещё до RTOS: USART1 уже инициализирован, а vlog до vlog_init()
-     просто работает без мьютекса (исполнитель здесь один). */
-  LOG_I(VLOG_M_SYS, "probe rc=%d jedec=%x %x %x", (int32_t)sf_probe_rc,
-        (uint32_t)sf_jedec[0], (uint32_t)sf_jedec[1], (uint32_t)sf_jedec[2]);
-
-#if VECTOR_DBG_FREEZE_TICK
-  /* Остановка тайм-базы, пока ядро стоит на брейкпоинте. БЕЗ этого TIM6
-     продолжает считать во время halt, но прерывание не обслуживается - за
-     одну остановку засчитывается ровно ОДИН тик, и HAL_GetTick() начинает
-     отставать от реального времени в десятки раз. Дальше "плывёт" всё, что
-     от него зависит: антидребезг кнопок растягивается на секунды, пауза цикла
-     на десятки секунд, таймауты SPI не срабатывают вовремя.
-     SysTick (тик ThreadX) при остановке ядра не идёт сам, поэтому после этой
-     настройки оба источника времени ведут себя одинаково.                    */
-  DBGMCU->APB1FZR1 |= DBGMCU_APB1FZR1_DBG_TIM6_STOP;
-#endif
-
-  /* Конфигурация тайм-базы HAL фактическими регистрами (TIM6): при PCLK1 =
-     160 МГц должно быть PSC=159, ARR=999, период 1000 us. Строка нужна, чтобы
-     отличить "таймер неверно настроен" от "прерывания теряются".            */
-  {
-    uint32_t pclk1 = HAL_RCC_GetPCLK1Freq();
-    uint64_t us    = ((uint64_t)(TIM6->PSC + 1u) * (uint64_t)(TIM6->ARR + 1u)
-                      * 1000000ull) / pclk1;
-    LOG_I(VLOG_M_SYS, "tick cfg: PCLK1=%u TIM6 PSC=%u ARR=%u -> %u us (src=%u)",
-          pclk1, (uint32_t)TIM6->PSC, (uint32_t)TIM6->ARR, (uint32_t)us,
-          (uint32_t)VECTOR_TICK_SOURCE);
-  }
-
-#if VECTOR_AUDIO_SELFTEST
-  /* ПРЯМАЯ проверка звукового тракта: const-PCM из ВНУТРЕННЕЙ flash ->
-     SAI DMA -> усилитель. Без очереди, без потока плеера, без состояний и
-     без внешней памяти. Если писк слышен - выходной тракт жив, и все
-     дальнейшие проблемы надо искать в образе/чтении. Если не слышен -
-     SD_MODE (PC9), питание усилителя, I2S-пины PA8/PA9/PA10, PLL3.
-     Заодно печатает затраченное время: писк длится ~240 мс, и если в логе
-     цифра заметно другая - системный тик идёт не 1 кГц.                   */
-  {
-    uint32_t i;
-    for (i = 0; i < (uint32_t)VECTOR_AUDIO_SELFTEST; i++)
-    {
-      if (audio_selftest() != 0)
-      {
-        break;                 /* тракт не работает - повторять бессмысленно */
-      }
-      VTICK_BUSYWAIT_MS(300);  /* пауза между писками, чтобы было слышно */
-    }
-  }
-#endif
+  /* Вся бортовая инициализация до RTOS: усилитель (SD_MODE), приборы времени,
+     проба внешней flash и selftest звука. Что именно делает и что из этого
+     надо перенести в CubeMX - см. vector_board.h и docs/CUBEMX_TODO.md.     */
+  vector_board_init();
   /* USER CODE END 2 */
 
   MX_ThreadX_Init();
@@ -286,24 +200,14 @@ void SystemClock_Config(void)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   /* USER CODE BEGIN Callback 0 */
-
+  /* пусто: мигалку/счётчики сюда ставить не нужно, всё ниже в hook */
   /* USER CODE END Callback 0 */
   if (htim->Instance == TIM6)
   {
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
-  /* КОНТЕКСТ: прерывание тайм-базы, 1 кГц. Только инкременты - ни лога, ни
-     блокирующих вызовов. HAL_GetTick() здесь читается НАМЕРЕННО (это и есть
-     измеряемая величина), весь остальной проект пользуется VTICK_MS().
-     Мигалку сюда возвращать не стоит: ровный меандр даёт аппаратный выход
-     таймера (PWM/OC), а не toggle в прерывании с приоритетом 15.           */
-  sys_dbg_cb_all++;
-  if (htim->Instance == TIM6)
-  {
-    sys_dbg_ticks++;
-    sys_dbg_hal_tick = HAL_GetTick();
-  }
+  vector_sys_tick_hook(htim);   /* счётчики тайм-базы: см. vector_sys.h */
   /* USER CODE END Callback 1 */
 }
 

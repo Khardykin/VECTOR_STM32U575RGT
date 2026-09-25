@@ -28,6 +28,7 @@
 #include "uart_bridge.h"
 #include "vector_config.h"
 #include "vector_log.h"
+#include "vector_sys.h"
 #include "main.h"
 /* USER CODE END Includes */
 
@@ -87,111 +88,10 @@ volatile uint32_t audio_sai_errors   = 0;  /* HAL_SAI_ErrorCallback (OVRUDR..) *
 volatile uint32_t audio_sai_errcode  = 0;
 volatile uint32_t audio_played_ok    = 0;
 
-/* ---------------------------------------------------------------------------
- * Отчёт о системном тике (VECTOR_LOG_TICK_REPORT_S в vector_config.h).
- *
- * ЗАЧЕМ: в проекте ДВА независимых источника времени, и они могут расходиться:
- *   TIM6    (1 кГц, IRQ приоритет 15) -> HAL_IncTick() -> HAL_GetTick()
- *   SysTick (100 Гц, приоритет 4)     -> _tx_timer_interrupt() -> тик ThreadX
- * ThreadX тайм-базу HAL НЕ трогает: MX_ThreadX_Init()/tx_kernel_enter()
- * настраивает только SysTick (tx_initialize_low_level.S). Поэтому, если
- * HAL_GetTick() отстаёт от реального времени, виноват не RTOS, а то, что
- * прерывание TIM6 не обслуживается 1000 раз в секунду (остановка ядра
- * отладчиком, шквал прерываний, долгая маскировка).
- *
- * Отчёт печатается отсюда, ИЗ ПОТОКА, и интервал отсчитывается по тику
- * ThreadX, а не по HAL_GetTick: если тики HAL теряются, интервал на
- * HAL_GetTick просто никогда бы не наступил (так и вышло в docs/log.md -
- * строки отчёта в логе не было, потому что HAL_GetTick не дошёл до 10000).
- *
- * Чтение строки (норма):
- *   tick 10 s: tx=+1000 hal=+10000 irq=+10000 cb=+10000 keys=+0
- *   tx  - тики ThreadX (SysTick) за интервал, 1000 = 10 с
- *   hal - насколько вырос HAL_GetTick()
- *   irq - сколько раз сработало прерывание TIM6
- *   cb  - сколько раз вызван HAL_TIM_PeriodElapsedCallback (от любого таймера)
- *   keys- сколько событий кнопок прошло антидребезг
- * Если hal и irq дают ~10000 за 10 реальных секунд - тик HAL ровно 1 мс и
- * антидребезг 50 мс действительно 50 мс. Если в разы меньше - тики теряются,
- * и все таймауты в проекте растягиваются во столько же раз (ровно тот симптом:
- * "DEMO_DEBOUNCE_MS отсчитывается как 5 секунд").
- * -------------------------------------------------------------------------*/
-#if VECTOR_LOG_TICK_REPORT_S
-extern volatile uint32_t sys_dbg_cb_all;
-extern volatile uint32_t sys_dbg_ticks;
-extern volatile uint32_t sys_dbg_hal_tick;
-#if VECTOR_AUDIO_DEMO_KEYS
-extern volatile uint32_t demo_dbg_press;
-extern volatile uint32_t demo_dbg_edges;
-#endif
-#if VECTOR_UART_BRIDGE_TEST
-extern volatile uint32_t ub_rx4_bytes;   /* принято байт из UART4  */
-extern volatile uint32_t ub_rx2_bytes;   /* принято байт из USART2 */
-extern volatile uint32_t ub_dbg_rearm4;  /* перезапусков приёма после ошибок */
-#endif
-
-static void tick_report(void)
-{
-  static uint32_t last_tx    = 0;
-  static uint32_t prev_cb    = 0;
-  static uint32_t prev_irq   = 0;
-  static uint32_t prev_hal   = 0;
-  static uint32_t prev_key   = 0;
-  static uint32_t prev_edges = 0;
-  static uint32_t prev_rx4   = 0;
-  static uint32_t prev_rx2   = 0;
-  static uint32_t prev_rearm = 0;
-
-  uint32_t tx    = tx_time_get();
-  uint32_t cb    = sys_dbg_cb_all;
-  uint32_t irq   = sys_dbg_ticks;
-  uint32_t hal   = sys_dbg_hal_tick;
-  uint32_t key   = 0;
-  uint32_t edges = 0;
-  uint32_t rx4   = 0;
-  uint32_t rx2   = 0;
-  uint32_t rearm = 0;
-
-  if ((uint32_t)(tx - last_tx) < (VECTOR_LOG_TICK_REPORT_S * TX_TIMER_TICKS_PER_SECOND))
-  {
-    return;
-  }
-  last_tx = tx;
-
-#if VECTOR_AUDIO_DEMO_KEYS
-  key   = demo_dbg_press;
-  edges = demo_dbg_edges;
-#endif
-#if VECTOR_UART_BRIDGE_TEST
-  rx4   = ub_rx4_bytes;
-  rx2   = ub_rx2_bytes;
-  rearm = ub_dbg_rearm4;
-#endif
-
-  /* Интервал отсчитан по тику ThreadX (SysTick), поэтому tx=+N - это и есть
-     "сколько тиков RTOS прошло". hal/irq/cb должны быть в 10 раз больше
-     (тайм-база HAL 1 кГц против SysTick 100 Гц).                            */
-  LOG_I(VLOG_M_SYS, "tick %u s: tx=+%u hal=+%u irq=+%u cb=+%u keys=+%u",
-        (uint32_t)VECTOR_LOG_TICK_REPORT_S,
-        (uint32_t)(VECTOR_LOG_TICK_REPORT_S * TX_TIMER_TICKS_PER_SECOND),
-        hal - prev_hal, irq - prev_irq, cb - prev_cb, key - prev_key);
-
-  /* Детектор "шквала прерываний": если edges/rx4/rx2/rearm4 растут тысячами
-     за интервал при отсутствии нажатий и трафика, значит какое-то прерывание
-     с приоритетом 0..1 не отдаёт CPU, и тайм-база (приоритет 15) голодает.  */
-  LOG_I(VLOG_M_SYS, "irq load: edges=+%u rx4=+%u rx2=+%u rearm4=+%u",
-        edges - prev_edges, rx4 - prev_rx4, rx2 - prev_rx2, rearm - prev_rearm);
-
-  prev_cb    = cb;
-  prev_irq   = irq;
-  prev_hal   = hal;
-  prev_key   = key;
-  prev_edges = edges;
-  prev_rx4   = rx4;
-  prev_rx2   = rx2;
-  prev_rearm = rearm;
-}
-#endif /* VECTOR_LOG_TICK_REPORT_S */
+/* Отчёт о системном тике - в vector_sys.c: там сравниваются два независимых
+   источника времени (SysTick/ThreadX и TIM6/HAL) и счётчики шквала прерываний.
+   Отсюда нужен только периодический вызов из потока, потому что из ISR лог не
+   печатается (блокирующая передача UART в прерывании недопустима).           */
 
 /* ---------------------------------------------------------------------------
  * Поток воспроизведения звука.
@@ -228,9 +128,7 @@ void lvgl_thread_entry(ULONG thread_input)
     /* Вызов периодического обработчика таймеров LVGL */
     /* lv_timer_handler(); */
 
-#if VECTOR_LOG_TICK_REPORT_S
-    tick_report();      /* раз в N секунд - состояние системного тика */
-#endif
+    vector_sys_tick_report();   /* раз в N секунд - состояние системного времени */
 
     /* Пока LVGL нет, поток только жрёт CPU: 100 пробуждений в секунду впустую.
        До подключения LVGL лучше спать подольше. */

@@ -37,9 +37,18 @@
 #include "tx_api.h"
 #endif
 
-#define SF_TIMEOUT_MS   250u
-#define SF_ERASE_TMO_MS 500u
-#define SF_PROG_TMO_MS  100u
+#define SF_TIMEOUT_MS   250u   /* таймаут одного обмена внутри HAL (его считает HAL) */
+
+/* Ожидание готовности чипа (WIP) НЕ привязано к системному времени:
+ *   - до планировщика (sf_probe/ext_init) тик RTOS ещё не идёт, поэтому
+ *     ограничение - число опросов: 20000 x ~40 мкс = примерно 1 с, этого
+ *     хватает на стирание сектора (по datasheet до 400 мс);
+ *   - в потоке между опросами СПИМ 2 мс (CPU свободен для других потоков),
+ *     а сверху стоит ограничение по тику RTOS, чтобы мёртвая flash не
+ *     удерживала поток вечно.                                                */
+#define SF_BUSY_MAX_POLLS  20000u
+#define SF_BUSY_TMO_MS     1000u
+#define SF_BUSY_SLEEP_MS   2u
 
 volatile uint8_t  sf_jedec[3] = { 0, 0, 0 };
 volatile uint8_t  sf_rdsr     = 0xFF;
@@ -50,8 +59,8 @@ volatile int32_t  sf_probe_rc = -1;
 /* Кусок одной DMA-транзакции. HAL принимает uint16_t Size, поэтому жёстко
    ограничиваем 65535; VECTOR_SPI_DMA_CHUNK по умолчанию 32768 = 13 мс.     */
 #define SF_DMA_CHUNK   ((VECTOR_SPI_DMA_CHUNK > 0xFFFFu) ? 0x8000u : VECTOR_SPI_DMA_CHUNK)
-/* Таймаут ожидания куска в тиках ThreadX (TX_TIMER_TICKS_PER_SECOND = 100). */
-#define SF_DMA_TMO     (((VECTOR_SPI_DMA_TMO_MS * TX_TIMER_TICKS_PER_SECOND) + 999u) / 1000u)
+/* Таймаут ожидания куска в тиках RTOS. */
+#define SF_DMA_TMO     VTICK_MS2TICKS(VECTOR_SPI_DMA_TMO_MS)
 
 static TX_SEMAPHORE     sf_dma_sem;        /* взводится из ISR по факту приёма */
 static volatile uint8_t sf_dma_ready  = 0; /* семафор создан (sf_dma_init)     */
@@ -106,27 +115,44 @@ static HAL_StatusTypeDef cmd_addr(uint8_t cmd, uint32_t addr)
 }
 
 /* Ждёт сброса бита WIP (write in progress) статус-регистра после записи или
-   стирания. Опрос RDSR в цикле с общим таймаутом; между опросами поток
-   крутится (тут десятки мкс на стирание страницы и десятки мс на сектор).
-   Возврат: HAL_OK или HAL_TIMEOUT. CS здесь не удерживается.               */
-static HAL_StatusTypeDef wait_busy(uint32_t timeout_ms)
+ * стирания. Опрос RDSR в цикле; в потоке между опросами спим (не жжём CPU),
+ * до планировщика - крутимся с ограничением по числу опросов.
+ * Возврат: HAL_OK или HAL_TIMEOUT. CS здесь не удерживается.
+ * КОНТЕКСТ: инициализация (до RTOS) или поток. Из ISR не вызывать.           */
+static HAL_StatusTypeDef wait_busy(void)
 {
-  uint32_t t0 = VTICK_MS();
+  uint32_t polls = 0;
+  uint32_t t0    = VTICK_MS();
+
   for (;;)
   {
     uint8_t cmd = SF_CMD_RDSR;
     uint8_t sr  = 0xFF;
+
     cs_low();
     (void)HAL_SPI_Transmit(&hspi1, &cmd, 1, SF_TIMEOUT_MS);
     (void)HAL_SPI_Receive(&hspi1, &sr, 1, SF_TIMEOUT_MS);
     cs_high();
+
     if ((sr & SF_SR_WIP) == 0u)
     {
       return HAL_OK;
     }
-    if ((VTICK_MS() - t0) > timeout_ms)
+
+    if (++polls >= SF_BUSY_MAX_POLLS)
     {
+      LOG_E(VLOG_M_FLASH, "WIP timeout after %u polls", polls);
       return HAL_TIMEOUT;
+    }
+
+    if (VTICK_IN_THREAD())
+    {
+      VTICK_SLEEP_MS(SF_BUSY_SLEEP_MS);        /* отдать CPU другим потокам */
+      if (VTICK_ELAPSED_MS(t0) > SF_BUSY_TMO_MS)
+      {
+        LOG_E(VLOG_M_FLASH, "WIP timeout after %u ms", VTICK_ELAPSED_MS(t0));
+        return HAL_TIMEOUT;
+      }
     }
   }
 }
@@ -415,7 +441,7 @@ HAL_StatusTypeDef sf_sector_erase(uint32_t addr)
   }
   {
     uint32_t t0 = VTICK_MS();
-    st = wait_busy(SF_ERASE_TMO_MS);
+    st = wait_busy();
     if (st == HAL_OK)
     {
       LOG_I(VLOG_M_FLASH, "erase @%x ok, %u ms", addr, VTICK_MS() - t0);
@@ -472,7 +498,7 @@ HAL_StatusTypeDef sf_program(uint32_t addr, const uint8_t *src, uint32_t len)
     {
       break;
     }
-    st = wait_busy(SF_PROG_TMO_MS);
+    st = wait_busy();
     if (st != HAL_OK)
     {
       break;

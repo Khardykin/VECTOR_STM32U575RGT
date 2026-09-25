@@ -37,21 +37,18 @@
 #include "main.h"
 #include "tx_api.h"
 #include "vector_log.h"   /* консольный лог: VECTOR_LOG_ENABLE в vector_config.h */
-#include "vector_tick.h"   /* VTICK_MS(): источник времени выбирается в vector_config.h */
+#include "vector_tick.h"   /* VTICK_MS() - время только от тика RTOS */
 
 /* ------------------------------------------------------------------ RTOS -- */
 #define AP_STACK_SIZE   4096u
 #define AP_PRIORITY     10u
 
-/* Миллисекунды -> тики ThreadX (TX_TIMER_TICKS_PER_SECOND = 100, тик 10 мс),
-   округление вверх: лучше подождать на тик дольше, чем не дождаться.        */
-#define AP_MS2TICKS(ms) (((uint32_t)(ms) * TX_TIMER_TICKS_PER_SECOND + 999u) / 1000u)
-
 /* Сколько ждать события, если heartbeat включён (VECTOR_AUDIO_WAKE_TIMEOUT_MS).
    0 = честное TX_WAIT_FOREVER. Пауза цикла считает свой таймаут отдельно и
-   просто уменьшает это значение (см. цикл потока).                          */
+   просто уменьшает это значение (см. цикл потока). Перевод мс -> тики делает
+   VTICK_MS2TICKS (vector_tick.h), всё время в проекте - от тика RTOS.        */
 #if (VECTOR_AUDIO_WAKE_TIMEOUT_MS > 0u)
-#define AP_WAKE_TMO     ((ULONG)AP_MS2TICKS(VECTOR_AUDIO_WAKE_TIMEOUT_MS))
+#define AP_WAKE_TMO     ((ULONG)VTICK_MS2TICKS(VECTOR_AUDIO_WAKE_TIMEOUT_MS))
 #else
 #define AP_WAKE_TMO     TX_WAIT_FOREVER
 #endif
@@ -466,7 +463,7 @@ static void ap_thread_entry(ULONG arg)
       }
       else
       {
-        ULONG t = AP_MS2TICKS((uint32_t)left) + 1u;
+        ULONG t = VTICK_MS2TICKS((uint32_t)left) + 1u;
         if (t < tmo) { tmo = t; }
       }
     }
@@ -728,7 +725,8 @@ static void load_image(void)
 int audio_selftest(void)
 {
   HAL_StatusTypeDef hs;
-  uint32_t t0 = VTICK_MS();
+  uint32_t t0 = VTICK_MS();          /* до планировщика = 0, см. лог ниже */
+  uint32_t hal_t0 = HAL_GetTick();   /* диагностика тайм-базы HAL */
   uint32_t guard = 0;
 
   hs = HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t *)audio_beep_pcm,
@@ -761,8 +759,13 @@ int audio_selftest(void)
   }
 
   audio_dbg_played++;
-  LOG_I(VLOG_M_AUDIO, "selftest: done in %u ms (expected ~%u ms, guard=%u)",
-        VTICK_ELAPSED_MS(t0), (audio_beep_samples * 1000u) / 8000u, guard);
+  /* hal_ms - НАМЕРЕННО по HAL_GetTick(): selftest выполняется до планировщика,
+     где тика RTOS ещё нет, а по этой цифре сразу видно, врёт ли тайм-база HAL
+     (норма ~240 мс для 1920 сэмплов при 8 кГц). guard - число проходов
+     ожидания: по нему видно, насколько быстро пришла DMA.                    */
+  LOG_I(VLOG_M_AUDIO, "selftest: done, hal_ms=%u (expected ~%u) guard=%u",
+        (uint32_t)(HAL_GetTick() - hal_t0), (audio_beep_samples * 1000u) / 8000u, guard);
+  (void)t0;
   return 0;
 }
 /* Инициализация плеера. Вызывать ОДИН раз из tx_application_define(), ПОСЛЕ

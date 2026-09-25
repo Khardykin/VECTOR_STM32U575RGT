@@ -21,6 +21,7 @@
   ******************************************************************************
   */
 #include "vector_log.h"
+#include "vector_tick.h"
 
 #if VECTOR_LOG_ENABLE
 
@@ -207,8 +208,12 @@ void vlog(uint32_t mask, uint8_t level, const char *fmt, ...)
 
   vlog_lock();
 
-  /* префикс: [секунды.мс] уровень/модуль: */
-  ms = VTICK_MS();
+  /* Префикс [секунды.мс]. Источник: в потоке - тик RTOS (VTICK_MS), а до
+     планировщика - HAL_GetTick(), потому что tx_time_get() там ещё всегда 0,
+     а стартовые строки без времени неудобны. Это ЕДИНСТВЕННОЕ место в
+     VectorLib, где HAL-тик читается ради отображения: на поведение он не
+     влияет (всё остальное время в проекте - от тика RTOS, см. vector_tick.h). */
+  ms = VTICK_IN_THREAD() ? VTICK_MS() : (uint32_t)HAL_GetTick();
   n = putc_(vlog_line, n, VLOG_LINE, '[');
   n = putnum(vlog_line, n, VLOG_LINE, ms / 1000u, 10u, 0u);
   n = putc_(vlog_line, n, VLOG_LINE, '.');
