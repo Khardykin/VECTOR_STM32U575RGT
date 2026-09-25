@@ -21,7 +21,7 @@ void vtime_init(void)
   if (vtime_div == 0u) { vtime_div = 1u; }
 
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;   /* разрешить DWT/ITM     */
-  DWT->LAR          = 0xC5ACCE55u;                  /* снять блокировку DWT   */
+//  DWT->LAR          = 0xC5ACCE55u;                  /* снять блокировку DWT   */
   DWT->CYCCNT       = 0u;
   DWT->CTRL        |= DWT_CTRL_CYCCNTENA_Msk;       /* запустить счётчик     */
 }
