@@ -382,7 +382,7 @@ static void ap_thread_entry(ULONG arg)
 {
   (void)arg;
 
-#if VECTOR_AUDIO_FACTORY_EMBED
+#if VECTOR_AUDIO_FACTORY_EMBED && VECTOR_AUDIO_FACTORY_ON_BOOT
   if ((!ap_img_ok) && (!ap_factory_tried))
   {
     ap_factory_tried = 1;
@@ -403,6 +403,15 @@ static void ap_thread_entry(ULONG arg)
       audio_dbg_boot_stage = AP_BOOT_FACTORY_ERR;
       LOG_E(VLOG_M_AUDIO, "factory FAILED -> beep only");
     }
+  }
+#elif VECTOR_AUDIO_FACTORY_EMBED
+  if (!ap_img_ok)
+  {
+    /* Автоматическая запись выключена (VECTOR_AUDIO_FACTORY_ON_BOOT 0):
+       внешнюю flash не трогаем, играем аварийный писк. Причина отказа образа
+       уже напечатана выше (image header bad / image CRC mismatch / read fail).
+       Записать образ вручную можно вызовом audio_factory_program().          */
+    LOG_W(VLOG_M_AUDIO, "no valid image, factory OFF by config -> beep only");
   }
 #endif
 
