@@ -6,7 +6,38 @@
 
 ---
 
-## 0. Быстрый старт: услышать звук через минуту
+## 0. Самая быстрая проверка: `audio_selftest()`
+
+При `VECTOR_AUDIO_SELFTEST 1` (по умолчанию) в `main()`, **до старта RTOS**,
+вызывается `audio_selftest()`:
+
+```c
+int audio_selftest(void);   /* 0 = тракт жив, 1 = DMA не стартовала,
+                               2 = стартовала, но не завершилась */
+```
+
+Он берёт const-массив писка из **внутренней** flash и отдаёт его в SAI одной
+DMA-транзакцией — без очереди, без потока плеера, без состояний и без внешней
+памяти. В логе:
+
+```
+[..] 2/A: selftest: beep 1920 samples via SAI DMA (no queue, no ext flash)
+[..] 2/A: selftest: done in 240 ms (expected ~240 ms, guard=...)
+```
+
+* писк слышен и `done in ~240 ms` → выходной тракт жив, системный тик
+  честный; дальше можно смотреть образ/чтение;
+* писк слышен, но `done in 2 ms` или `in 8000 ms` → тракт жив, а **системный
+  тик врёт** (см. `CODE_MAP.md` раздел 7.2);
+* `selftest: SAI DMA start FAIL hal=2` → SAI занята (`HAL_BUSY`);
+* `selftest: DMA started but NOT finished` → не приходит прерывание
+  `GPDMA1_Channel11_IRQn`;
+* писка нет, но `done` напечатан → аналоговая часть: `SD_MODE` (PC9), питание
+  усилителя, I2S-пины PA8/PA9/PA10 (AF13), PLL3.
+
+---
+
+## 0.1 Быстрый старт: услышать звук через минуту
 
 В `Core/VectorLib/Inc/vector_config.h` уже стоят нужные значения:
 

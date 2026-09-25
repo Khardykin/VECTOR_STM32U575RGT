@@ -27,6 +27,7 @@
 #include "main.h"
 #include "usart.h"
 #include "tx_api.h"
+#include "vector_tick.h"   /* VTICK_MS(): источник времени выбирается в vector_config.h */
 #include <stdarg.h>
 
 #define VLOG_LINE       160u    /* длина одной строки вместе с префиксом      */
@@ -207,7 +208,7 @@ void vlog(uint32_t mask, uint8_t level, const char *fmt, ...)
   vlog_lock();
 
   /* префикс: [секунды.мс] уровень/модуль: */
-  ms = HAL_GetTick();
+  ms = VTICK_MS();
   n = putc_(vlog_line, n, VLOG_LINE, '[');
   n = putnum(vlog_line, n, VLOG_LINE, ms / 1000u, 10u, 0u);
   n = putc_(vlog_line, n, VLOG_LINE, '.');

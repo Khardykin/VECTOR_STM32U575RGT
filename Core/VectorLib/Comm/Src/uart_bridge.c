@@ -16,6 +16,10 @@
   *          (PC10, AF_OD, PC11 занят ACCEL_INT). Значит линия ОДНА и приёмник
   *          слышит собственную передачу - ниже это глушится (ub_transmit).
   *
+  *          Лога на каждый чанк нет намеренно: при плотном трафике это
+  *          километры строк, а лог ещё и делит с мостом UART4. Ошибки
+  *          передачи логируются (LOG_W), всё остальное - в счётчиках.
+  *
   *          ДИАГНОСТИКА: ub_dbg_err4/err2 (коды HAL_UART_ERROR_*), ub_rearm*
   *          (сколько раз приём перезапускали после ошибки), ub_ovf* (кольцо
   *          переполняется - поток не успевает), плюс лог VLOG_M_BRIDGE.
@@ -239,7 +243,6 @@ static void ub_thread_entry(ULONG arg)
         uint32_t n = ring_get_bulk(ub_r4, &ub_r4_head, &ub_r4_tail, chunk, UB_CHUNK);
         if (n != 0u)
         {
-          LOG_D(VLOG_M_BRIDGE, "uart4 -> usart2 %u b (first %x)", n, (uint32_t)chunk[0]);
           if (ub_transmit(&huart2, chunk, (uint16_t)n, &ub_r2_head, &ub_dbg_echo) == HAL_OK)
           {
             ub_tx2_bytes += n;
@@ -259,7 +262,6 @@ static void ub_thread_entry(ULONG arg)
         uint32_t n = ring_get_bulk(ub_r2, &ub_r2_head, &ub_r2_tail, chunk, UB_CHUNK);
         if (n != 0u)
         {
-          LOG_D(VLOG_M_BRIDGE, "usart2 -> uart4 %u b (first %x)", n, (uint32_t)chunk[0]);
           if (ub_transmit(&huart4, chunk, (uint16_t)n, &ub_r4_head, &ub_dbg_echo) == HAL_OK)
           {
             ub_tx4_bytes += n;

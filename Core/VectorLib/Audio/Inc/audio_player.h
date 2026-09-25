@@ -48,6 +48,14 @@ typedef enum
 /* Вызывать один раз из tx_application_define(). Создаёт поток и читает образ. */
 void audio_init(void);
 
+/* ПРЯМАЯ проверка звукового тракта без очереди/потока/внешней flash:
+   играет аварийный писк из const-массива во внутренней flash. Можно звать из
+   main() до старта RTOS. Возврат: 0 = тракт работает (DMA стартовала и
+   завершилась), 1 = DMA не стартовала, 2 = стартовала, но не завершилась.
+   Заодно показывает, не врёт ли системный тик (печатает затраченные мс при
+   ожидаемых ~240).                                                          */
+int audio_selftest(void);
+
 audio_err_t audio_play(uint16_t idx);
 audio_err_t audio_play_name(const char *name);
 void        audio_stop(void);

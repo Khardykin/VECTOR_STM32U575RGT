@@ -37,6 +37,7 @@
 #include "main.h"
 #include "tx_api.h"
 #include "vector_log.h"   /* консольный лог: VECTOR_LOG_ENABLE в vector_config.h */
+#include "vector_tick.h"   /* VTICK_MS(): источник времени выбирается в vector_config.h */
 
 /* ------------------------------------------------------------------ RTOS -- */
 #define AP_STACK_SIZE   4096u
@@ -129,14 +130,14 @@ static volatile int32_t ap_pending_idx = -1;
  *   ap_loop_on      0/1 - режим включён (audio_set_loop, дефолт из конфига)
  *   ap_loop_idx     звук, который повторяется; -1 = цикла нет
  *   ap_loop_pause   пауза между повторами, мс (audio_set_loop_pause)
- *   ap_next_at      момент (HAL_GetTick) следующего повтора; 0 = ещё не задан,
+ *   ap_next_at      момент (VTICK_MS) следующего повтора; 0 = ещё не задан,
  *                   то есть звук только что закончился и пауза не началась    */
 static volatile uint8_t  ap_loop_on    = (uint8_t)VECTOR_AUDIO_LOOP_STATE;
 static volatile int32_t  ap_loop_idx   = -1;
 static volatile uint32_t ap_loop_pause = (uint32_t)VECTOR_AUDIO_LOOP_PAUSE_MS;
 static volatile uint32_t ap_next_at    = 0;
 
-/* Дедлайн текущего звучания (HAL_GetTick() + длительность + запас). Нужен
+/* Дедлайн текущего звучания (VTICK_MS() + длительность + запас). Нужен
    только watchdog'у ap_check_stuck(): если колбэк завершения DMA так и не
    пришёл, поток не встаёт навсегда, а гасит "залипший" звук сам.            */
 #define AP_STUCK_MARGIN_MS  500u
@@ -214,8 +215,8 @@ static void ap_check_stuck(void)
 
   if ((ap_playing_idx != -1) && (dl != 0u))
   {
-    /* сравнение с учётом переполнения HAL_GetTick() (~49.7 суток) */
-    if ((int32_t)(HAL_GetTick() - dl) > 0)
+    /* сравнение с учётом переполнения VTICK_MS() (~49.7 суток) */
+    if ((int32_t)(VTICK_MS() - dl) > 0)
     {
       (void)HAL_SAI_Abort(&hsai_BlockA1);
       ap_playing_idx    = -1;
@@ -266,7 +267,7 @@ static audio_err_t beep_now(void)
   ap_playing_idx    = -2;      /* маркер: играет писк */
   audio_dbg_cur_idx = -2;
   audio_dbg_started++;
-  ap_play_deadline  = HAL_GetTick() +
+  ap_play_deadline  = VTICK_MS() +
                       ((audio_beep_samples * 1000u) / 8000u) + AP_STUCK_MARGIN_MS;
   return AUDIO_OK;
 }
@@ -323,7 +324,7 @@ static audio_err_t start_now(uint16_t idx)
           audio_dbg_cur_idx  = (int32_t)idx;
           audio_dbg_started++;
           /* сколько звук должен играть + запас: порог для ap_check_stuck() */
-          ap_play_deadline   = HAL_GetTick() +
+          ap_play_deadline   = VTICK_MS() +
                                (((e->length / 2u) * 1000u) / rate) + AP_STUCK_MARGIN_MS;
         }
       }
@@ -458,7 +459,7 @@ static void ap_thread_entry(ULONG arg)
     ULONG tmo = AP_WAKE_TMO;
     if ((ap_loop_idx != -1) && (ap_next_at != 0u) && (ap_playing_idx == -1))
     {
-      int32_t left = (int32_t)(ap_next_at - HAL_GetTick());
+      int32_t left = (int32_t)(ap_next_at - VTICK_MS());
       if (left <= 0)
       {
         tmo = 1u;                          /* пора повторять */
@@ -589,10 +590,10 @@ static void ap_thread_entry(ULONG arg)
         {
           /* звук только что закончился - стартуем отсчёт паузы. На следующем
              проходе (по будильнику) начнём повтор. */
-          ap_next_at = HAL_GetTick() + ap_loop_pause;
+          ap_next_at = VTICK_MS() + ap_loop_pause;
           if (ap_next_at == 0u) { ap_next_at = 1u; }   /* 0 = "не задано" */
         }
-        else if ((int32_t)(HAL_GetTick() - ap_next_at) >= 0)
+        else if ((int32_t)(VTICK_MS() - ap_next_at) >= 0)
         {
           ap_next_at = 0;
           if (start_now((uint16_t)ap_loop_idx) == AUDIO_OK)
@@ -714,6 +715,56 @@ static void load_image(void)
 }
 
 /* =============================================================== публичное */
+/* ПРЯМАЯ проверка звукового тракта: БЕЗ очереди, БЕЗ потока плеера, БЕЗ
+   состояний и БЕЗ внешней flash. Const-массив писка из внутренней flash ->
+   HAL_SAI_Transmit_DMA -> усилитель.
+   КОНТЕКСТ: любой, включая main() до старта планировщика (поэтому completion
+   ждём активным опросом состояния SAI с ограничением по числу проходов, а не
+   по тику: если тик стоит, انتظار не должно превращаться в вечный цикл).
+   Возврат: 0 = DMA стартовала и завершилась; 1 = не стартовала (код HAL в
+   логе); 2 = стартовала, но не завершилась (нет прерывания GPDMA1_Channel11).
+   Печатает затраченные миллисекунды: писк = 1920 сэмплов при 8 кГц = 240 мс.
+   Если напечатано заметно другое - системный тик идёт не 1 кГц.            */
+int audio_selftest(void)
+{
+  HAL_StatusTypeDef hs;
+  uint32_t t0 = VTICK_MS();
+  uint32_t guard = 0;
+
+  hs = HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t *)audio_beep_pcm,
+                            (uint16_t)audio_beep_samples);
+  if (hs != HAL_OK)
+  {
+    audio_dbg_errors++;
+    audio_dbg_last_err = (uint32_t)AUDIO_ERR_IO;
+    LOG_E(VLOG_M_AUDIO, "selftest: SAI DMA start FAIL hal=%d (1=err 2=busy)",
+          (int32_t)hs);
+    return 1;
+  }
+  LOG_I(VLOG_M_AUDIO, "selftest: beep %u samples via SAI DMA (no queue, no ext flash)",
+        audio_beep_samples);
+
+  /* Ждём, пока ISR завершения DMA вернёт SAI в READY. Ограничение - по числу
+     проходов цикла (~1 с на 160 МГц), чтобы не зависеть от исправности тика. */
+  while ((HAL_SAI_GetState(&hsai_BlockA1) != HAL_SAI_STATE_READY) &&
+         (guard < 40000000u))
+  {
+    guard++;
+  }
+
+  if (HAL_SAI_GetState(&hsai_BlockA1) != HAL_SAI_STATE_READY)
+  {
+    audio_dbg_errors++;
+    LOG_E(VLOG_M_AUDIO, "selftest: DMA started but NOT finished (GPDMA1_Channel11_IRQn?)");
+    (void)HAL_SAI_Abort(&hsai_BlockA1);
+    return 2;
+  }
+
+  audio_dbg_played++;
+  LOG_I(VLOG_M_AUDIO, "selftest: done in %u ms (expected ~%u ms, guard=%u)",
+        VTICK_ELAPSED_MS(t0), (audio_beep_samples * 1000u) / 8000u, guard);
+  return 0;
+}
 /* Инициализация плеера. Вызывать ОДИН раз из tx_application_define(), ПОСЛЕ
    ext_init() (нужен мьютекс шины flash и отсканированный журнал).
    Порядок внутри важен:

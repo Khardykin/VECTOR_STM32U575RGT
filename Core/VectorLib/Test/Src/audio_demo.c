@@ -29,6 +29,7 @@
 
 #include "audio_player.h"
 #include "main.h"
+#include "vector_tick.h"   /* VTICK_MS(): источник времени выбирается в vector_config.h */
 
 #define DEMO_DEBOUNCE_MS   VECTOR_KEY_DEBOUNCE_MS
 #define DEMO_KEYS          3u
@@ -77,7 +78,7 @@ volatile uint32_t demo_dbg_last_pin= 0;   /* последний обработа
  * Кнопки: BUTTON1 - цикл состояний, BUTTON2 - следующий звук, BUTTON3 - стоп. */
 void audio_demo_key_handler(uint16_t GPIO_Pin)
 {
-  uint32_t now = HAL_GetTick();
+  uint32_t now = VTICK_MS();
   GPIO_PinState lv;
   uint8_t level, pressed, key;
 
@@ -91,7 +92,7 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
   }
 
   /* защита от дребезга: интервал свой для каждой кнопки.
-     HAL_GetTick() в ISR читать можно - это обычная переменная, которую
+     VTICK_MS() в ISR читать можно - это обычная переменная, которую
      инкрементит прерывание тайм-базы; разрешение 1 мс, для антидребезга
      этого достаточно.                                                      */
   if ((now - demo_last_ms[key]) < DEMO_DEBOUNCE_MS)

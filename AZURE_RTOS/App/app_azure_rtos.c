@@ -88,49 +88,80 @@ volatile uint32_t audio_sai_errcode  = 0;
 volatile uint32_t audio_played_ok    = 0;
 
 /* ---------------------------------------------------------------------------
- * Отчёт о системном тике (см. VECTOR_LOG_TICK_REPORT_S в vector_config.h).
- * Счётчики ведёт прерывание тайм-базы TIM6 в main.c (USER CODE Callback 1),
- * а печатаем мы отсюда - ИЗ ПОТОКА, потому что vlog из ISR вызовы
- * отбрасывает (блокирующая передача в прерывании недопустима).
+ * Отчёт о системном тике (VECTOR_LOG_TICK_REPORT_S в vector_config.h).
  *
- * Что должно быть в норме за 10 секунд:
- *   irq=+10000 hal=+10000  (прерываний столько же, сколько тиков HAL)
- *   min=999..1001 max=1000..1100 us
- * Если hal растёт медленнее irq - тики теряются (прерывание тайм-базы
- * заблокировано дольше 1 мс). Если max_us большой - тик задерживают, но не
- * теряют: приоритет TIM6_IRQn = 15 (ниже всех), а ThreadX закрывает
- * прерывания через PRIMASK внутри каждого своего вызова.
+ * ЗАЧЕМ: в проекте ДВА независимых источника времени, и они могут расходиться:
+ *   TIM6    (1 кГц, IRQ приоритет 15) -> HAL_IncTick() -> HAL_GetTick()
+ *   SysTick (100 Гц, приоритет 4)     -> _tx_timer_interrupt() -> тик ThreadX
+ * ThreadX тайм-базу HAL НЕ трогает: MX_ThreadX_Init()/tx_kernel_enter()
+ * настраивает только SysTick (tx_initialize_low_level.S). Поэтому, если
+ * HAL_GetTick() отстаёт от реального времени, виноват не RTOS, а то, что
+ * прерывание TIM6 не обслуживается 1000 раз в секунду (остановка ядра
+ * отладчиком, шквал прерываний, долгая маскировка).
+ *
+ * Отчёт печатается отсюда, ИЗ ПОТОКА, и интервал отсчитывается по тику
+ * ThreadX, а не по HAL_GetTick: если тики HAL теряются, интервал на
+ * HAL_GetTick просто никогда бы не наступил (так и вышло в docs/log.md -
+ * строки отчёта в логе не было, потому что HAL_GetTick не дошёл до 10000).
+ *
+ * Чтение строки (норма):
+ *   tick 10 s: tx=+1000 hal=+10000 irq=+10000 cb=+10000 keys=+0
+ *   tx  - тики ThreadX (SysTick) за интервал, 1000 = 10 с
+ *   hal - насколько вырос HAL_GetTick()
+ *   irq - сколько раз сработало прерывание TIM6
+ *   cb  - сколько раз вызван HAL_TIM_PeriodElapsedCallback (от любого таймера)
+ *   keys- сколько событий кнопок прошло антидребезг
+ * Если hal и irq дают ~10000 за 10 реальных секунд - тик HAL ровно 1 мс и
+ * антидребезг 50 мс действительно 50 мс. Если в разы меньше - тики теряются,
+ * и все таймауты в проекте растягиваются во столько же раз (ровно тот симптом:
+ * "DEMO_DEBOUNCE_MS отсчитывается как 5 секунд").
  * -------------------------------------------------------------------------*/
 #if VECTOR_LOG_TICK_REPORT_S
+extern volatile uint32_t sys_dbg_cb_all;
 extern volatile uint32_t sys_dbg_ticks;
-extern volatile uint32_t sys_dbg_tick_min_us;
-extern volatile uint32_t sys_dbg_tick_max_us;
 extern volatile uint32_t sys_dbg_hal_tick;
+#if VECTOR_AUDIO_DEMO_KEYS
+extern volatile uint32_t demo_dbg_press;
+#endif
 
 static void tick_report(void)
 {
-  static uint32_t last_ms  = 0;
+  static uint32_t last_tx  = 0;
+  static uint32_t prev_cb  = 0;
   static uint32_t prev_irq = 0;
   static uint32_t prev_hal = 0;
-  uint32_t now = HAL_GetTick();
+#if VECTOR_AUDIO_DEMO_KEYS
+  static uint32_t prev_key = 0;
+#endif
+  uint32_t tx = tx_time_get();
 
-  if ((uint32_t)(now - last_ms) < (VECTOR_LOG_TICK_REPORT_S * 1000u))
+  if ((uint32_t)(tx - last_tx) < (VECTOR_LOG_TICK_REPORT_S * TX_TIMER_TICKS_PER_SECOND))
   {
     return;
   }
-  last_ms = now;
+  last_tx = tx;
 
   {
+    uint32_t cb  = sys_dbg_cb_all;
     uint32_t irq = sys_dbg_ticks;
     uint32_t hal = sys_dbg_hal_tick;
-    LOG_I(VLOG_M_SYS, "tick %u s: irq=+%u hal=+%u min=%u max=%u us",
-          (uint32_t)VECTOR_LOG_TICK_REPORT_S, irq - prev_irq, hal - prev_hal,
-          sys_dbg_tick_min_us, sys_dbg_tick_max_us);
+#if VECTOR_AUDIO_DEMO_KEYS
+    uint32_t key = demo_dbg_press;
+    LOG_I(VLOG_M_SYS, "tick %u s: tx=+%u hal=+%u irq=+%u cb=+%u keys=+%u",
+          (uint32_t)VECTOR_LOG_TICK_REPORT_S,
+          (uint32_t)(VECTOR_LOG_TICK_REPORT_S * TX_TIMER_TICKS_PER_SECOND),
+          hal - prev_hal, irq - prev_irq, cb - prev_cb, key - prev_key);
+    prev_key = key;
+#else
+    LOG_I(VLOG_M_SYS, "tick %u s: tx=+%u hal=+%u irq=+%u cb=+%u",
+          (uint32_t)VECTOR_LOG_TICK_REPORT_S,
+          (uint32_t)(VECTOR_LOG_TICK_REPORT_S * TX_TIMER_TICKS_PER_SECOND),
+          hal - prev_hal, irq - prev_irq, cb - prev_cb);
+#endif
+    prev_cb  = cb;
     prev_irq = irq;
     prev_hal = hal;
   }
-  sys_dbg_tick_min_us = 0xFFFFFFFFu;   /* дальше меряем следующий интервал */
-  sys_dbg_tick_max_us = 0;
 }
 #endif /* VECTOR_LOG_TICK_REPORT_S */
 

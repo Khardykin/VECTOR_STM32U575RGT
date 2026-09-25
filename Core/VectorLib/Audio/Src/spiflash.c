@@ -30,6 +30,7 @@
 #include "spiflash.h"
 #include "vector_config.h"
 #include "vector_log.h"
+#include "vector_tick.h"   /* VTICK_MS(): источник времени выбирается в vector_config.h */
 #include "spi.h"
 #include "main.h"
 #if VECTOR_SPI_DMA
@@ -110,7 +111,7 @@ static HAL_StatusTypeDef cmd_addr(uint8_t cmd, uint32_t addr)
    Возврат: HAL_OK или HAL_TIMEOUT. CS здесь не удерживается.               */
 static HAL_StatusTypeDef wait_busy(uint32_t timeout_ms)
 {
-  uint32_t t0 = HAL_GetTick();
+  uint32_t t0 = VTICK_MS();
   for (;;)
   {
     uint8_t cmd = SF_CMD_RDSR;
@@ -123,7 +124,7 @@ static HAL_StatusTypeDef wait_busy(uint32_t timeout_ms)
     {
       return HAL_OK;
     }
-    if ((HAL_GetTick() - t0) > timeout_ms)
+    if ((VTICK_MS() - t0) > timeout_ms)
     {
       return HAL_TIMEOUT;
     }
@@ -289,7 +290,7 @@ HAL_StatusTypeDef sf_read(uint32_t addr, uint8_t *dst, uint32_t len)
 {
   HAL_StatusTypeDef st = HAL_OK;
   uint32_t off;
-  uint32_t t0 = HAL_GetTick();
+  uint32_t t0 = VTICK_MS();
 #if VECTOR_SPI_DMA
   uint8_t  retried = 0;
   uint8_t  use_dma;
@@ -373,7 +374,7 @@ HAL_StatusTypeDef sf_read(uint32_t addr, uint8_t *dst, uint32_t len)
   {
     if (len >= VECTOR_SPI_DMA_MIN_LEN)
     {
-      LOG_I(VLOG_M_FLASH, "read %u b @%x ok, %u ms", len, addr, HAL_GetTick() - t0);
+      LOG_I(VLOG_M_FLASH, "read %u b @%x ok, %u ms", len, addr, VTICK_MS() - t0);
     }
     else
     {
@@ -413,11 +414,11 @@ HAL_StatusTypeDef sf_sector_erase(uint32_t addr)
     return st;
   }
   {
-    uint32_t t0 = HAL_GetTick();
+    uint32_t t0 = VTICK_MS();
     st = wait_busy(SF_ERASE_TMO_MS);
     if (st == HAL_OK)
     {
-      LOG_I(VLOG_M_FLASH, "erase @%x ok, %u ms", addr, HAL_GetTick() - t0);
+      LOG_I(VLOG_M_FLASH, "erase @%x ok, %u ms", addr, VTICK_MS() - t0);
     }
     else
     {
@@ -437,7 +438,7 @@ HAL_StatusTypeDef sf_program(uint32_t addr, const uint8_t *src, uint32_t len)
   HAL_StatusTypeDef st = HAL_OK;
   uint32_t done = 0;
   uint32_t addr0 = addr;
-  uint32_t t0 = HAL_GetTick();
+  uint32_t t0 = VTICK_MS();
 
   if ((addr + len) > SF_TOTAL_SIZE)
   {
@@ -483,7 +484,7 @@ HAL_StatusTypeDef sf_program(uint32_t addr, const uint8_t *src, uint32_t len)
 
   if (st == HAL_OK)
   {
-    LOG_I(VLOG_M_FLASH, "write %u b @%x ok, %u ms", len, addr0, HAL_GetTick() - t0);
+    LOG_I(VLOG_M_FLASH, "write %u b @%x ok, %u ms", len, addr0, VTICK_MS() - t0);
   }
   else
   {
