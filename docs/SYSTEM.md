@@ -35,7 +35,7 @@ Test/  audio_demo.[ch]     ТЕСТ: кнопки PB1/PB2/PB3 как пульт 
 ```
 
 `Tools/ExtLoader_MX25R64/` — отдельный мини-проект: external loader для
-STM32CubeProgrammer (запись `sounds.img` во внешнюю flash через ST-LINK,
+STM32CubeProgrammer (запись `sounds.bin` во внешнюю flash через ST-LINK,
 см. `FLASHING.md`). В прошивку MCU он не линкуется.
 
 Удалено и больше не существует: `vector_sys.[ch]` (приборы времени),
@@ -306,7 +306,7 @@ ThreadX отстаёт от настенных часов, метки лога �
 | Файл | О чём |
 |---|---|
 | `README.md` | индекс, быстрый старт, все переключатели одним списком |
-| `FLASHING.md` | **запись программатором**: прошивка MCU, external loader для внешней flash, запись sounds.img, CubeMX-настройки |
+| `FLASHING.md` | **запись программатором**: прошивка MCU, external loader для внешней flash, запись sounds.bin, CubeMX-настройки |
 | `AUDIO.md` | как запустить/остановить звук, 44.1 кГц, качество, набор звуков, сборка образа, диагностика |
 | `SYSTEM.md` | этот: слои кода, контексты, цепочки, IRQ, время, лог, что настраивать в CubeMX |
 | `UART_BRIDGE.md` | мост UART4 ↔ USART2: полудуплекс, `0x99` → `0xFD`, счётчики |

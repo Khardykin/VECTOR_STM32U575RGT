@@ -5,13 +5,13 @@ SAI1 (I2S) → оконечный усилитель типа **MAX98357A** (SD_
 
 * **44.1 кГц, 16 бит, моно** — качество «компакт-диска» по полосе и разрядности
   (почему это потолок тракта — раздел 2).
-* Образ `sounds.img` во внешнюю flash записывает **программатор** через
+* Образ `sounds.bin` во внешнюю flash записывает **программатор** через
   external loader: [docs/FLASHING.md](FLASHING.md). Прошивка внешнюю flash
   **не программирует никогда** — factory-режим и встроенный образ удалены.
 * Прошивка MCU и образ звуков живут в разных памятях и обновляются независимо.
 
 ```
-tools/*.wav ──pack_sounds.py──▶ tools/sounds.img ──ST-LINK + ExtLoader──▶ MX25R6435F (0x0)
+tools/*.wav ──pack_sounds.py──▶ tools/sounds.bin ──ST-LINK + ExtLoader──▶ MX25R6435F (0x0)
                                                                                │
 кнопки/API ──▶ очередь ──▶ поток "Audio Player" ──ext_read кусками──▶ буфер ──▶ SAI1 DMA (circular) ──▶ усилитель
 ```
@@ -62,7 +62,7 @@ RAM — те же 16 КБ (стриминг).
 |---|---|---|
 | SAI1 | `Audio Frequency = 44.1 kHz` | CubeMX → SAI1 → Audio Frequency (PLL3 пересчитается сам, Error ≈ 0.0 %) |
 | Код | `AUDIO_SAMPLE_RATE 44100` | `audio_player.h` |
-| Образ `sounds.img` | `--rate 44100` | `tools/pack_sounds.py` (теперь это значение по умолчанию) |
+| Образ `sounds.bin` | `--rate 44100` | `tools/pack_sounds.py` (теперь это значение по умолчанию) |
 | Аварийный писк | `--rate 44100` | `tools/gen_beep.py` (по умолчанию 44100; `audio_beep.c` уже перегенерирован) |
 
 При несовпадении плеер отвергает образ целиком:
@@ -147,7 +147,7 @@ sox input-any.wav    -r 44100 -c 1 -b 16 tools/c_voice_gas.wav   # TTS/запи�
 останется прежним по качеству, но частота образа будет честной 44.1 кГц:
 
 ```bash
-python tools/pack_sounds.py tools/b_click.wav tools/c_voice_gas.wav tools/d_myvoice.wav --out tools/sounds.img
+python tools/pack_sounds.py tools/b_click.wav tools/c_voice_gas.wav tools/d_myvoice.wav --out tools/sounds.bin
 ```
 
 ---
@@ -198,13 +198,13 @@ ISR): это неблокирующие `tx_queue_send` + `tx_semaphore_put`.
 
 ```bash
 # 1. собрать образ (44100 Гц — значение по умолчанию):
-python tools/pack_sounds.py tools/b_click.wav tools/c_voice_gas.wav tools/d_myvoice.wav --out tools/sounds.img
-#    -> tools/sounds.img + tools/sounds.img.manifest.txt
+python tools/pack_sounds.py tools/b_click.wav tools/c_voice_gas.wav tools/d_myvoice.wav --out tools/sounds.bin
+#    -> tools/sounds.bin + tools/sounds.bin.manifest.txt
 #    -> перегенерируется Core/VectorLib/Audio/Inc/audio_ids.h
 
 # 2. пересобрать прошивку MCU (индексы SND_* могли измениться).
 
-# 3. записать sounds.img во внешнюю flash программатором (адрес 0x00000000):
+# 3. записать sounds.bin во внешнюю flash программатором (адрес 0x00000000):
 #    STM32CubeProgrammer + external loader из Tools/ExtLoader_MX25R64.
 #    Пошагово: docs/FLASHING.md, разделы 0-1.
 
@@ -218,7 +218,7 @@ python tools/gen_beep.py --rate 44100
 
 | Строка лога | Смысл |
 |---|---|
-| `image header bad: magic=...` | во flash не образ sounds.img (пусто/мусор) — записать через программатор |
+| `image header bad: magic=...` | во flash не образ sounds.bin (пусто/мусор) — записать через программатор |
 | `image CRC mismatch` | образ битый/недописанный — перезаписать |
 | `image rate mismatch` | образ собран с другой частотой — пересобрать `--rate 44100` |
 | `image: header read fail` | внешняя flash не читается (см. `probe rc=` в логе старта) |
@@ -226,7 +226,7 @@ python tools/gen_beep.py --rate 44100
 ### Карта внешней flash (8 МБ, `sfmap.h`)
 
 ```
-0x000000  SOUNDS  4 МБ    sounds.img целиком   <- пишет программатор (FLASHING.md)
+0x000000  SOUNDS  4 МБ    sounds.bin целиком   <- пишет программатор (FLASHING.md)
 0x400000  CONFIG  4 КБ    конфигурация         <- пишет только прошивка
 0x401000  LOG     ~3.9 МБ кольцевой журнал     <- пишет только прошивка
 ```

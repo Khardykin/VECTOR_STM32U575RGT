@@ -19,7 +19,7 @@
   *            audio_init()              - RTOS-объекты, ПОТОК, load_image()
   *            ap_thread_entry()         - вечный цикл команд
   *
-  *          Прошивка НЕ пишет внешнюю flash никогда: образ sounds.img кладёт
+  *          Прошивка НЕ пишет внешнюю flash никогда: образ sounds.bin кладёт
   *          туда программатор ST-LINK через external loader (см.
   *          Tools/ExtLoader_MX25R64 и docs/FLASHING.md). Если образа нет или
   *          он невалиден - играет аварийный писк из внутренней flash.
@@ -659,7 +659,7 @@ static void queue_clear(void)
  * Команды кладут audio_play()/audio_stop()/audio_set_state()/audio_beep(),
  * а пробуждение даёт либо они же, либо ISR завершения DMA (см. конец файла).
  *
- * Внешнюю flash поток НЕ программирует никогда: образ sounds.img записывает
+ * Внешнюю flash поток НЕ программирует никогда: образ sounds.bin записывает
  * программатор через external loader (Tools/ExtLoader_MX25R64,
  * docs/FLASHING.md). Если audio_init() образа не нашёл - на любую команду
  * звучит аварийный писк из внутренней flash.                                  */
@@ -671,9 +671,9 @@ static void ap_thread_entry(ULONG arg)
   {
     /* Образа во внешней flash нет (или он битый/с другой частотой): причина
        уже напечатана load_image(). Дальше - только аварийный писк. Лечится
-       записью sounds.img программатором: docs/FLASHING.md.                   */
+       записью sounds.bin программатором: docs/FLASHING.md.                   */
     LOG_E(VLOG_M_AUDIO,
-          "no valid image -> beep only; program sounds.img via ST-LINK "
+          "no valid image -> beep only; program sounds.bin via ST-LINK "
           "(docs/FLASHING.md)");
   }
 
@@ -917,7 +917,7 @@ static HAL_StatusTypeDef img_read(uint32_t addr, uint8_t *dst, uint32_t len)
   return st;
 }
 
-/* Читает заголовок и таблицу образа sounds.img из внешней flash в RAM
+/* Читает заголовок и таблицу образа sounds.bin из внешней flash в RAM
    (ap_hdr + ap_tab[]) и проверяет magic/version/CRC32 таблицы.
    Контекст: audio_init() (ДО планировщика) и audio_reload_image() (поток).
    Мьютекс не берёт намеренно: оба вызова происходят, когда шину больше никто

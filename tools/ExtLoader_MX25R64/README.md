@@ -1,6 +1,6 @@
 # External loader MX25R6435F для STM32CubeProgrammer
 
-Запись образа звуков `tools/sounds.img` во внешнюю SPI flash платы VECTOR
+Запись образа звуков `tools/sounds.bin` во внешнюю SPI flash платы VECTOR
 (STM32U575RGT + MX25R6435F на SPI1) напрямую из ST-LINK/CubeProgrammer.
 
 Это НЕ проект CubeIDE, а **файлы для вставки** в пустой CubeMX-проект того же

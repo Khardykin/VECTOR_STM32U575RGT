@@ -4,7 +4,7 @@
 
 | Файл | Читать, когда нужно |
 |---|---|
-| **[FLASHING.md](FLASHING.md)** | **прошить всё программатором**: прошивка MCU через CubeProgrammer/ST-LINK, external loader для внешней flash, запись `sounds.img`, CubeMX-чек-лист, диагностика записи |
+| **[FLASHING.md](FLASHING.md)** | **прошить всё программатором**: прошивка MCU через CubeProgrammer/ST-LINK, external loader для внешней flash, запись `sounds.bin`, CubeMX-чек-лист, диагностика записи |
 | **[AUDIO.md](AUDIO.md)** | **запустить звук**: качество 44.1 кГц/16 бит, стриминг через circular DMA, состояния и цикл, API, набор звуков, пересборка образа, диагностика «звука нет» |
 | **[SYSTEM.md](SYSTEM.md)** | понять устройство проекта: слои кода, контексты (init/поток/ISR), цепочки вызовов, IRQ, время (только тик ThreadX), лог, **что настраивать в CubeMX** (раздел 9) |
 | **[UART_BRIDGE.md](UART_BRIDGE.md)** | мост UART4 ↔ USART2: однопроводный полудуплекс, почему `0x99` приходит как `0xFD`, счётчики |
@@ -22,10 +22,10 @@
    HAL, CMSIS и Middlewares (ThreadX) подтягиваются из репозитория CubeMX — в
    git их нет (`.gitignore`).
 3. **Собрать образ звуков** (44.1 кГц):
-   `python tools/pack_sounds.py tools/*.wav --out tools/sounds.img`
+   `python tools/pack_sounds.py tools/*.wav --out tools/sounds.bin`
    (подробно — `AUDIO.md` разделы 4 и 6).
 4. **Прошить программатором** (`FLASHING.md`):
-   * `sounds.img` → внешняя flash MX25R6435F, адрес `0x00000000`
+   * `sounds.bin` → внешняя flash MX25R6435F, адрес `0x00000000`
      (CubeProgrammer + external loader из `Tools/ExtLoader_MX25R64`);
    * прошивка MCU → внутренняя flash (CubeProgrammer или Run в IDE — сессию
      отладки потом закрыть).

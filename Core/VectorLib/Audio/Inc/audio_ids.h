@@ -2,7 +2,7 @@
   * @file    audio_ids.h
   * @brief   СГЕНЕРИРОВАНО tools/pack_sounds.py — НЕ редактировать вручную.
   *
-  *          Образ: tools\sounds.img  sha256 0cf19b5466f3b9a738993b02da28249f17947a7f3e0dc126989af8d90e4d957c
+  *          Образ: tools\sounds.bin  sha256 0cf19b5466f3b9a738993b02da28249f17947a7f3e0dc126989af8d90e4d957c
   *          Порядковый номер звука = порядок файла в команде сборки.
   *          Вызывайте audio_play(SND_ИМЯ) — порядок не потеряется.
   *

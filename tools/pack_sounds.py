@@ -1,31 +1,44 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-pack_sounds.py — собирает sounds.img для внешней SPI flash (MX25K6435F, 8 МБ)
+pack_sounds.py — собирает sounds.bin для внешней SPI flash (MX25K6435F, 8 МБ)
 и генерирует сопутствующие файлы, по которым видно, ЧТО и В КАКОМ ПОРЯДKE собрано.
 
-Формат образа описан в Core/Inc/audio_image.h и ДОЛЖЕН совпадать с ним байт в байт:
-прошивка читает заголовок и таблицу прямо из флеш, C-массивы не нужны.
+Формат образа описан в Core/VectorLib/Audio/Inc/audio_image.h и ДОЛЖЕН совпадать
+с ним байт в байт: прошивка читает заголовок и таблицу прямо из флеш,
+C-массивы не нужны.
+
+Расширение образа — .bin (раньше было .img): STM32CubeProgrammer и external
+loader пишут «сырой» бинарник, .bin — штатное расширение для такого файла.
+Если в --out по старой памяти передать .img, скрипт сам подменит расширение
+на .bin и напишет об этом в stderr, так что файл с расширением .img больше
+не создаётся.
 
 Что создаётся при сборке:
-  <out>                  сам образ sounds.img
+  <out>                  сам образ sounds.bin
   <out>.manifest.txt     паспорт сборки: порядок файлов, их sha256, rate, gain,
                          sha256 результата и готовая команда для воспроизведения.
                          Именно по нему видно, почему два образа совпали/различаются.
-  Core/Inc/audio_ids.h   enum SND_<ИМЯ> = порядковый номер + SND_COUNT,
+  audio_ids.h            enum SND_<ИМЯ> = порядковый номер + SND_COUNT,
                          таблица-комментарий (номер, имя, сэмплы, байты, Гц, секунды)
                          и SND_STATE_DEFAULT_0/1 для таблицы состояний плеера.
-                         Путь задаётся --ids-out (по умолчанию Core/Inc/audio_ids.h).
+                         Путь задаётся --ids-out (по умолчанию
+                         Core/VectorLib/Audio/Inc/audio_ids.h).
 
 Использование:
-    python3 tools/pack_sounds.py tools/*.wav --out tools/sounds.img
-    python3 tools/pack_sounds.py tools/a.wav tools/b.wav --out s.img --rate 8000 --gain 3.0
+    python3 tools/pack_sounds.py tools/*.wav                 # -> tools/sounds.bin
+    python3 tools/pack_sounds.py tools/*.wav --out tools/sounds.bin
+    python3 tools/pack_sounds.py tools/a.wav tools/b.wav --out s.bin --rate 8000 --gain 3.0
     python3 tools/pack_sounds.py tools/b_click.wav --info      # параметры WAV без сборки
-    python3 tools/pack_sounds.py tools/sounds.img --check      # распарсить готовый образ
+    python3 tools/pack_sounds.py tools/sounds.bin --check      # распарсить готовый образ
 
 Детерминизм: один и тот же список файлов В ТОМ ЖЕ ПОРЯДКЕ с теми же --rate/--gain
 даёт образ байт в байт. Разный gain или другой порядок => разные байты;
 сравнивать образы имеет смысл только вместе с manifest-файлами.
+Сопутствующие файлы тоже не зависят от ОС: путь к образу в audio_ids.h и
+manifest всегда печатается в стиле Windows (tools\\sounds.bin, см. win_path()),
+а wav-исходники — через '/', поэтому пересборка под Linux не даёт «пустого»
+диффа на слешах.
 
 Требования к WAV: 16 бит/сэмпл. Каналы сводятся в моно, частота приводится к --rate
 (по умолчанию 44100 — под текущую настройку SAI1: CubeMX -> SAI1 -> Audio
@@ -57,6 +70,26 @@ NAME_LEN = 16
 FMT_PCM16 = 0
 FLASH_SIZE = 8 * 1024 * 1024
 DEFAULT_IDS = Path("Core/VectorLib/Audio/Inc/audio_ids.h")
+DEFAULT_OUT = Path("tools/sounds.bin")   # образ звуков: расширение .bin
+IMAGE_SUFFIXES = (".bin", ".img")        # .img — только на чтение старых образов
+
+
+def win_path(p) -> str:
+    """Путь к образу в стиле Windows: tools\\sounds.bin — на ЛЮБОЙ ОС.
+
+    audio_ids.h и manifest попадают в git, а str(Path) печатает разделитель
+    той системы, где запустили скрипт: под Windows выходило 'tools\\sounds.bin',
+    под Linux — 'tools/sounds.bin', и одни и те же байты образа давали «плавающий»
+    дифф. Поэтому разделитель фиксируем: путь к образу всегда с '\\', как в
+    команде для cmd.exe/PowerShell. Исходники wav в manifest по-прежнему
+    пишутся через '/' (см. replace(chr(92), '/') ниже).
+
+    Абсолютный POSIX-путь (с ведущего '/') не трогаем: под Windows он и так
+    печатается с '\', а под Linux замена дала бы бессмысленное '\tmp\old.bin'.
+    В git попадают относительные пути вида tools\sounds.bin — их и фиксируем.
+    """
+    s = str(p)
+    return s if s.startswith("/") else s.replace("/", "\\")
 
 
 # --------------------------------------------------------------------------- #
@@ -176,7 +209,7 @@ def emit_ids(entries, img_sha, out_img, path: Path):
         "  * @file    audio_ids.h",
         "  * @brief   СГЕНЕРИРОВАНО tools/pack_sounds.py — НЕ редактировать вручную.",
         "  *",
-        f"  *          Образ: {out_img}  sha256 {img_sha}",
+        f"  *          Образ: {win_path(out_img)}  sha256 {img_sha}",
         "  *          Порядковый номер звука = порядок файла в команде сборки.",
         "  *          Вызывайте audio_play(SND_ИМЯ) — порядок не потеряется.",
         "  *",
@@ -210,8 +243,8 @@ def emit_ids(entries, img_sha, out_img, path: Path):
 def emit_manifest(placeholders, entries, rate, gain, out_img: Path, img: bytes, path: Path):
     sha = hashlib.sha256(img).hexdigest()
     L = [
-        "# manifest сборки sounds.img (tools/pack_sounds.py)",
-        f"out        = {out_img}",
+        "# manifest сборки sounds.bin (tools/pack_sounds.py)",
+        f"out        = {win_path(out_img)}",
         f"out_bytes  = {len(img)}",
         f"out_sha256 = {sha}",
         f"rate       = {rate}",
@@ -228,7 +261,7 @@ def emit_manifest(placeholders, entries, rate, gain, out_img: Path, img: bytes, 
         "# команда для ТОЧНОГО воспроизведения этой сборки:",
         f"python tools/pack_sounds.py " +
         " ".join(p['src'].replace(chr(92), '/') for p in placeholders) +
-        f" --rate {rate} --gain {gain} --out {out_img}",
+        f" --rate {rate} --gain {gain} --out {win_path(out_img)}",
         "",
     ]
     path.write_text("\n".join(L), encoding="utf-8")
@@ -261,7 +294,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("wav", type=Path, nargs="+")
-    ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument("--out", type=Path, default=None,
+                    help=f"куда писать образ (по умолчанию {win_path(DEFAULT_OUT)}; "
+                         f"расширение .img автоматически заменяется на .bin)")
     ap.add_argument("--rate", type=int, default=44100)
     ap.add_argument("--gain", type=float, default=1.0)
     ap.add_argument("--ids-out", type=Path, default=DEFAULT_IDS,
@@ -276,7 +311,7 @@ def main():
     # В cmd.exe/PowerShell символ '\' НЕ переносит строку (это bash-приём),
     # поэтому команда вида
     #     python tools/pack_sounds.py a.wav b.wav \
-    #         --rate 44100 --out s.img
+    #         --rate 44100 --out s.bin
     # в Windows превращает '\' в отдельный аргумент, и wave.open падает с
     # FileNotFoundError: '\\'. В cmd.exe перенос - это '^', в PowerShell - '`'.
     # Молча отбрасываем такие "аргументы" и пишем подсказку.
@@ -317,7 +352,8 @@ def main():
         sys.exit("[!] не указано ни одного WAV-файла")
     args.wav = expanded
 
-    if args.check or (len(args.wav) == 1 and args.wav[0].suffix == ".img"):
+    if args.check or (len(args.wav) == 1 and
+                      args.wav[0].suffix.lower() in IMAGE_SUFFIXES):
         parse(args.wav[0].read_bytes())
         return
 
@@ -330,15 +366,24 @@ def main():
                   f"{frames / fr:.3f} с, пик {peak} ({100 * peak / 32768:.1f}% FS)")
         return
 
+    # --- имя образа: по умолчанию tools/sounds.bin --------------------------
+    # Расширение образа — .bin (сырой бинарник для CubeProgrammer/external
+    # loader). Старые команды с --out .../sounds.img продолжают работать:
+    # расширение .img не оставляем, а подменяем на .bin с сообщением.
     if not args.out:
-        sys.exit("[!] нужен --out для сборки")
+        args.out = DEFAULT_OUT
+        print(f"[i] --out не задан -> образ пишется в {win_path(args.out)}", file=sys.stderr)
+    elif args.out.suffix.lower() == ".img":
+        fixed = args.out.with_suffix(".bin")
+        print(f"[i] расширение .img устарело: {win_path(args.out)} -> {win_path(fixed)}", file=sys.stderr)
+        args.out = fixed
 
     img, entries, placeholders, total = build(args.wav, args.rate, args.gain)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_bytes(img)
     sha = hashlib.sha256(img).hexdigest()
 
-    print(f"\n[+] {args.out}: {total} байт ({total / 1024:.1f} КБ, "
+    print(f"\n[+] {win_path(args.out)}: {total} байт ({total / 1024:.1f} КБ, "
           f"{100 * total / FLASH_SIZE:.2f}% от 8 МБ)", file=sys.stderr)
     secs = sum(e["length"] for e in entries) / (args.rate * 2)
     print(f"[+] суммарно аудио: {secs:.1f} с; свободно останется "

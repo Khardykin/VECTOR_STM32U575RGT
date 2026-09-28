@@ -1,5 +1,5 @@
-# manifest сборки sounds.img (tools/pack_sounds.py)
-out        = tools\sounds.img
+# manifest сборки sounds.bin (tools/pack_sounds.py)
+out        = tools\sounds.bin
 out_bytes  = 2276724
 out_sha256 = 0cf19b5466f3b9a738993b02da28249f17947a7f3e0dc126989af8d90e4d957c
 rate       = 44100
@@ -18,4 +18,4 @@ gain       = 1.0
       sha256=42e7b23acff713095f8920a58d09bf16c53632fdac20bbee23daa4d05da66899  src=2ch 44100Гц  -> 88200 сэмплов 44100Гц, 2.00 с
 
 # команда для ТОЧНОГО воспроизведения этой сборки:
-python tools/pack_sounds.py tools/kolokol_1.wav tools/kolokol_2.wav tools/phone_1.wav tools/phone_2.wav tools/zvonok_1.wav --rate 44100 --gain 1.0 --out tools\sounds.img
+python tools/pack_sounds.py tools/kolokol_1.wav tools/kolokol_2.wav tools/phone_1.wav tools/phone_2.wav tools/zvonok_1.wav --rate 44100 --gain 1.0 --out tools\sounds.bin

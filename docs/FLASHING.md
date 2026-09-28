@@ -3,7 +3,7 @@
 С этого патча устройство прошито **только программатором**:
 
 * прошивка MCU — как обычно, по SWD;
-* образ звуков `tools/sounds.img` — во внешнюю SPI flash **MX25R6435F** тем же
+* образ звуков `tools/sounds.bin` — во внешнюю SPI flash **MX25R6435F** тем же
   ST-LINK через **external loader** (проект лежит в `Tools/ExtLoader_MX25R64/`).
 
 Прошивка звуков во внутреннюю flash MCU и автоматическая factory-запись при
@@ -84,7 +84,7 @@ C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\ExternalLo
 
 ## 1. Записать образ звуков во внешнюю flash
 
-### 1.1. Сначала собрать sounds.img (44.1 кГц!)
+### 1.1. Сначала собрать sounds.bin (44.1 кГц!)
 
 Прошивка настроена на **44100 Гц** (`AUDIO_SAMPLE_RATE` в `audio_player.h`).
 Образ с другой частотой плеер отвергнет (`image rate mismatch` в логе).
@@ -93,7 +93,7 @@ C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\ExternalLo
 # wav-исходники должны быть 44.1 кГц / 16 бит / моно (см. AUDIO.md, раздел
 # "Качество звука"). Порядок файлов в команде = индексы звуков в прошивке.
 python tools/pack_sounds.py tools/b_click.wav tools/c_voice_gas.wav tools/d_myvoice.wav ^
-       --rate 44100 --out tools/sounds.img
+       --rate 44100 --out tools/sounds.bin
 ```
 
 Скрипт перегенерирует `Core/VectorLib/Audio/Inc/audio_ids.h` (enum `SND_*`) —
@@ -108,7 +108,7 @@ python tools/pack_sounds.py tools/b_click.wav tools/c_voice_gas.wav tools/d_myvo
    * Если «Init failed» — лоадер не увидел flash: питание, CS=PA4, SPI1-пины,
      метка `CS_FLASH` в проекте лоадера.
 4. Секция **Download**:
-   * File path = `tools/sounds.img`
+   * File path = `tools/sounds.bin`
    * Start address = **0x00000000** (адресное пространство лоадера = смещение
      в чипе; `AUDIO_IMG_BASE_ADDR` в прошивке тоже 0)
    * галки **Verify programming** (и, по желанию, *Skip flash erase before
@@ -127,7 +127,7 @@ python tools/pack_sounds.py tools/b_click.wav tools/c_voice_gas.wav tools/d_myvo
 "C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe" ^
   -c port=SWD reset=HWrst ^
   -el "C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\ExternalLoader\ExtLoader_MX25R64.stldr" ^
-  -d tools\sounds.img 0x00000000 -v
+  -d tools\sounds.bin 0x00000000 -v
 ```
 
 Полное стирание чипа (если нужно): `-e all` при подключённом external loader.
@@ -163,10 +163,10 @@ Run/Debug в CubeIDE захватывает SWD и **удерживает отл
 ## 3. Порядок обновления набора звуков
 
 1. Пересобрать wav-исходники в **44.1 кГц** (см. AUDIO.md).
-2. `python tools/pack_sounds.py ... --rate 44100 --out tools/sounds.img`
+2. `python tools/pack_sounds.py ... --rate 44100 --out tools/sounds.bin`
    (перегенерируется `audio_ids.h`).
 3. **Пересобрать прошивку** MCU (индексы/имена звуков живут в `audio_ids.h`).
-4. Записать `sounds.img` во внешнюю flash (раздел 1).
+4. Записать `sounds.bin` во внешнюю flash (раздел 1).
 5. Записать прошивку в MCU (раздел 2) — можно в любом порядке: плеер сверяет
    частоту образа с `AUDIO_SAMPLE_RATE` и не даст играть «чужой» образ.
 6. Reset → в логе: `image ok=1 sounds=3`.
@@ -177,7 +177,7 @@ Run/Debug в CubeIDE захватывает SWD и **удерживает отл
 
 ```
 0x000000 +------------------------------------------+
-         | SOUNDS  4 МБ   sounds.img целиком        |  <- шьётся лоадером с адреса 0x0
+         | SOUNDS  4 МБ   sounds.bin целиком        |  <- шьётся лоадером с адреса 0x0
 0x400000 +------------------------------------------+
          | CONFIG  4 КБ   конфигурация устройства   |  <- пишется только прошивкой
 0x401000 +------------------------------------------+
@@ -186,7 +186,7 @@ Run/Debug в CubeIDE захватывает SWD и **удерживает отл
 ```
 
 Лоадер видит весь чип (8 МБ), но шить нужно **только область SOUNDS**
-(адрес 0x0, длина = размер `sounds.img`). Полный chip erase (`-e all`) сотрёт
+(адрес 0x0, длина = размер `sounds.bin`). Полный chip erase (`-e all`) сотрёт
 конфиг и журнал — обычно это не нужно.
 
 ## 5. Быстрая диагностика
@@ -196,6 +196,6 @@ Run/Debug в CubeIDE захватывает SWD и **удерживает отл
 | CubeProgrammer не видит лоадер в списке EL | `.stldr` не скопирован в `bin\ExternalLoader`, нужен перезапуск CubeProgrammer |
 | `Init failed` при подключении с лоадером | flash не ответила JEDEC `C2 28 17`: питание 3.3 В, CS=PA4 (метка `CS_FLASH`!), пины SPI1 PA5/PA6/PA7, CPOL/CPHA = mode 0 |
 | Ошибки записи/верификации | понизить скорость: SPI1 Baud Rate Prescaler = 16 или 32 в проекте лоадера, пересобрать |
-| Плеер: `image rate mismatch` | образ собран не под 44100 Гц — пересобрать `sounds.img` с `--rate 44100` |
+| Плеер: `image rate mismatch` | образ собран не под 44100 Гц — пересобрать `sounds.bin` с `--rate 44100` |
 | Плеер: `image header bad` | образ не записан/бит — перечитать память в CubeProgrammer по адресу 0x0 (первые байты = `SNDI`), при необходимости перезаписать |
 | `flash probe FAIL` в логе прошивки | внешняя flash не отвечает основной прошивке: те же CS/пины/питание; сравнить с Init лоадера |

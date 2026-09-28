@@ -3,7 +3,7 @@
   * @file    audio_player.h
   * @brief   Плеер звуков из внешней SPI flash: очередь, состояния, громкость
   *
-  *          Звуки лежат образом sounds.img во внешней MX25R6435F (см.
+  *          Звуки лежат образом sounds.bin во внешней MX25R6435F (см.
   *          audio_image.h); записывает его туда ПРОГРАММАТОР через external
   *          loader (Tools/ExtLoader_MX25R64, docs/FLASHING.md) - прошивка
   *          внешнюю flash никогда не программирует. Плеер читает звук из
@@ -49,7 +49,7 @@ extern "C" {
    местами, иначе звук пойдёт с другой скоростью и высотой тона:
      1) CubeMX -> SAI1 -> Audio Frequency (SAI_AUDIO_FREQUENCY_44K; PLL3
         пересчитается сам, проверьте ErrorAudioFreq ~ 0.0 %);
-     2) tools/pack_sounds.py --rate (сборка sounds.img);
+     2) tools/pack_sounds.py --rate (сборка sounds.bin);
      3) tools/gen_beep.py --rate (аварийный писк во внутренней flash).
    44.1 кГц/16 бит/моно выбраны как максимум качества тракта: усилитель
    MAX98357A поддерживает 8-96 кГц и 16/24/32 бита, а исходники звуков -
@@ -67,7 +67,7 @@ extern "C" {
 typedef enum
 {
   AUDIO_OK = 0,
-  AUDIO_ERR_NO_IMAGE,     /* образ sounds.img не найден/битый                */
+  AUDIO_ERR_NO_IMAGE,     /* образ sounds.bin не найден/битый                */
   AUDIO_ERR_BAD_INDEX,    /* нет такого звука в таблице                    */
   AUDIO_ERR_TOO_LONG,     /* звук длиннее AUDIO_BUF_SAMPLES                */
   AUDIO_ERR_IO,           /* ошибка чтения флеш или запуска DMA            */
