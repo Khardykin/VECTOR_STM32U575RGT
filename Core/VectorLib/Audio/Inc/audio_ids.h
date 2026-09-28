@@ -2,29 +2,33 @@
   * @file    audio_ids.h
   * @brief   СГЕНЕРИРОВАНО tools/pack_sounds.py — НЕ редактировать вручную.
   *
-  *          Образ: tools\sounds.img  sha256 89109e170705a85c34c441bc54458f7d86d9bd6a91d5f053239cec097577e0d6
+  *          Образ: tools\sounds.img  sha256 0cf19b5466f3b9a738993b02da28249f17947a7f3e0dc126989af8d90e4d957c
   *          Порядковый номер звука = порядок файла в команде сборки.
   *          Вызывайте audio_play(SND_ИМЯ) — порядок не потеряется.
   *
   *          idx  имя             сэмплов     байт     Гц   секунд
-  *            0  b_click             960     1920  16000    0.06
-  *            1  c_voice_gas       35200    70400  16000    2.20
-  *            2  d_myvoice        129678   259356  16000    8.10
+  *            0  kolokol_1        176400   352800  44100    4.00
+  *            1  kolokol_2        328943   657886  44100    7.46
+  *            2  phone_1          412416   824832  44100    9.35
+  *            3  phone_2          132300   264600  44100    3.00
+  *            4  zvonok_1          88200   176400  44100    2.00
   */
 #ifndef AUDIO_IDS_H
 #define AUDIO_IDS_H
 
 enum {
-  SND_B_CLICK = 0,
-  SND_C_VOICE_GAS = 1,
-  SND_D_MYVOICE = 2,
-  SND_COUNT = 3
+  SND_KOLOKOL_1 = 0,
+  SND_KOLOKOL_2 = 1,
+  SND_PHONE_1 = 2,
+  SND_PHONE_2 = 3,
+  SND_ZVONOK_1 = 4,
+  SND_COUNT = 5
 };
 
 /* Значения по умолчанию для таблицы состояний плеера
    (ap_state_map в audio_player.c). Если звуков меньше двух,
    недостающие состояния = тишина (0xFFFF). */
-#define SND_STATE_DEFAULT_0  SND_B_CLICK
-#define SND_STATE_DEFAULT_1  SND_C_VOICE_GAS
+#define SND_STATE_DEFAULT_0  SND_KOLOKOL_1
+#define SND_STATE_DEFAULT_1  SND_KOLOKOL_2
 
 #endif /* AUDIO_IDS_H */

@@ -3,10 +3,11 @@
   * @file    audio_player.h
   * @brief   Плеер звуков из внешней SPI flash: очередь, состояния, громкость
   *
-  *          Звуки лежат образом sounds.img во внешней MX25K6435F (см.
-  *          audio_image.h). Плеер читает нужный звук целиком в RAM-буфер,
-  *          применяет громкость и отдаёт в SAI одной DMA-транзакцией -
-  *          без щелей и без участия CPU во время звучания.
+  *          Звуки лежат образом sounds.img во внешней MX25R6435F (см.
+  *          audio_image.h); записывает его туда ПРОГРАММАТОР через external
+  *          loader (Tools/ExtLoader_MX25R64, docs/FLASHING.md) - прошивка
+  *          внешнюю flash никогда не программирует. Плеер читает звук из
+  *          flash и выдаёт в SAI через DMA - без щелей и без участия CPU.
   *
   *          ДВА РЕЖИМА ВЫДАЧИ (выбираются автоматически по конфигурации DMA):
   *            СТРИМИНГ (VECTOR_AUDIO_STREAM=1 И в CubeMX для SAI1_A DMA
@@ -18,8 +19,9 @@
   *              2 x VECTOR_AUDIO_STREAM_CHUNK сэмплов (16 КБ при 4096).
   *            ONE-SHOT (канал в Normal mode или стриминг выключен): звук
   *              читается ЦЕЛИКОМ в ap_buf[AUDIO_BUF_SAMPLES] и уходит одной
-  *              транзакцией. Предел 65535 сэмплов = 4.09 с при 16 кГц, RAM
-  *              131 КБ. Плеер сам определит режим и напечатает подсказку.
+  *              транзакцией. Предел 65535 сэмплов = 1.49 с при 44.1 кГц, RAM
+  *              131 КБ (при VECTOR_AUDIO_STREAM_SMALLBUF 1 - только 16 КБ).
+  *              Плеер сам определит режим и напечатает подсказку.
   *          На U5 circular для GPDMA - это связный список (linked-list), и
   *          только в режиме DMA_LINKEDLIST_CIRCULAR HAL НЕ гасит SAI по
   *          завершении блока, поэтому стыки кусков идут без щелей.
@@ -45,14 +47,19 @@ extern "C" {
 
 /* Частота дискретизации ВСЕЙ аудио-подсистемы. Обязана совпадать с тремя
    местами, иначе звук пойдёт с другой скоростью и высотой тона:
-     1) CubeMX -> SAI1 -> Audio Frequency (сейчас SAI_AUDIO_FREQUENCY_16K);
+     1) CubeMX -> SAI1 -> Audio Frequency (SAI_AUDIO_FREQUENCY_44K; PLL3
+        пересчитается сам, проверьте ErrorAudioFreq ~ 0.0 %);
      2) tools/pack_sounds.py --rate (сборка sounds.img);
-     3) tools/gen_beep.py --rate (аварийный писк во внутренней flash).       */
-#define AUDIO_SAMPLE_RATE     16000u
+     3) tools/gen_beep.py --rate (аварийный писк во внутренней flash).
+   44.1 кГц/16 бит/моно выбраны как максимум качества тракта: усилитель
+   MAX98357A поддерживает 8-96 кГц и 16/24/32 бита, а исходники звуков -
+   16-битные, поэтому большая разрядность дала бы только объём, не качество. */
+#define AUDIO_SAMPLE_RATE     44100u
 
-/* RAM-буфер под один звук. 65535 сэмплов - это ещё и предел uint16_t Size в
-   HAL_SAI_Transmit_DMA, поэтому одна DMA-транзакция длиннее не бывает:
-   при 16 кГц максимум 4.09 с на звук (при 8 кГц было 8.19 с).               */
+/* RAM-буфер под один звук в запасном режиме "одной транзакцией". 65535
+   сэмплов - предел uint16_t Size в HAL_SAI_Transmit_DMA: при 44.1 кГц это
+   максимум 1.49 с на звук. Рабочий режим - стриминг (длина не ограничена),
+   см. VECTOR_AUDIO_STREAM в vector_config.h.                               */
 #define AUDIO_BUF_SAMPLES     65535u
 #define AUDIO_QUEUE_LEN       8u              /* глубина очереди play()      */
 #define AUDIO_STATE_SILENT    0xFFFFu         /* состоянию звук не назначен  */
@@ -124,9 +131,8 @@ extern volatile uint32_t audio_dbg_errors;      /* ошибки чтения/DMA
 extern volatile int32_t  audio_dbg_cur_idx;     /* -1 если не играет         */
 extern volatile uint32_t audio_dbg_last_err;    /* код audio_err_t           */
 extern volatile uint32_t audio_dbg_boot_stage;  /* 0 init, 1 образ ок,
-                                                   2 образа нет, 3 factory ок,
-                                                   4 factory провален,
-                                                   5 рабочий цикл            */
+                                                   2 образа нет/невалиден,
+                                                   3 рабочий цикл            */
 extern volatile uint32_t audio_dbg_wakes;       /* пробуждений потока        */
 extern volatile uint32_t audio_dbg_timeouts;    /* из них по heartbeat       */
 extern volatile uint32_t audio_dbg_keys;        /* принято команд            */
@@ -134,8 +140,9 @@ extern volatile uint32_t audio_dbg_last_cmd;    /* 1 play 2 stop 3 state 4 beep 
 extern volatile uint32_t audio_dbg_dropped;     /* play вытеснил play        */
 extern volatile uint32_t audio_dbg_underrun;    /* стрим: половина не была
                                                    дозагружена вовремя (поток
-           не успел за 256 мс) - слышно как заикание, лечится увеличением
-           VECTOR_AUDIO_STREAM_CHUNK или разборкой, кто держит ext_mtx       */
+           не успел за CHUNK/AUDIO_SAMPLE_RATE = 93 мс) - слышно как
+           заикание, лечится увеличением VECTOR_AUDIO_STREAM_CHUNK или
+           разборкой, кто держит ext_mtx */
 extern volatile uint32_t audio_dbg_loops;       /* сколько повторов цикла сыграно */
 extern volatile uint32_t audio_dbg_stuck;       /* >0: колбэк завершения DMA не
                                                    приходил, звук добит

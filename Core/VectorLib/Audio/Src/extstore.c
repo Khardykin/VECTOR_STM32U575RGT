@@ -12,12 +12,26 @@
 #include "extstore.h"
 #include "sfmap.h"
 #include "spiflash.h"
+#include "vector_config.h"
 #include "vector_log.h"
+#include "vector_tick.h"
 #include "tx_api.h"
 #include <string.h>
 
 static TX_MUTEX ext_mtx;
 static uint8_t  ext_ready = 0;
+
+/* Повторы сбойного чтения: под отладчиком (Live Watch / Expressions halt'ят
+   ядро) одиночный SPI-обмен изредка возвращается по таймауту HAL (st=3,
+   0 байт) - это сбой ЧТЕНИЯ, а не порча данных. См. VECTOR_SF_READ_RETRY.  */
+#if (VECTOR_SF_READ_RETRY < 1)
+#define EXT_READ_TRIES  1u
+#elif (VECTOR_SF_READ_RETRY > 16)
+#define EXT_READ_TRIES  16u
+#else
+#define EXT_READ_TRIES  ((uint32_t)VECTOR_SF_READ_RETRY)
+#endif
+#define EXT_READ_RETRY_DELAY_MS  2u   /* дать halt'у отладчика пройти */
 
 volatile uint32_t ext_dbg_log_sector = 0;
 volatile uint32_t ext_dbg_log_offset = 0;
@@ -61,12 +75,34 @@ static void unlock(void) { if (ext_ready) { (void)tx_mutex_put(&ext_mtx); } }
 /* Публичное чтение из внешней flash под мьютексом. Именно его зовёт плеер для
    подкачки звука, поэтому большие блоки внутри уходят в DMA (см. sf_read):
    мьютекс держится на всё чтение, но CPU в это время свободен.
-   Возврат: 0 = ok, -1 = ошибка шины/адреса.                                */
+   Сбойное чтение повторяется EXT_READ_TRIES раз (транзиентные таймауты SPI
+   под отладчиком не должны рвать звук). Сон между попытками - только в потоке.
+   Возврат: 0 = ok, -1 = ошибка шины/адреса после всех попыток.             */
 int ext_read(uint32_t addr, uint8_t *dst, uint32_t len)
 {
-  int rc;
+  uint32_t t;
+  int rc = -1;
+
   lock();
-  rc = (sf_read(addr, dst, len) == HAL_OK) ? 0 : -1;
+  for (t = 0; t < EXT_READ_TRIES; t++)
+  {
+    if (sf_read(addr, dst, len) == HAL_OK)
+    {
+      rc = 0;
+      break;
+    }
+    if ((t + 1u) < EXT_READ_TRIES)
+    {
+      if (VTICK_IN_THREAD())
+      {
+        VTICK_SLEEP_MS(EXT_READ_RETRY_DELAY_MS);
+      }
+    }
+  }
+  if ((rc == 0) && (t > 0u))
+  {
+    LOG_W(VLOG_M_FLASH, "ext_read: recovered after %u retry at %x", t, addr);
+  }
   unlock();
   return rc;
 }

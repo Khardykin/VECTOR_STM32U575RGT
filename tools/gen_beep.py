@@ -2,7 +2,7 @@
 """
 Генератор аварийного писка: Core/VectorLib/Audio/Src/audio_beep.c
 
-  python3 tools/gen_beep.py [--rate 16000] [--freq 1200] [--ms 100] [--gap 40]
+  python3 tools/gen_beep.py [--rate 44100] [--freq 1200] [--ms 100] [--gap 40]
                             [--amp 18000] [--out Core/VectorLib/Audio/Src/audio_beep.c]
 
 Зачем отдельный файл, а не wav в образе: писк должен работать, даже если
@@ -64,7 +64,7 @@ def tone(rate, freq, ms, amp):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--rate", type=int, default=16000, help="частота SAI/образа, Гц")
+    ap.add_argument("--rate", type=int, default=44100, help="частота SAI/образа, Гц")
     ap.add_argument("--freq", type=float, default=1200.0, help="частота тона, Гц")
     ap.add_argument("--ms", type=int, default=100, help="длительность одного тона, мс")
     ap.add_argument("--gap", type=int, default=40, help="зазор между тонами, мс")

@@ -31,7 +31,7 @@ wav2c.py — конвертер WAV -> C-массив ГОЛЫХ PCM-данны�
   --info            ничего не писать, только параметры файла
 
 Ограничение HAL: Size в HAL_SAI_Transmit_DMA() имеет тип uint16_t,
-т.е. за одну передачу максимум 65535 сэмплов (4.1 с при 16 кГц, 8.2 с при 8 кГц).
+т.е. за одну передачу максимум 65535 сэмплов (1.49 с при 44.1 кГц).
 Для более длинных файлов нужен чанкинг или linked-list DMA
 (GPDMA1_Channel12 в проекте уже настроен под DMA_LINKEDLIST_CIRCULAR, но не используется).
 """
@@ -363,9 +363,9 @@ def main():
     warn_limits(info, wav)
     if args.info:
         return
-    if info["rate"] != 16000:
-        print(f"[!] Сэмпл-рейт {info['rate']} Гц != 16000 Гц, на который настроен SAI1.\n"
-              f"    Либо --rate 16000, либо поменяйте SAI1.AudioFrequency в CubeMX\n"
+    if info["rate"] != 44100:
+        print(f"[!] Сэмпл-рейт {info['rate']} Гц != 44100 Гц, на который настроен SAI1.\n"
+              f"    Либо --rate 44100, либо поменяйте SAI1.AudioFrequency в CubeMX\n"
               f"    (и пересчитайте PLL3: f_ker = 256 * Fs * MCKDIV).", file=sys.stderr)
 
     name = args.name or sanitize(wav.stem)

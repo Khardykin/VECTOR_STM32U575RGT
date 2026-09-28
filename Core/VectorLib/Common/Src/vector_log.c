@@ -183,7 +183,6 @@ static char mask_char(uint32_t mask)
 {
   if (mask & VLOG_M_FLASH)  { return 'F'; }
   if (mask & VLOG_M_AUDIO)  { return 'A'; }
-  if (mask & VLOG_M_BRIDGE) { return 'B'; }
   return 'S';
 }
 
@@ -208,12 +207,11 @@ void vlog(uint32_t mask, uint8_t level, const char *fmt, ...)
 
   vlog_lock();
 
-  /* Префикс [секунды.мс]. Источник: в потоке - тик RTOS (VTICK_MS), а до
-     планировщика - HAL_GetTick(), потому что tx_time_get() там ещё всегда 0,
-     а стартовые строки без времени неудобны. Это ЕДИНСТВЕННОЕ место в
-     VectorLib, где HAL-тик читается ради отображения: на поведение он не
-     влияет (всё остальное время в проекте - от тика RTOS, см. vector_tick.h). */
-  ms = VTICK_IN_THREAD() ? VTICK_MS() : (uint32_t)HAL_GetTick();
+  /* Префикс [секунды.мс] - ВСЕГДА от тика RTOS (tx_time_get, vector_tick.h).
+     До планировщика тик ещё не идёт, поэтому стартовые строки печатаются с
+     [0.000] - это ожидаемо. Других источников времени в проекте нет: HAL-тик
+     (TIM6) обслуживает только внутренние таймауты драйверов HAL.            */
+  ms = VTICK_MS();
   n = putc_(vlog_line, n, VLOG_LINE, '[');
   n = putnum(vlog_line, n, VLOG_LINE, ms / 1000u, 10u, 0u);
   n = putc_(vlog_line, n, VLOG_LINE, '.');

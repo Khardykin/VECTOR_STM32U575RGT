@@ -28,9 +28,16 @@ pack_sounds.py — собирает sounds.img для внешней SPI flash (
 сравнивать образы имеет смысл только вместе с manifest-файлами.
 
 Требования к WAV: 16 бит/сэмпл. Каналы сводятся в моно, частота приводится к --rate
-(по умолчанию 8000 — под текущую настройку SAI1).
+(по умолчанию 44100 — под текущую настройку SAI1: CubeMX -> SAI1 -> Audio
+Frequency = 44.1 kHz и AUDIO_SAMPLE_RATE в audio_player.h).
 
-Бюджет: 8 МБ = 8388608 байт = 524 с при 8 кГц/16 бит/моно.
+ВАЖНО ПРО КАЧЕСТВО: встроенный resample() — линейная интерполяция, она годится
+только для приведения частоты. Максимум качества даёт ИСХОДНИК 44.1 кГц (тогда
+преобразования нет вовсе): держите мастер-файлы в 44.1 кГц/16 бит, а из 16 кГц
+апсемплинг новых деталей не добавит — звук останется «телефонным».
+
+Бюджет: область SOUNDS 4 МБ (sfmap.h) = 4194304 байт = 47 с при 44.1 кГц/16 бит/моно;
+весь чип 8 МБ = 95 с.
 """
 import argparse
 import array
@@ -255,7 +262,7 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("wav", type=Path, nargs="+")
     ap.add_argument("--out", type=Path, default=None)
-    ap.add_argument("--rate", type=int, default=8000)
+    ap.add_argument("--rate", type=int, default=44100)
     ap.add_argument("--gain", type=float, default=1.0)
     ap.add_argument("--ids-out", type=Path, default=DEFAULT_IDS,
                     help="куда писать сгенерированный enum-заголовок")
@@ -269,7 +276,7 @@ def main():
     # В cmd.exe/PowerShell символ '\' НЕ переносит строку (это bash-приём),
     # поэтому команда вида
     #     python tools/pack_sounds.py a.wav b.wav \
-    #         --rate 16000 --out s.img
+    #         --rate 44100 --out s.img
     # в Windows превращает '\' в отдельный аргумент, и wave.open падает с
     # FileNotFoundError: '\\'. В cmd.exe перенос - это '^', в PowerShell - '`'.
     # Молча отбрасываем такие "аргументы" и пишем подсказку.

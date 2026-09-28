@@ -16,13 +16,15 @@
   *          (PC10, AF_OD, PC11 занят ACCEL_INT). Значит линия ОДНА и приёмник
   *          слышит собственную передачу - ниже это глушится (ub_transmit).
   *
-  *          Лога на каждый чанк нет намеренно: при плотном трафике это
-  *          километры строк, а лог ещё и делит с мостом UART4. Ошибки
-  *          передачи логируются (LOG_W), всё остальное - в счётчиках.
+  *          ЛОГА У МЕСТА НЕТ ВОВСЕ (ни на чанк, ни на ошибки): при плотном
+  *          трафике это километры строк, а лог ещё и делит с мостом UART4.
+  *          Всё состояние - в счётчиках для отладчика.
   *
-  *          ДИАГНОСТИКА: ub_dbg_err4/err2 (коды HAL_UART_ERROR_*), ub_rearm*
-  *          (сколько раз приём перезапускали после ошибки), ub_ovf* (кольцо
-  *          переполняется - поток не успевает), плюс лог VLOG_M_BRIDGE.
+  *          ДИАГНОСТИКА: ub_dbg_err4/err2 (коды HAL_UART_ERROR_*), ub_err
+  *          (ошибки передачи), ub_rearm* (сколько раз приём перезапускали
+  *          после ошибки), ub_ovf* (кольцо переполняется - поток не успевает),
+  *          ub_rx4_bytes/ub_tx4_bytes и ub_rx2_bytes/ub_tx2_bytes (байты по
+  *          направлениям), ub_dbg_fill4/ub_dbg_fill2 (заполнение колец).
   ******************************************************************************
   */
 #include "uart_bridge.h"
@@ -249,8 +251,7 @@ static void ub_thread_entry(ULONG arg)
           }
           else
           {
-            ub_err++;
-            LOG_W(VLOG_M_BRIDGE, "usart2 tx fail (%u b)", n);
+            ub_err++;      /* молча: лог у моста выключен, см. заголовок */
           }
           moved += n;
         }
@@ -268,8 +269,7 @@ static void ub_thread_entry(ULONG arg)
           }
           else
           {
-            ub_err++;
-            LOG_W(VLOG_M_BRIDGE, "uart4 tx fail (%u b)", n);
+            ub_err++;      /* молча: лог у моста выключен, см. заголовок */
           }
           moved += n;
         }
@@ -296,9 +296,7 @@ void uart_bridge_init(void)
   /* старт приёма */
   (void)HAL_UART_Receive_IT(&huart4, (uint8_t *)&ub_rx4_byte, 1);
   (void)HAL_UART_Receive_IT(&huart2, (uint8_t *)&ub_rx2_byte, 1);
-
-  LOG_I(VLOG_M_BRIDGE, "bridge on: uart4(hd=%u) <-> usart2, ring=%u",
-        (uint32_t)((UART4->CR3 & USART_CR3_HDSEL) != 0u), (uint32_t)UB_RING);
+  /* без лога намеренно: мост молчит, состояние - в счётчиках ub_* */
 }
 
 #endif /* VECTOR_UART_BRIDGE_TEST */

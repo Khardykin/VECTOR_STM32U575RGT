@@ -7,7 +7,6 @@
 #include "vector_board.h"
 #include "vector_config.h"
 #include "vector_log.h"
-#include "vector_sys.h"
 #include "spiflash.h"
 #include "audio_player.h"
 #include "main.h"
@@ -33,17 +32,22 @@ void vector_board_init(void)
   uint32_t i;
 #endif
 
+#if VECTOR_DBG_FREEZE_TICK
+  /* Остановка тайм-базы HAL (TIM6), пока ядро стоит на брейкпоинте: без этого
+     TIM6 считает и во время halt, но прерывание не обслуживается, и внутренние
+     таймауты HAL (в том числе SPI-обменов) "сгорают" за один останов. На
+     боевой прошивке (без отладчика) ни на что не влияет.                     */
+  DBGMCU->APB1FZR1 |= DBGMCU_APB1FZR1_DBG_TIM6_STOP;
+#endif
+
   /* 1. Оконечный усилитель. MAX98357A-подобные: "Drive SD_MODE low to put the
         IC into shutdown" - пока на PC9 ноль, звука не будет при любом рабочем
         SAI/DMA. Правильное место для этого - CubeMX (PC9 -> GPIO output level
-        = High), тогда шаг убирается целиком.                                 */
+        = High), тогда шаг убирается целиком; до тех пор страховка здесь.     */
   HAL_GPIO_WritePin(SD_MODE_GPIO_Port, SD_MODE_Pin, GPIO_PIN_SET);
   board_delay_cycles(200000u);          /* ~5 мс на выход из shutdown */
 
-  /* 2. Приборы времени (и заморозка тайм-базы под отладчиком) */
-  vector_sys_init();
-
-  /* 3. Проба внешней SPI flash: sf_jedec должно быть { C2 28 17 }
+  /* 2. Проба внешней SPI flash: sf_jedec должно быть { C2 28 17 }
         (Macronix MX25R6435F, 64 Мбит), sf_probe_rc = 0. Чистый опрос, RTOS не
         нужен. Работает до планировщика, поэтому DMA здесь не используется.   */
   (void)sf_probe();
@@ -51,7 +55,7 @@ void vector_board_init(void)
         (uint32_t)sf_jedec[0], (uint32_t)sf_jedec[1], (uint32_t)sf_jedec[2]);
 
 #if VECTOR_AUDIO_SELFTEST
-  /* 4. ПРЯМАЯ проверка звукового тракта: const-PCM из внутренней flash ->
+  /* 3. ПРЯМАЯ проверка звукового тракта: const-PCM из внутренней flash ->
         SAI DMA -> усилитель. Без очереди, потока, состояний и внешней памяти.
         Возврат: 0 = DMA стартовала И завершилась, 1 = не стартовала,
         2 = стартовала, но не завершилась (нет GPDMA1_Channel11_IRQn).

@@ -14,11 +14,15 @@
   *            BUTTON3 (PB3) - стоп
   *
   *          ПОРЯДОК СТАРТА (важно, см. также docs/SYSTEM.md):
-  *            main()                    - периферия, sf_probe(), кнопки
+  *            main()                    - периферия (CubeMX), sf_probe(), кнопки
   *            tx_application_define()   - ext_init() -> audio_init()
   *            audio_init()              - RTOS-объекты, ПОТОК, load_image()
-  *            ap_thread_entry()         - factory-запись (только если образа
-  *                                        нет), затем вечный цикл команд
+  *            ap_thread_entry()         - вечный цикл команд
+  *
+  *          Прошивка НЕ пишет внешнюю flash никогда: образ sounds.img кладёт
+  *          туда программатор ST-LINK через external loader (см.
+  *          Tools/ExtLoader_MX25R64 и docs/FLASHING.md). Если образа нет или
+  *          он невалиден - играет аварийный писк из внутренней flash.
   *
   *          ДИАГНОСТИКА "ничего не происходит": audio_dbg_boot_stage,
   *          audio_dbg_wakes, audio_dbg_timeouts, audio_dbg_keys,
@@ -27,7 +31,6 @@
   */
 #include "audio_player.h"
 #include "vector_config.h"
-#include "audio_factory.h"
 #include "audio_ids.h"
 #include "audio_image.h"
 #include "spiflash.h"
@@ -73,32 +76,20 @@ static TX_SEMAPHORE ap_wake;
 static audio_img_header_t ap_hdr;
 static audio_img_entry_t  ap_tab[AP_MAX_SOUNDS];
 static uint8_t            ap_img_ok = 0;
-/* Образ во внешней flash ВАЛИДЕН, но это ДРУГАЯ сборка, чем зашита в MCU
-   (пересобрали sounds.img / audio_factory_image.c). Играть с него можно,
-   но при старте поток плеера перезапишет внешнюю flash встроенным образом.
-   Ставится в load_image() через audio_factory_is_stale().                   */
-static uint8_t            ap_img_stale = 0;
-/* factory-запись делается РОВНО ОДИН раз за старт и только если образа нет
-   или он устарел: иначе каждая перезагрузка стирала и писала сотни КБ.      */
-static uint8_t            ap_factory_tried = 0;
 
 /* ---------------------------------------------------------------- буфер ---
- * ap_buf - ОДИН на всё устройство: звук читается из flash ЦЕЛИКОМ сюда и
- * одной DMA-транзакцией уходит в SAI. 131070 байт = 65535 сэмплов, то есть
- * 4.09 с при 16 кГц (это же предел uint16_t Size у HAL_SAI_Transmit_DMA).
- * Второй звук в это же место не читается, поэтому одновременное
- * воспроизведение двух дорожек невозможно by design.                        */
+ * ap_buf - ОДИН на всё устройство. В режиме стриминга (рабочем) используются
+ * только первые 2*AP_CHUNK сэмплов: DMA крутится по кругу, поток дозагружает
+ * освободившуюся половину. Полный буфер AUDIO_BUF_SAMPLES (65535 сэмплов) -
+ * это предел uint16_t Size у HAL_SAI_Transmit_DMA, он нужен только запасному
+ * пути "одной транзакцией" (если в CubeMX сброшен Mode = Circular у SAI DMA):
+ * 65535 сэмплов = 1.49 с при 44.1 кГц. VECTOR_AUDIO_STREAM_SMALLBUF 1
+ * (теперь по умолчанию) урезает буфер до двух кусков: 16 КБ вместо 131 КБ.  */
 #if VECTOR_AUDIO_STREAM
 #define AP_CHUNK   ((uint32_t)VECTOR_AUDIO_STREAM_CHUNK)
 #endif
 
-/* Размер буфера в сэмплах. Стриминг использует только первые 2*AP_CHUNK, но
-   буфер по умолчанию оставлен ПОЛНЫМ (AUDIO_BUF_SAMPLES): если в кубе забыли
-   поставить Mode = Circular для SAI DMA, плеер откатывается на путь одной
-   транзакцией и должен уметь прочитать звук целиком, иначе вместо музыки
-   будет AUDIO_ERR_TOO_LONG. VECTOR_AUDIO_STREAM_SMALLBUF 1 урезает буфер до
-   двух кусков (экономия 115 КБ RAM) - ставить только убедившись, что стриминг
-   реально работает (в логе есть слово "stream").                            */
+/* Размер буфера в сэмплах (см. комментарий выше). */
 #if VECTOR_AUDIO_STREAM && VECTOR_AUDIO_STREAM_SMALLBUF
 #define AP_BUF_SAMPLES  (2u * VECTOR_AUDIO_STREAM_CHUNK)
 #else
@@ -222,10 +213,8 @@ volatile uint32_t audio_dbg_underrun = 0;   /* половина не была д
  */
 #define AP_BOOT_INIT        0u  /* audio_init() ещё не отработал             */
 #define AP_BOOT_IMG_OK      1u  /* образ во внешней flash валиден            */
-#define AP_BOOT_IMG_BAD     2u  /* образа нет/бит -> уходим в factory-запись */
-#define AP_BOOT_FACTORY_OK  3u  /* factory-запись прошла, образ перечитан    */
-#define AP_BOOT_FACTORY_ERR 4u  /* factory-запись НЕ удалась, образа нет     */
-#define AP_BOOT_RUN         5u  /* поток в рабочем цикле команд              */
+#define AP_BOOT_IMG_BAD     2u  /* образа нет/бит/не та частота -> только писк */
+#define AP_BOOT_RUN         3u  /* поток в рабочем цикле команд              */
 
 volatile uint32_t audio_dbg_played    = 0;
 volatile uint32_t audio_dbg_started   = 0;
@@ -249,15 +238,14 @@ volatile uint32_t audio_dbg_stuck     = 0;  /* звук добит watchdog'ом
 /* Пересчитать ap_loop_idx по текущему состоянию. КОНТЕКСТ: поток плеера.
    Цикл взводится только если: режим включён, образ прочитан и состоянию
    назначен звук (AUDIO_STATE_SILENT = "пустая ячейка" таблицы -> тишина).
-   Вызывается из CMD_STATE, CMD_LOOP и после factory-записи образа.          */
+   Вызывается из CMD_STATE и CMD_LOOP.                                       */
 static void ap_loop_update(void)
 {
   uint16_t snd = (ap_state < (sizeof ap_state_map / sizeof ap_state_map[0]))
                  ? ap_state_map[ap_state] : AUDIO_STATE_SILENT;
 
   /* ap_img_ok обязателен: без образа start_now() каждый раз уходил бы в
-     аварийный писк, и цикл превратился бы в бесконечную пищалку. После
-     успешной factory-записи ap_loop_update() вызывается ещё раз.            */
+     аварийный писк, и цикл превратился бы в бесконечную пищалку.            */
   if ((ap_loop_on != 0u) && (ap_img_ok != 0u) && (snd != AUDIO_STATE_SILENT))
   {
     ap_loop_idx = (int32_t)snd;
@@ -310,8 +298,8 @@ static void apply_volume(int16_t *p, uint32_t n);   /* объявление: с�
  *   Поток (stream_service)            - дозагружает освободившуюся половину:
  *        ext_read куском, громкость, хвост добивает тишиной.
  *
- * Запас времени на дозагрузку = AP_CHUNK / AUDIO_SAMPLE_RATE (4096/16000 =
- * 256 мс), чтение 8 КБ из flash занимает ~3 мс, то есть запас ~80 раз.
+ * Запас времени на дозагрузку = AP_CHUNK / AUDIO_SAMPLE_RATE (4096/44100 =
+ * 93 мс), чтение 8 КБ из flash занимает ~3 мс, то есть запас ~30 раз.
  * Если поток всё же не успеет, DMA повторит предыдущий кусок (слышно как
  * заикание) - счётчик audio_dbg_underrun это покажет.                        */
 
@@ -671,101 +659,30 @@ static void queue_clear(void)
  * Команды кладут audio_play()/audio_stop()/audio_set_state()/audio_beep(),
  * а пробуждение даёт либо они же, либо ISR завершения DMA (см. конец файла).
  *
- * Перед циклом - одноразовый factory-режим: если audio_init() не нашёл во
- * внешней flash валидного образа, зашиваем туда образ из прошивки и
- * перечитываем таблицу. Именно "если не нашёл": иначе каждая перезагрузка
- * стирала и писала 195 КБ заново (долгий "зависон" на старте + износ flash). */
+ * Внешнюю flash поток НЕ программирует никогда: образ sounds.img записывает
+ * программатор через external loader (Tools/ExtLoader_MX25R64,
+ * docs/FLASHING.md). Если audio_init() образа не нашёл - на любую команду
+ * звучит аварийный писк из внутренней flash.                                  */
 static void ap_thread_entry(ULONG arg)
 {
   (void)arg;
 
-#if VECTOR_AUDIO_FACTORY_EMBED && VECTOR_AUDIO_FACTORY_ON_BOOT
-#if VECTOR_AUDIO_FACTORY_FORCE
-  /* Отладочный forcing: перезаписать внешнюю flash встроенным образом на
-     ЭТОМ старте, даже если отпечатки совпадают. В серии должен быть 0.     */
-  ap_img_stale = 1;
-#endif
-  /* Перезапись нужна в двух случаях:
-       !ap_img_ok    - образа нет/бит/не та частота (как было раньше);
-       ap_img_stale  - образ ВАЛИДЕН, но это другая сборка, чем в MCU.
-     Второй случай и есть "поменял sounds.img, а во flash ничего не
-     записалось": старая сборка проходит все проверки load_image().          */
-  if (((!ap_img_ok) || (ap_img_stale != 0u)) && (!ap_factory_tried))
-  {
-    ap_factory_tried = 1;
-    if (!ap_img_ok)
-    {
-      audio_dbg_boot_stage = AP_BOOT_IMG_BAD;
-      LOG_W(VLOG_M_AUDIO, "no image -> factory program (takes seconds)");
-    }
-    else
-    {
-      /* образ есть и играбелен, но устарел: boot_stage не понижаем, чтобы по
-         логу было видно именно ОБНОВЛЕНИЕ, а не аварию                     */
-      LOG_W(VLOG_M_AUDIO, "image stale -> factory UPDATE (takes seconds)");
-    }
-    {
-      int fr = audio_factory_program();
-
-      /* Перечитываем образ ВСЕГДА, даже если factory вернула ошибку.
-         К этому моменту стирание+программирование страниц обычно уже прошли,
-         а сорваться могла только верификация: её блокирующее чтение SPI под
-         отладчиком изредка возвращается по таймауту (код -3), хотя байты во
-         flash целы. Поэтому "играть или beep only" решаем по ФАКТУ
-         перечитанного образа, а не по коду возврата записи.
-         Исключение - код -2: верификация нашла реальное расхождение байт,
-         такому образу не доверяем. */
-      audio_reload_image();
-      ap_loop_update();      /* образ появился - цикл можно взводить */
-
-      if ((ap_img_ok != 0u) && (ap_img_stale == 0u) && (fr != -2))
-      {
-        audio_dbg_boot_stage = AP_BOOT_FACTORY_OK;
-        if (fr == 0)
-        {
-          LOG_I(VLOG_M_AUDIO, "factory ok, sounds=%u stale=%u",
-                (uint32_t)ap_hdr.count, (uint32_t)ap_img_stale);
-        }
-        else
-        {
-          LOG_W(VLOG_M_AUDIO,
-                "factory verify glitch rc=%d, image reloaded OK, sounds=%u",
-                fr, (uint32_t)ap_hdr.count);
-        }
-      }
-      else
-      {
-        /* Образа так и нет (или он бит/не совпал): дальше на любую команду
-           будет аварийный писк из внутренней flash (см. start_now). Причина -
-           в sf_probe_rc, factory_dbg_sector, audio_dbg_last_err и коде rc. */
-        audio_dbg_boot_stage = AP_BOOT_FACTORY_ERR;
-        LOG_E(VLOG_M_AUDIO, "factory FAILED rc=%d -> beep only", fr);
-      }
-    }
-  }
-#elif VECTOR_AUDIO_FACTORY_EMBED
   if (!ap_img_ok)
   {
-    /* Автоматическая запись выключена (VECTOR_AUDIO_FACTORY_ON_BOOT 0):
-       внешнюю flash не трогаем, играем аварийный писк. Причина отказа образа
-       уже напечатана выше (image header bad / image CRC mismatch / read fail).
-       Записать образ вручную можно вызовом audio_factory_program().          */
-    LOG_W(VLOG_M_AUDIO, "no valid image, factory OFF by config -> beep only");
+    /* Образа во внешней flash нет (или он битый/с другой частотой): причина
+       уже напечатана load_image(). Дальше - только аварийный писк. Лечится
+       записью sounds.img программатором: docs/FLASHING.md.                   */
+    LOG_E(VLOG_M_AUDIO,
+          "no valid image -> beep only; program sounds.img via ST-LINK "
+          "(docs/FLASHING.md)");
   }
-  else if (ap_img_stale != 0u)
-  {
-    /* Играем СТАРУЮ сборку из внешней flash: она валидна, но отличается от
-       зашитой в MCU. Автоматическое обновление выключено конфигом.           */
-    LOG_W(VLOG_M_AUDIO, "image stale, factory OFF by config -> playing OLD set");
-  }
-#endif
 
   if (ap_img_ok)
   {
     audio_dbg_boot_stage = AP_BOOT_RUN;   /* образ есть - рабочий режим */
   }
-  /* иначе оставляем AP_BOOT_IMG_BAD / AP_BOOT_FACTORY_ERR: по boot_stage
-     сразу видно, что плеер работает без образа (только аварийный писк) */
+  /* иначе оставляем AP_BOOT_IMG_BAD: по boot_stage сразу видно, что плеер
+     работает без образа (только аварийный писк) */
 
   /* Стартовая проверка тракта (VECTOR_AUDIO_BOOT_PLAY): до первого нажатия
      кнопки слышно, жив ли звук вообще. В боевом режиме ставится 0.          */
@@ -965,6 +882,41 @@ static void ap_thread_entry(ULONG arg)
   }
 }
 
+/* Сколько раз повторять сбойное чтение образа (VECTOR_SF_READ_RETRY).
+   Под отладчиком один SPI-обмен изредка возвращается по таймауту HAL
+   (st=3, 0 байт) - это сбой ЧТЕНИЯ, а не порча flash, поэтому повторяем. */
+#if (VECTOR_SF_READ_RETRY < 1)
+#define SF_READ_TRIES  1u
+#elif (VECTOR_SF_READ_RETRY > 16)
+#define SF_READ_TRIES  16u
+#else
+#define SF_READ_TRIES  ((uint32_t)VECTOR_SF_READ_RETRY)
+#endif
+#define SF_READ_RETRY_DELAY_MS  2u   /* дать halt'у отладчика пройти */
+
+/* Чтение блока образа с повторами. КОНТЕКСТ: audio_init() (до планировщика -
+   просто повтор без сна) и audio_reload_image() (поток - сон между попытками
+   допустим и полезен).                                                        */
+static HAL_StatusTypeDef img_read(uint32_t addr, uint8_t *dst, uint32_t len)
+{
+  HAL_StatusTypeDef st = HAL_ERROR;
+  uint32_t t;
+
+  for (t = 0; t < SF_READ_TRIES; t++)
+  {
+    st = sf_read(addr, dst, len);
+    if (st == HAL_OK)
+    {
+      break;
+    }
+    if (VTICK_IN_THREAD())
+    {
+      VTICK_SLEEP_MS(SF_READ_RETRY_DELAY_MS);
+    }
+  }
+  return st;
+}
+
 /* Читает заголовок и таблицу образа sounds.img из внешней flash в RAM
    (ap_hdr + ap_tab[]) и проверяет magic/version/CRC32 таблицы.
    Контекст: audio_init() (ДО планировщика) и audio_reload_image() (поток).
@@ -980,22 +932,16 @@ static void load_image(void)
   uint32_t tbl_bytes;
 
   ap_img_ok = 0;
-  ap_img_stale = 0;
 
-  /* КРИТИЧНО: заголовок читаем СРАЗУ в ap_hdr, а не в raw. Раньше h указывал
-     внутрь raw, и ВТОРОЕ чтение (таблица) перезатирало его: к моменту
-     сравнения h->table_crc32 содержал уже байты таблицы, CRC не сходился
-     НИКОГДА, ap_img_ok оставался 0 - и прошивка на каждом старте стирала и
-     писала 195 КБ заново. В логе это выглядело ровно так:
-       "factory: done, 195544 b written and verified"
-       "image ok=0 sounds=0"                                                */
-  if (sf_read(AUDIO_IMG_BASE_ADDR, (uint8_t *)&ap_hdr, sizeof ap_hdr) == HAL_OK)
+  /* КРИТИЧНО: заголовок читаем СРАЗУ в ap_hdr, а не в raw: иначе второе
+     чтение (таблица) перезатрёт его, CRC не сойдётся никогда.               */
+  if (img_read(AUDIO_IMG_BASE_ADDR, (uint8_t *)&ap_hdr, sizeof ap_hdr) == HAL_OK)
   {
     if ((ap_hdr.magic == AUDIO_IMG_MAGIC) && (ap_hdr.version == AUDIO_IMG_VERSION) &&
         (ap_hdr.count > 0u) && (ap_hdr.count <= AP_MAX_SOUNDS))
     {
       tbl_bytes = (uint32_t)ap_hdr.count * AUDIO_IMG_ENTRY_SIZE;
-      if (sf_read(AUDIO_IMG_BASE_ADDR + AUDIO_IMG_HEADER_SIZE, raw, tbl_bytes) == HAL_OK)
+      if (img_read(AUDIO_IMG_BASE_ADDR + AUDIO_IMG_HEADER_SIZE, raw, tbl_bytes) == HAL_OK)
       {
         uint32_t crc = 0;
         uint32_t i;
@@ -1037,11 +983,12 @@ static void load_image(void)
             }
           }
           /* Частота образа обязана совпадать с настройкой SAI, иначе звук
-             пойдёт с другой скоростью и тоном (при 16 кГц в SAI образ 8 кГц
-             даст ускорение вдвое). Старый образ при этом ВАЛИДЕН по CRC,
-             поэтому без этой проверки он молча использовался бы дальше.
-             При несовпадении ap_img_ok остаётся 0 -> сработает factory-запись
-             и во внешнюю flash ляжет образ, собранный с нужным --rate.       */
+             пойдёт с другой скоростью и тоном (при 44.1 кГц в SAI образ
+             16 кГц даст ускорение почти втрое). Старый образ при этом
+             ВАЛИДЕН по CRC, поэтому без этой проверки он молча использовался
+             бы дальше. При несовпадении ap_img_ok остаётся 0: пересоберите
+             образ с --rate 44100 и перезапишите flash программатором
+             (docs/FLASHING.md).                                             */
           {
             uint32_t bad = 0;
             for (i = 0; i < ap_hdr.count; i++)
@@ -1054,25 +1001,13 @@ static void load_image(void)
             if (bad != 0u)
             {
               LOG_E(VLOG_M_AUDIO,
-                    "image rate mismatch: %u of %u sounds are not %u Hz -> reprogram",
+                    "image rate mismatch: %u of %u sounds are not %u Hz -> "
+                    "rebuild image and reprogram flash (docs/FLASHING.md)",
                     bad, (uint32_t)ap_hdr.count, (uint32_t)AUDIO_SAMPLE_RATE);
             }
             else
             {
               ap_img_ok = 1;   /* таблица разобрана ЦЕЛИКОМ - образ годен */
-
-              /* Образ валиден - но ТА ЛИ ЭТО СБОРКА? Сравниваем отпечаток
-                 заголовка во внешней flash с заголовком встроенного образа.
-                 Без этой проверки прошивка вечно играла бы СТАРЫЕ звуки:
-                 пересобранный sounds.img линкуется в MCU, а во внешней flash
-                 лежит прошлая валидная сборка, и load_image() её принимает.
-                 ap_img_stale снимается только перезаписью (см. поток плеера). */
-#if VECTOR_AUDIO_FACTORY_EMBED && VECTOR_AUDIO_FACTORY_UPDATE
-              if (audio_factory_is_stale(&ap_hdr) == 1)
-              {
-                ap_img_stale = 1;
-              }
-#endif
             }
           }
         }
@@ -1100,8 +1035,8 @@ static void load_image(void)
     LOG_E(VLOG_M_AUDIO, "image: header read fail (sf_probe_rc=%d)", (int32_t)sf_probe_rc);
   }
 
-  LOG_I(VLOG_M_AUDIO, "image ok=%u stale=%u sounds=%u", (uint32_t)ap_img_ok,
-        (uint32_t)ap_img_stale, ap_img_ok ? (uint32_t)ap_hdr.count : 0u);
+  LOG_I(VLOG_M_AUDIO, "image ok=%u sounds=%u", (uint32_t)ap_img_ok,
+        ap_img_ok ? (uint32_t)ap_hdr.count : 0u);
 }
 
 /* =============================================================== публичное */
@@ -1110,16 +1045,15 @@ static void load_image(void)
    HAL_SAI_Transmit_DMA -> усилитель.
    КОНТЕКСТ: любой, включая main() до старта планировщика (поэтому completion
    ждём активным опросом состояния SAI с ограничением по числу проходов, а не
-   по тику: если тик стоит, انتظار не должно превращаться в вечный цикл).
+   по тику: до планировщика тика RTOS нет вовсе, см. vector_tick.h).
    Возврат: 0 = DMA стартовала и завершилась; 1 = не стартовала (код HAL в
    логе); 2 = стартовала, но не завершилась (нет прерывания GPDMA1_Channel11).
-   Печатает затраченные миллисекунды: писк = 3840 сэмплов при 16 кГц = 240 мс.
-   Если напечатано заметно другое - системный тик идёт не 1 кГц.            */
+   Писк длится 240 мс; guard показывает, сколько проходов заняло ожидание
+   завершения DMA (время в проекте - только тик RTOS, см. vector_tick.h).   */
 int audio_selftest(void)
 {
   HAL_StatusTypeDef hs;
-  uint32_t t0 = VTICK_MS();          /* до планировщика = 0, см. лог ниже */
-  uint32_t hal_t0 = HAL_GetTick();   /* диагностика тайм-базы HAL */
+  uint32_t t0 = VTICK_MS();          /* до планировщика = 0 */
   uint32_t guard = 0;
 
   ap_sai_blk_done = 0;
@@ -1156,13 +1090,12 @@ int audio_selftest(void)
   }
 
   audio_dbg_played++;
-  /* hal_ms - НАМЕРЕННО по HAL_GetTick(): selftest выполняется до планировщика,
-     где тика RTOS ещё нет, а по этой цифре сразу видно, врёт ли тайм-база HAL
-     (норма ~240 мс для 3840 сэмплов при 16 кГц). guard - число проходов
-     ожидания: по нему видно, насколько быстро пришла DMA.                    */
-  LOG_I(VLOG_M_AUDIO, "selftest: done, hal_ms=%u (expected ~%u) guard=%u",
-        (uint32_t)(HAL_GetTick() - hal_t0),
-        (audio_beep_samples * 1000u) / AUDIO_SAMPLE_RATE, guard);
+  /* guard - число проходов ожидания: по нему видно, насколько быстро пришла
+     DMA (selftest выполняется до планировщика, где тика RTOS ещё нет, поэтому
+     длительность оцениваем только так, время в проекте - см. vector_tick.h). */
+  LOG_I(VLOG_M_AUDIO, "selftest: done, guard=%u (%u samples, expected ~%u ms)",
+        guard, audio_beep_samples,
+        (audio_beep_samples * 1000u) / AUDIO_SAMPLE_RATE);
   (void)t0;
   return 0;
 }
@@ -1173,9 +1106,8 @@ int audio_selftest(void)
         объекты;
      2) создаём поток (TX_AUTO_START - реально побежит после tx_kernel_enter);
      3) load_image() - читаем таблицу образа из внешней flash. Без этого
-        шага ap_img_ok остаётся 0, плеер считает образ отсутствующим и на
-        каждом старте уходит в factory-запись 195 КБ (долго) либо навсегда
-        остаётся на аварийном писке.
+        шага ap_img_ok остаётся 0 и плеер навсегда остаётся на аварийном
+        писке, хотя образ во flash может быть валидным.
    Контекст: инициализация (стек MSP), планировщик ещё не запущен.          */
 void audio_init(void)
 {
@@ -1309,8 +1241,9 @@ uint8_t audio_get_volume(void)
   return (uint8_t)(((uint32_t)ap_vol_q15 * 100u) / 32767u);
 }
 
-/* Перечитать таблицу образа из внешней flash (нужно после factory-записи или
-   после обновления образа по OTA). Контекст: поток плеера.                 */
+/* Перечитать таблицу образа из внешней flash (нужно, если образ перезаписали
+   программатором прямо при включённом устройстве, или после будущей OTA-
+   загрузки). Контекст: поток плеера.                                       */
 void audio_reload_image(void)
 {
   load_image();

@@ -1,17 +1,21 @@
 # manifest сборки sounds.img (tools/pack_sounds.py)
 out        = tools\sounds.img
-out_bytes  = 331808
-out_sha256 = 89109e170705a85c34c441bc54458f7d86d9bd6a91d5f053239cec097577e0d6
-rate       = 16000
+out_bytes  = 2276724
+out_sha256 = 0cf19b5466f3b9a738993b02da28249f17947a7f3e0dc126989af8d90e4d957c
+rate       = 44100
 gain       = 1.0
 
 # звуки в порядке сборки (этот порядок = индексы в прошивке):
-  0  tools/b_click.wav
-      sha256=33a001535fde6b6cdaa604b17f2c15072a0c4e9b34e5e648b48040a9735dcfc1  src=1ch 16000Гц  -> 960 сэмплов 16000Гц, 0.06 с
-  1  tools/c_voice_gas.wav
-      sha256=c4f875c61e40d0dfa54ba7a825a2372890ca40edb4f4512355e9253aeeef0bf5  src=1ch 16000Гц  -> 35200 сэмплов 16000Гц, 2.20 с
-  2  tools/d_myvoice.wav
-      sha256=6a2599e5dcd02ea1107d7a87d4c55ccbd0c8f680f1f8df00d09ea9d203f4fcbf  src=1ch 16000Гц  -> 129678 сэмплов 16000Гц, 8.10 с
+  0  tools/kolokol_1.wav
+      sha256=cca913d30fd4c3aa38d7c27075f3e3e45778daa941f3e2dc3cbbfa17acd8522b  src=2ch 44100Гц  -> 176400 сэмплов 44100Гц, 4.00 с
+  1  tools/kolokol_2.wav
+      sha256=3be93a1787590a5f8d8108aa3b7b6de1185e8efe1e91dcd124cc1b3ad7976d45  src=2ch 44100Гц  -> 328943 сэмплов 44100Гц, 7.46 с
+  2  tools/phone_1.wav
+      sha256=542159028b533a11f0ff003d66236f5171981a29b997afec179c124f3260b94c  src=2ch 44100Гц  -> 412416 сэмплов 44100Гц, 9.35 с
+  3  tools/phone_2.wav
+      sha256=11b00cb56c30d267560ebde7a6affc3a9855036626c45b6e14dca48ae6f1e2b7  src=2ch 44100Гц  -> 132300 сэмплов 44100Гц, 3.00 с
+  4  tools/zvonok_1.wav
+      sha256=42e7b23acff713095f8920a58d09bf16c53632fdac20bbee23daa4d05da66899  src=2ch 44100Гц  -> 88200 сэмплов 44100Гц, 2.00 с
 
 # команда для ТОЧНОГО воспроизведения этой сборки:
-python tools/pack_sounds.py tools/b_click.wav tools/c_voice_gas.wav tools/d_myvoice.wav --rate 16000 --gain 1.0 --out tools\sounds.img
+python tools/pack_sounds.py tools/kolokol_1.wav tools/kolokol_2.wav tools/phone_1.wav tools/phone_2.wav tools/zvonok_1.wav --rate 44100 --gain 1.0 --out tools\sounds.img

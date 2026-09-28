@@ -32,7 +32,6 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "vector_board.h"   /* вся бортовая инициализация до RTOS - один вызов */
-#include "vector_sys.h"     /* vector_sys_tick_hook() для Callback 1 ниже     */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -53,8 +52,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-/* Переменные диагностики системного времени переехали в vector_sys.c - там же
-   их extern-объявления (vector_sys.h). В сгенерированном файле их больше нет. */
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -110,9 +108,9 @@ int main(void)
   MX_ICACHE_Init();
   MX_RTC_Init();
   /* USER CODE BEGIN 2 */
-  /* Вся бортовая инициализация до RTOS: усилитель (SD_MODE), приборы времени,
-     проба внешней flash и selftest звука. Что именно делает и что из этого
-     надо перенести в CubeMX - см. vector_board.h и docs/SYSTEM.md (раздел 9).     */
+  /* Вся бортовая инициализация до RTOS: усилитель (SD_MODE), проба внешней
+     flash и selftest звука. Что именно делает и что из этого надо перенести
+     в CubeMX - см. vector_board.h и docs/SYSTEM.md (раздел 9).              */
   vector_board_init();
   /* USER CODE END 2 */
 
@@ -207,7 +205,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
-  vector_sys_tick_hook(htim);   /* счётчики тайм-базы: см. vector_sys.h */
+  /* пусто: время приложения считается только от тика ThreadX (vector_tick.h),
+     TIM6 обслуживает исключительно внутреннюю тайм-базу HAL.               */
   /* USER CODE END Callback 1 */
 }
 

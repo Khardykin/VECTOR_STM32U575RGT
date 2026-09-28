@@ -52,7 +52,6 @@ extern "C" {
 #define VLOG_M_SYS     0x00000001u  /* старт, инициализация                    */
 #define VLOG_M_FLASH   0x00000002u  /* spiflash/extstore: чтение/запись/стирание */
 #define VLOG_M_AUDIO   0x00000004u  /* плеер: старт/стоп/ошибки звука          */
-#define VLOG_M_BRIDGE  0x00000008u  /* мост UART4 <-> USART2                   */
 #define VLOG_M_ALL     0xFFFFFFFFu
 
 #if VECTOR_LOG_ENABLE
