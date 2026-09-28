@@ -75,18 +75,23 @@ IMAGE_SUFFIXES = (".bin", ".img")        # .img — только на чтени
 
 
 def win_path(p) -> str:
-    """Путь к образу в стиле Windows: tools\\sounds.bin — на ЛЮБОЙ ОС.
+    r"""Путь к образу в стиле Windows: tools\sounds.bin — на ЛЮБОЙ ОС.
 
     audio_ids.h и manifest попадают в git, а str(Path) печатает разделитель
-    той системы, где запустили скрипт: под Windows выходило 'tools\\sounds.bin',
-    под Linux — 'tools/sounds.bin', и одни и те же байты образа давали «плавающий»
-    дифф. Поэтому разделитель фиксируем: путь к образу всегда с '\\', как в
-    команде для cmd.exe/PowerShell. Исходники wav в manifest по-прежнему
-    пишутся через '/' (см. replace(chr(92), '/') ниже).
+    той системы, где запустили скрипт: под Windows выходило 'tools\sounds.bin',
+    под Linux — 'tools/sounds.bin', и одни и те же байты образа давали
+    «плавающий» дифф. Поэтому разделитель фиксируем: путь к образу всегда
+    с обратным слешем, как в команде для cmd.exe/PowerShell. Исходники wav
+    в manifest по-прежнему пишутся через '/' (см. replace(chr(92), '/') ниже).
 
     Абсолютный POSIX-путь (с ведущего '/') не трогаем: под Windows он и так
-    печатается с '\', а под Linux замена дала бы бессмысленное '\tmp\old.bin'.
-    В git попадают относительные пути вида tools\sounds.bin — их и фиксируем.
+    печатается с обратным слешем, а под Linux замена превратила бы /tmp/old.bin
+    в бессмыслицу. В git попадают относительные пути вида tools\sounds.bin —
+    вот их и фиксируем.
+
+    Docstring намеренно «сырой» (префикс r): в нём много обратных слешей, а в
+    обычной строке Python принял бы их за escape-последовательности и выдал
+    SyntaxWarning: invalid escape sequence.
     """
     s = str(p)
     return s if s.startswith("/") else s.replace("/", "\\")
@@ -329,14 +334,10 @@ def main():
         sys.exit("[!] не осталось ни одного WAV-файла после разбора аргументов")
     args.wav = _wav
 
-    # --- понятная ошибка вместо traceback, если файла нет ---
-    for a in args.wav:
-        if not a.exists():
-            sys.exit(f"[!] файл не найден: {a}\n"
-                     f"    Текущий каталог: {os.getcwd()}\n"
-                     f"    Запускайте из корня проекта: python tools/pack_sounds.py tools/x.wav ...")
-
     # --- раскрытие масок (*.wav): cmd.exe и PowerShell не раскрывают '*' ---
+    # ВАЖНО: этот блок обязан идти ПЕРЕД проверкой существования файлов.
+    # Иначе в Windows маска, которую оболочка передала как есть (tools\*.wav),
+    # отбракуется как «файл не найден», и до glob дело просто не дойдёт.
     import glob as _glob
     expanded = []
     for a in args.wav:
@@ -344,13 +345,23 @@ def main():
         if any(c in sa for c in "*?[") and not os.path.exists(sa):
             m = sorted(_glob.glob(sa))
             if not m:
-                sys.exit(f"[!] по маске {sa} ничего не найдено")
+                sys.exit(f"[!] по маске {sa} ничего не найдено\n"
+                         f"    Текущий каталог: {os.getcwd()}\n"
+                         f"    Маску в кавычки не брать, запускать из корня проекта:\n"
+                         f"    python tools/pack_sounds.py tools/*.wav --out tools/sounds.bin")
             expanded += [Path(x) for x in m]
         else:
             expanded.append(Path(sa))
     if not expanded:
         sys.exit("[!] не указано ни одного WAV-файла")
     args.wav = expanded
+
+    # --- понятная ошибка вместо traceback, если файла нет ---
+    for a in args.wav:
+        if not a.exists():
+            sys.exit(f"[!] файл не найден: {a}\n"
+                     f"    Текущий каталог: {os.getcwd()}\n"
+                     f"    Запускайте из корня проекта: python tools/pack_sounds.py tools/x.wav ...")
 
     if args.check or (len(args.wav) == 1 and
                       args.wav[0].suffix.lower() in IMAGE_SUFFIXES):
