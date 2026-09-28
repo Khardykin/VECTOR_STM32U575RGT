@@ -212,7 +212,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 [0.000] 2/S: --- vector log on (115200 8N1 UART4) ---
 [0.000] 2/S: level=2 mask=ffffffff
 [0.010] 2/A: audio init
-[0.060] 2/A: image ok=1 sounds=3
+[0.060] 2/A: image ok=1 sounds=5
 [12.340] 2/A: play #2 'd_myvoice' stream 358306 samples @44100 Hz (chunk 4096)
 ```
 

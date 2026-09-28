@@ -31,7 +31,7 @@ tools/*.wav ──pack_sounds.py──▶ tools/sounds.bin ──ST-LINK + ExtLo
 
 * Писка нет вообще → аналоговая часть/SAI/DMA: чек-лист в разделе 7.1.
 * Писк есть, звуки образа не играют → образ во внешней flash: разделы 6 и 7.2.
-* В логе старта обязательно должна быть строка `image ok=1 sounds=3`.
+* В логе старта обязательно должна быть строка `image ok=1 sounds=5`.
 
 ---
 
@@ -321,7 +321,7 @@ python tools/gen_beep.py --rate 44100
 
 ```
 probe rc=0 jedec=c2 28 17      <- внешняя flash жива (иначе SPI1/CS PA4/питание)
-image ok=1 sounds=3            <- образ валиден (иначе строка причины выше)
+image ok=1 sounds=5            <- образ валиден (иначе строка причины выше)
 play #2 'd_myvoice' stream 358306 samples @44100 Hz (chunk 4096)
 ```
 
