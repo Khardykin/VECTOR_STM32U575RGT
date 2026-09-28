@@ -6,3 +6,9 @@
 *.img binary
 *.wav binary
 *.stldr binary
+
+# Скрипты Windows: байты кладём в git КАК ЕСТЬ (-text), потому что cmd.exe
+# на «голом» LF может не найти метки goto, а атрибут eol=crlf не помогает:
+# git am/git apply пишут содержимое патча в рабочую копию без преобразования.
+*.bat -text
+*.cmd -text
