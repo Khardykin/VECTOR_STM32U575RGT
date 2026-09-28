@@ -1113,6 +1113,29 @@ void audio_init(void)
 {
   LOG_I(VLOG_M_AUDIO, "audio init");
 
+  /* 0. Контроль тактирования SAI1: реальная частота кадров обязана совпадать
+     с AUDIO_SAMPLE_RATE. FS = SAI_CK / (256 * MCKDIV), где SAI_CK - ядро SAI1
+     (у нас PLL3P), а MCKDIV HAL считает сам из Init.AudioFrequency. SAI_CK
+     должен быть кратен 256 * 44100 = 11.2896 МГц, иначе частота уезжает на
+     проценты: при прежнем SAI_CK = 44.1 МГц HAL брал MCKDIV = 4 и выдавал
+     43066 Гц (-2.34%: звук ниже на 41 цент и длиннее на 2.4%).
+     Расчёт и таблица PLL3 - docs/AUDIO.md, раздел 2 «Тактирование SAI1».   */
+  {
+    uint32_t sai_ck = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_SAI1);
+    uint32_t mckdiv = (hsai_BlockA1.Init.Mckdiv != 0u) ? hsai_BlockA1.Init.Mckdiv : 1u;
+    uint32_t fs_mhz = (uint32_t)(((uint64_t)sai_ck * 1000u) / (256u * mckdiv));
+    uint32_t need   = AUDIO_SAMPLE_RATE * 1000u;      /* то же в миллигерцах  */
+    uint32_t tol    = need / 1000u;                   /* допуск 0.1% (~17 центов) */
+
+    LOG_I(VLOG_M_AUDIO, "sai ck=%u Hz mckdiv=%u fs=%u mHz (need %u mHz)",
+          sai_ck, mckdiv, fs_mhz, need);
+    if ((fs_mhz + tol < need) || (fs_mhz > need + tol))
+    {
+      LOG_W(VLOG_M_AUDIO, "SAI fs off >0.1%% -> check PLL3 (docs/AUDIO.md)");
+    }
+    (void)sai_ck; (void)mckdiv; (void)fs_mhz; (void)need; (void)tol;
+  }
+
   /* 1-2. RTOS-объекты и поток */
   (void)tx_semaphore_create(&ap_wake, "audio wake", 0);
   (void)tx_queue_create(&ap_queue, "audio cmd", TX_1_ULONG,
