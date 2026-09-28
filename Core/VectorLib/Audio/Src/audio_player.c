@@ -704,21 +704,43 @@ static void ap_thread_entry(ULONG arg)
          логу было видно именно ОБНОВЛЕНИЕ, а не аварию                     */
       LOG_W(VLOG_M_AUDIO, "image stale -> factory UPDATE (takes seconds)");
     }
-    if (audio_factory_program() == 0)
     {
+      int fr = audio_factory_program();
+
+      /* Перечитываем образ ВСЕГДА, даже если factory вернула ошибку.
+         К этому моменту стирание+программирование страниц обычно уже прошли,
+         а сорваться могла только верификация: её блокирующее чтение SPI под
+         отладчиком изредка возвращается по таймауту (код -3), хотя байты во
+         flash целы. Поэтому "играть или beep only" решаем по ФАКТУ
+         перечитанного образа, а не по коду возврата записи.
+         Исключение - код -2: верификация нашла реальное расхождение байт,
+         такому образу не доверяем. */
       audio_reload_image();
       ap_loop_update();      /* образ появился - цикл можно взводить */
-      audio_dbg_boot_stage = ap_img_ok ? AP_BOOT_FACTORY_OK : AP_BOOT_FACTORY_ERR;
-      LOG_I(VLOG_M_AUDIO, "factory ok, sounds=%u stale=%u",
-            (uint32_t)ap_hdr.count, (uint32_t)ap_img_stale);
-    }
-    else
-    {
-      /* Образ так и не появился: дальше на любую команду будет аварийный
-         писк из внутренней flash (см. start_now). Причина - в sf_probe_rc,
-         factory_dbg_sector и audio_dbg_last_err. */
-      audio_dbg_boot_stage = AP_BOOT_FACTORY_ERR;
-      LOG_E(VLOG_M_AUDIO, "factory FAILED -> beep only");
+
+      if ((ap_img_ok != 0u) && (ap_img_stale == 0u) && (fr != -2))
+      {
+        audio_dbg_boot_stage = AP_BOOT_FACTORY_OK;
+        if (fr == 0)
+        {
+          LOG_I(VLOG_M_AUDIO, "factory ok, sounds=%u stale=%u",
+                (uint32_t)ap_hdr.count, (uint32_t)ap_img_stale);
+        }
+        else
+        {
+          LOG_W(VLOG_M_AUDIO,
+                "factory verify glitch rc=%d, image reloaded OK, sounds=%u",
+                fr, (uint32_t)ap_hdr.count);
+        }
+      }
+      else
+      {
+        /* Образа так и нет (или он бит/не совпал): дальше на любую команду
+           будет аварийный писк из внутренней flash (см. start_now). Причина -
+           в sf_probe_rc, factory_dbg_sector, audio_dbg_last_err и коде rc. */
+        audio_dbg_boot_stage = AP_BOOT_FACTORY_ERR;
+        LOG_E(VLOG_M_AUDIO, "factory FAILED rc=%d -> beep only", fr);
+      }
     }
   }
 #elif VECTOR_AUDIO_FACTORY_EMBED

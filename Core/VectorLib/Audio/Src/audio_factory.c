@@ -12,6 +12,7 @@
 #include "sfmap.h"
 #include "spiflash.h"
 #include "vector_log.h"
+#include "vector_tick.h"
 #include <string.h>
 
 /* генерируется tools/bin2c.py из tools/sounds.img */
@@ -20,6 +21,20 @@ extern const uint32_t vector_factory_img_size;
 
 volatile uint32_t factory_dbg_sector = 0;   /* на каком секторе сейчас стоим */
 
+/* Попыток прочитать один верификационный кусок (>= 1). См. vector_config.h:
+   VECTOR_AUDIO_FACTORY_VERIFY_RETRY. Ниже - защита от невыгодной конфигурации,
+   чтобы цикл верификации не вырождался в "не читать вообще" (0 попыток) или
+   бесконечный ретрай. */
+#if (VECTOR_AUDIO_FACTORY_VERIFY_RETRY < 1)
+#define FACTORY_VERIFY_TRIES  1u
+#elif (VECTOR_AUDIO_FACTORY_VERIFY_RETRY > 16)
+#define FACTORY_VERIFY_TRIES  16u
+#else
+#define FACTORY_VERIFY_TRIES  ((uint32_t)VECTOR_AUDIO_FACTORY_VERIFY_RETRY)
+#endif
+
+#define FACTORY_VERIFY_RETRY_DELAY_MS  2u   /* дать halt'у отладчика пройти */
+
 /* Заводская запись встроенного образа sounds.img во внешнюю flash.
    КОНТЕКСТ: поток плеера (ap_thread_entry), ПОСЛЕ старта планировщика -
    внутри ext_erase/ext_write/ext_read берут мьютекс шины.
@@ -27,7 +42,13 @@ volatile uint32_t factory_dbg_sector = 0;   /* на каком секторе с
    побайтная верификация. factory_dbg_sector показывает прогресс (номер
    сектора), если процесс покажется зависшим: стирание 48 секторов + запись
    195 КБ - это секунды, а не миллисекунды.
-   Возврат: 0 = образ записан и проверен, -1 = ошибка на любом шаге.
+   Возврат: 0 = образ записан и проверен; отрицательный код = ошибка:
+     -1 = стирание/запись не удались (образа во flash фактически нет);
+     -2 = верификация нашла РАСХОЖДЕНИЕ байт (реальная порча записи);
+     -3 = верификация не смогла ПРОЧИТАТЬ кусок даже после повторов. Почти
+          всегда это транзиентный таймаут SPI под отладчиком (ядро halt'ится
+          на Live Watch), сами данные при этом целы - вызывающий должен
+          перечитать образ и решить по факту, а не по этому коду.
    ВАЖНО: вызывается ТОЛЬКО если audio_init() не нашёл валидного образа.
    Раньше load_image() не вызывался, ap_img_ok всегда был 0, и эта функция
    стирала и писала 195 КБ на КАЖДОЙ перезагрузке (см. docs/archive/FIX_REPORT.md).  */
@@ -73,20 +94,48 @@ int audio_factory_program(void)
     }
   }
 
-  /* 3. Верификация побайтно */
+  /* 3. Верификация побайтно.
+
+     Чтение здесь блокирующим опросом SPI (256 Б < VECTOR_SPI_DMA_MIN_LEN),
+     поэтому под отладчиком оно изредка возвращается по таймауту HAL (st=3,
+     0 байт): ядро halt'ится на Live Watch/Expressions refresh прямо во время
+     обмена. Это глюк ЧТЕНИЯ, а не записи - байты во flash уже лежат. Раньше
+     такой один сбой обрывал всю factory-запись и плеер уходил в beep only.
+     Поэтому сбойное чтение повторяем VECTOR_AUDIO_FACTORY_VERIFY_RETRY раз,
+     а РАСХОЖДЕНИЕ данных (реальную порчу) не ретраим и отличаем кодом -2.  */
   for (off = 0; off < vector_factory_img_size; off += (uint32_t)sizeof vb)
   {
+    uint32_t tries;
+
     chunk = vector_factory_img_size - off;
     if (chunk > (uint32_t)sizeof vb) { chunk = (uint32_t)sizeof vb; }
-    if (ext_read(SF_SOUNDS_BASE + off, vb, chunk) != 0)
+
+    for (tries = 0; tries < FACTORY_VERIFY_TRIES; tries++)
     {
-      LOG_E(VLOG_M_FLASH, "factory: verify read fail at %u", off);
-      return -1;
+      if (ext_read(SF_SOUNDS_BASE + off, vb, chunk) == 0)
+      {
+        break;
+      }
+      if ((tries + 1u) < FACTORY_VERIFY_TRIES)
+      {
+        LOG_W(VLOG_M_FLASH, "factory: verify read retry %u at %u",
+              tries + 1u, off);
+        if (VTICK_IN_THREAD())
+        {
+          VTICK_SLEEP_MS(FACTORY_VERIFY_RETRY_DELAY_MS);
+        }
+      }
+    }
+    if (tries >= FACTORY_VERIFY_TRIES)
+    {
+      LOG_E(VLOG_M_FLASH, "factory: verify read fail at %u after %u tries",
+            off, FACTORY_VERIFY_TRIES);
+      return -3;
     }
     if (memcmp(vb, &vector_factory_img[off], chunk) != 0)
     {
       LOG_E(VLOG_M_FLASH, "factory: verify MISMATCH at %u", off);
-      return -1;
+      return -2;
     }
   }
   LOG_I(VLOG_M_FLASH, "factory: done, %u b written and verified", vector_factory_img_size);
