@@ -1,14 +1,18 @@
 # Документация
 
-Пять документов. Всё остальное — в `archive/` (история, можно не читать).
+Пять документов. Всё остальное — в `archive/` (история, можно не читать);
+в git папки `docs/archive/` нет — две строки ниже описывают файлы, которых в
+репозитории нет (см. PLAN.md п.42).
 
 | Файл | Читать, когда нужно |
 |---|---|
+| **[PLAN.md](PLAN.md)** | **что за прибор и что дальше**: назначение, состав модулей, транспорт BLE↔LoRa, план по этапам, принятые решения (частоты, API плеера, лог), список известных дефектов |
 | **[FLASHING.md](FLASHING.md)** | **прошить всё программатором**: прошивка MCU через CubeProgrammer/ST-LINK, external loader для внешней flash, запись `sounds.bin`, CubeMX-чек-лист, диагностика записи |
-| **[AUDIO.md](AUDIO.md)** | **запустить звук**: качество 44.1 кГц/16 бит, стриминг через circular DMA, состояния и цикл, API, набор звуков, пересборка образа, диагностика «звука нет» |
+| **[AUDIO.md](AUDIO.md)** | **запустить звук**: качество 44.1 кГц/16 бит, стриминг через circular DMA, индексы/очередь/повтор, API, набор звуков, пересборка образа, диагностика «звука нет» |
+| **[LVGL.md](LVGL.md)** | **включить графику**: LVGL 9.2 + SquareLine Studio, где что лежит, `lv_conf.h`, порт дисплея и поток LVGL, порядок байт RGB565, переводы `lv_i18n`, чек-лист |
 | **[SYSTEM.md](SYSTEM.md)** | понять устройство проекта: слои кода, контексты (init/поток/ISR), цепочки вызовов, IRQ, время (только тик ThreadX), лог, **что настраивать в CubeMX** (раздел 9) |
-| `archive/FIX_REPORT.md` | история правок: разбор «зависания» в `tx_semaphore_get`, SPI-DMA, что проверено и причиной НЕ является |
-| `archive/AUDIO_MAP.md` | исторический справочник по фазам разработки |
+| `archive/FIX_REPORT.md` | история правок: разбор «зависания» в `tx_semaphore_get`, SPI-DMA, что проверено и причиной НЕ является. **Файла нет в репозитории** |
+| `archive/AUDIO_MAP.md` | исторический справочник по фазам разработки. **Файла нет в репозитории** |
 
 ---
 
@@ -32,11 +36,15 @@
    При старте должны появиться строки `probe rc=0 jedec=c2 28 17` и
    `image ok=1 sounds=5`. Текст сообщений — латиница (терминал в CP1251
    показывает кириллицу кракозябрами).
-6. **Управлять** из кода: `audio_set_state(0/1/2)`, `audio_play(SND_*)`,
-   `audio_stop()`. В тестовом режиме (`VECTOR_AUDIO_DEMO_KEYS 1`) то же самое
-   на кнопках PB1/PB2/PB3.
-7. **Диагностика**: переменные `audio_dbg_*`, `sf_dbg_*`, `demo_dbg_*`, `ub_*`
-   в Expressions; расшифровка — `AUDIO.md` раздел 7 и `SYSTEM.md` раздел 5.
+6. **Управлять** из кода: `audio_play(SND_*)` (в очередь), `audio_play_now(SND_*)`
+   (прервать текущий и сразу играть), `audio_stop()`, `audio_set_loop(1)`
+   (повтор последнего звука). В тестовом режиме (`VECTOR_AUDIO_DEMO_KEYS 1`)
+   PB1 листает все звуки образа, PB2 — стоп, PB3 — громкость.
+7. **Диагностика**: структуры `audio_status` (всё состояние плеера),
+   `demo_status` (кнопки), `tasks_status` (потоки прибора) и счётчики `sf_dbg_*`
+   в Expressions; расшифровка — `AUDIO.md` раздел 7 и `SYSTEM.md` раздел 5. Модули BLE/LoRa/LTE/GPS
+   лежат в `Core/VectorLib/Src/` и закрыты своими `CONFIG_*` в `config_device.h`
+   (GPS включён — `CONFIG_GPS 1`; BLE/LoRa/LTE пока выключены).
 
 Прошивка **не записывает** внешнюю flash никогда: ни при старте, ни по команде.
 Образ звуков во внутренней flash MCU больше не линкуется (модуль
@@ -51,12 +59,12 @@
 | Макрос | По умолчанию | Смысл |
 |---|---|---|
 | `VECTOR_AUDIO_SELFTEST` | `0` | число писков при старте из внутренней flash, без RTOS (`0` = не проверять) |
-| `VECTOR_AUDIO_BOOT_PLAY` | `0` | что сделать при старте: `0` ничего, `1` войти в состояние 0 (цикл), `2` звук #0 один раз, `3` только писк |
+| `VECTOR_AUDIO_BOOT_PLAY` | `0` | что сделать при старте: `0` ничего, `1` звук #0 **по кругу**, `2` звук #0 один раз, `3` только писк |
 | `VECTOR_AUDIO_STREAM` | `1` | стриминг звука кусками через circular DMA: длина не ограничена, RAM 16 КБ. **Нужен Mode = Circular у GPDMA1 Channel11 в CubeMX** |
 | `VECTOR_AUDIO_STREAM_CHUNK` | `4096` | сэмплов в половине буфера (93 мс при 44.1 кГц = запас на дозагрузку) |
 | `VECTOR_AUDIO_STREAM_SMALLBUF` | `1` | буфер плеера = 2 куска (16 КБ); `0` — полный 131 КБ (нужен только без Circular в DMA) |
 | `VECTOR_SF_READ_RETRY` | `3` | повторы сбойного чтения внешней flash (транзиенты под отладчиком), 1..16 |
-| `VECTOR_AUDIO_LOOP_STATE` | `0` | звук состояния повторяется по кругу с паузой |
+| `VECTOR_SPI_LOG_READS` | `0` | `1` = печатать каждое большое чтение flash (`read 8192 b @… ok, 0 ms`) в INFO; при `0` та же строка уходит в DEBUG и терминал не забивает |
 | `VECTOR_AUDIO_LOOP_PAUSE_MS` | `500` | пауза между повторами |
 | `VECTOR_AUDIO_DEMO_KEYS` | `1` | `0` = кнопки отдаются рабочему коду, демо-модуль исчезает |
 | `VECTOR_KEY_PRESSED_LEVEL` | `0` | активный уровень кнопки (при `GPIO_PULLUP` в кубе — 0) |
@@ -77,7 +85,7 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 | `VECTOR_LOG_ITM` | `1` | вывод в ITM/SWO → консоль CubeIDE (нужен свободный PB3) |
 | `VECTOR_LOG_UART` | `4` | вывод в UART: `0` выкл, `1/2/3/4` = USART1/2/3/UART4 |
 | `VECTOR_LOG_LEVEL` | `2` | порог: 1 DEBUG, 2 INFO, 3 WARN, 4 ERROR (рантайм: `vlog_set_level`) |
-| `VECTOR_LOG_MASK` | `0xFFFFFFFF` | какие модули печатать: SYS/FLASH/AUDIO (рантайм: `vlog_set_mask`) |
+| `VECTOR_LOG_MASK` | `0xFFFFFFFF` | какие модули печатать: SYS/FLASH/AUDIO/TASKS (рантайм: `vlog_set_mask`) |
 
 ### Прочее
 
@@ -85,11 +93,39 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 |---|---|---|
 | `VECTOR_SPI_DMA` | `1` | большие чтения внешней flash по DMA (с автооткатом на опрос) |
 | `VECTOR_SPI_DMA_MIN_LEN` / `_CHUNK` / `_TMO_MS` | `1024` / `32768` / `250` | порог, размер куска, таймаут куска |
+| `VECTOR_EXT_LOCK_READ_MS` / `_WRITE_MS` | `250` / `0` | ожидание мьютекса внешней flash: чтения (ограниченно) / записи (0 = try-lock, занято → `EXT_BUSY`, повтор позже). Стирания под звук откладываются — «окно тишины» (v22) |
 | `VECTOR_DBG_FREEZE_TICK` | `1` | замораживать тайм-базу HAL (TIM6), пока ядро стоит под отладчиком |
+
+### Потоки прибора (`Core/VectorLib/Src/Vector_main.c`)
+
+| Макрос | По умолчанию | Смысл |
+|---|---|---|
+| `VECTOR_TASKS_ENABLE` | `1` | `0` = потоки прибора не создаются, вызовы вырождаются в макросы |
+| `VECTOR_TASKS_RECEIVER_PRIORITY` / `_STACK` | `12` / `2048` | поток приёма/парсинга UART (Audio = 10, LVGL = 15) |
+| `VECTOR_TASKS_RECEIVER_DELAY_MS` | `10` | пауза между проходами потока приёма (тик RTOS = 10 мс) |
+| `VECTOR_TASKS_MEASURE_PRIORITY` / `_STACK` | `13` / `4096` | поток периодики прибора |
+| `VECTOR_TASKS_MEASURE_DELAY_MS` | `50` | пауза между проходами потока измерений |
+
+### Экран TFT (ST7789P3 172×320, SPI2 + DMA) и датчики
+
+| Макрос | По умолчанию | Смысл |
+|---|---|---|
+| `VECTOR_LCD_USE_LVGL` | `1` | `0` = экран без LVGL (`TFT_Init`/`TFT_Fill`/`TFT_Test` работают сами) |
+| `VECTOR_LCD_SWAP_RGB565` | `1` | менять байты пикселя перед выдачей (LVGL little-endian → ST7789 big-endian) |
+| `VECTOR_LCD_SPI_TIMEOUT_MS` | `200` | таймаут передачи и ожидания свободного порта экрана |
+| `VECTOR_SCREEN_ROTATION` | `1` | крутить экран по 6D-ориентации LIS3DH (`ACCEL_INT`, PC11) |
+| `VECTOR_BME_CALIBRATION` | `0` | калибровка температуры BME280 с записью во flash (пока выключена) |
+| `CONFIG_TYPE_LCD_TFT` / `CONFIG_MODEL_LCD` | `1` / `0` | в `config_device.h`: 0 = экран выкл, 1 = драйвер панели TFT, 2 = слой индикации Avis (v24); 0 = ST7789P3 172×320 |
+| `CONFIG_BME` / `CONFIG_LIS3DH` / `CONFIG_MAX17048` / `CONFIG_GPS` | `1` | в `config_device.h`: микросхема компилируется и опрашивается |
+
+Модули внутри потока закрыты своими `CONFIG_*` из `config_device.h`: `CONFIG_UART` (COM),
+`CONFIG_LORA`, `CONFIG_BLE`, `CONFIG_G4`/`CONFIG_G2` (LTE), `CONFIG_GPS` — как в `Avis_main.c`.
 
 ---
 
 ## Время и таймеры
+
+Три источника времени, каждый для своего (подробно — `SYSTEM.md`, раздел 7):
 
 | Чем | Разрешение | Когда |
 |---|---|---|
@@ -98,7 +134,16 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 | `VTICK_MS2TICKS()` | — | мс → тики для `tx_semaphore_get` |
 | число проходов цикла | — | ограничение времени **до планировщика**, где тика RTOS нет (`wait_busy`, `audio_selftest`) |
 | `HAL_GetTick()` | 1 мс | **в нашем коде не используется вовсе**; остался только внутри HAL-драйверов (тайм-база TIM6) |
-| RTC | 1 с | wake-up/календарь, к системному времени приложения отношения не имеет |
+| `timer.flag_1ms/10ms/100ms/1s` | 1 мс / 1 с | **такты прибора**: поток читает флаг и сам его сбрасывает — `if (timer.flag_1s) { timer.flag_1s = 0; ... }` (ставит `Timer_Tick_1ms()`, TIM3 1 кГц) |
+| `START_TIMER` / `TEST_TIMER` / `RESET_TIMER` | 1 мс | миллисекундные таймеры прибора (`countdown_time[]`, ID — `TIMER_*` в `shared_types.h`) |
+| `START_TIMER_RTC` / `TEST_TIMER_RTC` / `RESET_TIMER_RTC` | 1 с | то, что должно идти и во сне: период передачи LoRa/BLE, мото-часы (`countdown_time_rtc[]`, ID — `TIMER_RTC_*`, длительности — `TIME_RTC_*`) |
+| `RTC wakeup` | 1 с | источник секундного такта: `HAL_RTCEx_WakeUpTimerEventCallback` → `Timer_Tick_1s()` |
+
+Обслуживание таймеров целиком в `Vector_main.c`: `Timer_Tick_1ms()` зовётся из
+`main.c` (`HAL_TIM_PeriodElapsedCallback`, ветка TIM3), `Timer_Tick_1s()` — из
+`stm32u5xx_it.c` (колбэк RTC); в CubeMX-файлах по одной строке. Экземпляры
+`timer`, `countdown_time`, `countdown_time_rtc` — `volatile`, объявления в
+`shared_types.h`.
 
 Подробно — `SYSTEM.md`, раздел 7.
 
@@ -120,3 +165,13 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 * Строки лога — только ASCII (латиница), иначе в терминале CP1251 кракозябры.
 * Внешнюю flash из прошивки — только через `extstore` (`ext_read/ext_write/
   ext_erase_sector`); образ SOUNDS целиком принадлежит программатору.
+* Конфигурация прибора и журнал событий — `Config_save_read.c` (v21):
+  `SNS_CFG` → `cfg_save/cfg_load` (страница с несколькими копиями записей,
+  CRC; v23 — явный `addr` области: рабочий конфиг 0x400000, заводской
+  0x401000), журнал → `log_append` (кольцо LOG 0x402000..); заводские данные
+  (калибровка/бренд/AppKey) — внутренняя flash, страница 0x080FE000
+  (`.ld`: FLASH 1016K).
+  Писать во flash можно только из потока `Measure Task`
+  (`Vector_Run_Pre_Init` / `Vector_RunFlashMemory`) и только в «окно тишины»:
+  пока звучит звук, запись откладывается (флаги живут), стирания не стартуют
+  (v22, `EXT_BUSY` → повтор на следующем проходе).

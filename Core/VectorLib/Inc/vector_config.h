@@ -11,10 +11,10 @@
 #ifndef VECTOR_CONFIG_H
 #define VECTOR_CONFIG_H
 
-/* --- ТЕСТ: демо-кнопки (PB1/PB2/PB3) переключают состояния и звуки --------
+/* --- ТЕСТ: демо-кнопки (PB1/PB2/PB3) переключают звуки и громкость --------
  * 1 = обработчики EXTI и логика из Core/VectorLib/Test/audio_demo.c активны.
  * 0 = кнопки отдаются вашему рабочему обработчику; плеер управляется
- *     только вызовами audio_play()/audio_set_state()/audio_stop().
+ *     только вызовами audio_play()/audio_play_now()/audio_stop().
  * Ловится ОБА фронта, уровень пина читается в обработчике (антидребезг
  * по вашей схеме), см. audio_demo.c.                                        */
 #ifndef VECTOR_AUDIO_DEMO_KEYS
@@ -106,10 +106,46 @@
 #define VECTOR_SPI_DMA_TMO_MS       250u
 #endif
 
+/* --- Шина внешней flash (ext_mtx): bounded-ожидание вместо TX_WAIT_FOREVER --
+ * Flash одна и у звука (чтение, поток Audio Player), и у журнала/конфига
+ * (запись, Measure Task). Бесконечное ожидание мьютекса замораживало бы поток
+ * измерений вместе с датчиками и *_Run() (бывшие TODO в extstore.c и
+ * Vector_main.c), поэтому все ожидания ограничены (схема «окно тишины», v22):
+ *   VECTOR_EXT_LOCK_READ_MS  - сколько читателю (ext_read плеера, cfg_load,
+ *                              log_next) разрешено ждать шину, мс. 250 мс
+ *                              покрывают худшее стирание сектора (~100 мс);
+ *                              плееру ждать допустимо - других дел у потока нет.
+ *   VECTOR_EXT_LOCK_WRITE_MS - писателю (log_append/cfg_save/ext_write/
+ *                              ext_erase_sector): 0 = чистый try-lock, занято ->
+ *                              EXT_BUSY (-2) сразу, вызывающий повторит позже.
+ *                              Vector_RunFlashMemory() к тому же заходит во
+ *                              flash только когда звук молчит (audio_is_busy()
+ *                              == 0: доигран или пауза повтора), так что
+ *                              коллизии редки. Стирания под звучащий звук не
+ *                              начинаются даже изнутри extstore.              */
+#ifndef VECTOR_EXT_LOCK_READ_MS
+#define VECTOR_EXT_LOCK_READ_MS     250u
+#endif
+#ifndef VECTOR_EXT_LOCK_WRITE_MS
+#define VECTOR_EXT_LOCK_WRITE_MS    0u
+#endif
+
+/* --- ДИАГНОСТИКА: двойное чтение flash при старте потока плеера -----------
+ * N>0 = поток плеера один раз прогоняет sf_selftest(): N проходов по 8 КБ,
+ *   каждый блок читается ДВАЖДЫ и сравнивается побайтно. Расхождение =
+ *   битовые ошибки на линии SPI (наводки/провода/20 МГц на пределе) - одна из
+ *   причин "хрипа" при чистом образе. Результат: лог + sf_dbg_selftest_bad
+ *   (должно быть 0) + sf_dbg_selftest_runs. Цена: ~N*8 мс один раз при старте.
+ * 0 = проверка выключена (боевая прошивка).
+ * Для теста "хрипа" рекомендуется 8; после локализации причины - 0.          */
+#ifndef VECTOR_SPI_SELFTEST
+#define VECTOR_SPI_SELFTEST         0u
+#endif
+
 /* --- ОТЛАДКА: поток плеера не спит вечно ---------------------------------
  * >0 = tx_semaphore_get(&ap_wake) ждёт НЕ вечно, а указанное число мс, и по
  *      таймауту поток делает холостой проход (перепроверяет очередь, плюсит
- *      audio_dbg_timeouts). Цена - одно пробуждение в секунду, польза -
+ *      audio_status.cnt_wake_timeouts). Цена - одно пробуждение в секунду, польза -
  *      пропажа события (не прилетел колбэк DMA, не сработала кнопка) больше
  *      НЕ выглядит как вечное зависание, и её видно по счётчикам.
  * 0    = честное TX_WAIT_FOREVER (как было).                                */
@@ -119,22 +155,44 @@
 
 /* --- ОТЛАДКА: что проиграть сразу после старта плеера ---------------------
  * 0 = ничего: тишина, ждём команд (боевой режим)
- * 1 = звук состояния 0 (SND_STATE_DEFAULT_0) - проверяет ВЕСЬ тракт:
- *     внешняя flash -> чтение -> громкость -> SAI -> DMA -> усилитель
- * 2 = звук #0 образа напрямую (то же, что 1, но без таблицы состояний)
+ * 1 = звук #0 ПО КРУГУ (включается повтор): проверяет ВЕСЬ тракт - внешняя
+ *     flash -> чтение -> громкость -> SAI -> DMA -> усилитель, и заодно
+ *     механизм повтора с паузой VECTOR_AUDIO_LOOP_PAUSE_MS
+ * 2 = звук #0 образа один раз
  * 3 = аварийный писк из ВНУТРЕННЕЙ flash - проверяет только выходной тракт
  *     (SAI/DMA/усилитель/SD_MODE) и не зависит от внешней flash. Если писка
  *     нет - проблема в SAI/усилителе, а не в памяти.
- * Значение 1 удобно на время отладки: сразу слышно, жив ли звук, и сразу
- * отрабатывает путь start_now() -> ext_read -> SAI DMA (тот самый, на котором
- * ставят точку останова).                                                  */
-/* Прямая проверка звукового тракта из main() ДО старта RTOS (audio_selftest):
-   писк из const-массива во внутренней flash -> SAI DMA, без очереди, потока,
-   состояний и внешней памяти. Значение = ЧИСЛО ПИСКОВ при старте (пауза между
-   ними 300 мс): 0 = не проверять, 3 = три писка (удобно слушать), 1 = один.
-   Возврат audio_selftest(): 0 = DMA стартовала И завершилась, 1 = не
-   стартовала, 2 = стартовала, но не завершилась (нет GPDMA1_Channel11_IRQn).
-   Заодно показывает, не врёт ли системный тик: писк длится ровно 240 мс.     */
+ * Значения 1 и 2 удобно ставить на время отладки: сразу слышно, жив ли звук,
+ * и сразу отрабатывает путь start_now() -> ext_read -> SAI DMA (тот самый,
+ * на котором ставят точку останова).                                       */
+/* --- ОТЛАДКА: писки при старте, ДО запуска RTOS (audio_selftest) ----------
+ * Значение = СКОЛЬКО РАЗ пискнуть; пауза между писками ~300 мс:
+ *   0 = не проверять (боевой режим)
+ *   1 = один писк  - быстро проверить, жив ли тракт
+ *   3 = три писка  - удобнее слушать и считать
+ * Писк берётся из const-массива во ВНУТРЕННЕЙ flash и уходит в SAI-DMA
+ * напрямую: внешняя flash, образ, очередь и поток плеера в проверке НЕ
+ * участвуют. Проверяется только выходной тракт SAI -> DMA -> усилитель ->
+ * динамик. Длительность одного писка 240 мс (10584 сэмпла на 44.1 кГц).
+ *
+ * КАК ЧИТАТЬ РЕЗУЛЬТАТ (цикл в Vector_Run_Board_Init() обрывается на первом же сбое):
+ *   слышны ВСЕ заказанные писки, в логе столько же строк
+ *   "selftest: done, guard=..." -> цифровая часть работает. Если звука при
+ *       этом нет - проблема аналоговая: SD_MODE (PC9), питание усилителя,
+ *       обвязка, динамик (чек-лист docs/AUDIO.md, раздел 7.4);
+ *   ни одного писка, в логе "selftest: SAI DMA start FAIL hal=N"
+ *       (возврат 1) -> HAL_SAI_Transmit_DMA отказала: SAI не инициализирован
+ *       или канал занят;
+ *   частая "очередь" писков около секунды и тишина, в логе "selftest: DMA
+ *   started but NOT finished (GPDMA1_Channel11_IRQn?)" (возврат 2) ->
+ *       circular DMA прокручивает писк по кругу, но прерывание завершения
+ *       блока не приходит: в NVIC не включён GPDMA1_Channel11_IRQn.
+ *   Возврат дублируется в audio_status.cnt_errors / audio_status.last_error.
+ *
+ * Побочный бонус: пауза между писками отсчитывается циклами ядра
+ * (DelayInt(300) в Vector_Run_Board_Init), поэтому при заниженном SYSCLK она
+ * растягивается - при реальных 80 МГц вместо 160 было бы ~600 мс. Сам писк
+ * при этом всегда 240 мс: его темп задаёт SAI, а не ядро.                    */
 #ifndef VECTOR_AUDIO_SELFTEST
 #define VECTOR_AUDIO_SELFTEST     0
 #endif
@@ -183,21 +241,151 @@
 #define VECTOR_AUDIO_STREAM_SMALLBUF 1
 #endif
 
-/* --- РАБОЧЕЕ: цикл звука текущего состояния ------------------------------
- * 1 = звук состояния (ap_state_map) повторяется с паузой, пока состояние не
- *     сменят (audio_set_state) или не остановят (audio_stop / состояние
- *     "тишина"). Именно так работает сигнализация: положили ОДИН звук - и он
- *     идёт по кругу, ничего держать в коде не нужно.
- * 0 = звук состояния играется ОДИН раз (прежнее поведение).
- * Одноразовые audio_play() встраиваются в цикл: звучат вместо повтора, затем
- * цикл продолжается.                                                       */
-#ifndef VECTOR_AUDIO_LOOP_STATE
-#define VECTOR_AUDIO_LOOP_STATE   0
-#endif
+/* --- РАБОЧЕЕ: повтор звука (цикл) ----------------------------------------
+ * Включается в рантайме: audio_set_loop(1) - повторяется ПОСЛЕДНИЙ
+ * запущенный звук с паузой VECTOR_AUDIO_LOOP_PAUSE_MS, пока не будет
+ * audio_stop() или audio_set_loop(0). Именно так работает сигнализация:
+ * положили ОДИН звук - и он идёт по кругу, ничего держать в коде не нужно.
+ * По умолчанию цикл выключен (раньше дефолт задавался макросом
+ * VECTOR_AUDIO_LOOP_STATE вместе со слоем состояний, которого больше нет).
+ * Одноразовые audio_play()/audio_play_now() встраиваются в цикл: звучат
+ * вместо повтора, затем повтор продолжается.                               */
 
 /* Пауза между повторами цикла, мс. Меняется в рантайме: audio_set_loop_pause(). */
 #ifndef VECTOR_AUDIO_LOOP_PAUSE_MS
 #define VECTOR_AUDIO_LOOP_PAUSE_MS 500u
+#endif
+
+/* --- РАБОЧЕЕ: потоки прибора (Vector_main.c, по образцу Avis_main.c) -------
+ * Два потока, как на другом приборе:
+ *   "Receiver Task" - приём и парсинг ПО КАЖДОМУ UART: command_message() (COM),
+ *                     Lora_Receive() (LoRa), Ble_Receive(), Lte_Receive(),
+ *                     Uart_Channel_Receive() (сенсоры) + Vector_Options_System();
+ *   "Measure Task"  - периодика прибора: Vector_Run_Pre_Init() один раз, затем
+ *                     по флагу timer.flag_1s вызов
+ *                     Vector_Run_Measure() (внутри Ble_Run/Lora_Run/Lte_Run)
+ *                     и Vector_RunFlashMemory().
+ *
+ * ПРАВИЛО ВЛАДЕЛЬЦА КОЛЬЦА: у каждого UART ровно ОДИН потребитель (SPSC,
+ * buffer.h) - поток "Receiver Task". Кольца радио-модулей из других потоков и
+ * таймеров не читать.
+ *
+ * VECTOR_TASKS_ENABLE         1 = потоки создаются (vector_tasks_init() из
+ *                                 tx_application_define()); 0 = модуль не
+ *                                 собирается, вызовы вырождаются в макросы.
+ * VECTOR_TASKS_*_PRIORITY     приоритеты (в ThreadX МЕНЬШЕ = выше):
+ *                                 Audio Player = 10, LVGL = 15 - обмен данными
+ *                                 не должен обгонять звук.
+ * VECTOR_TASKS_*_STACK        стеки в БАЙТАХ (в FreeRTOS xTaskCreate считает
+ *                                 слова: 512 слов там = 2048 байт здесь).
+ * VECTOR_TASKS_RECEIVER_DELAY_MS  пауза потока приёма между проходами. Тик
+ *                                 RTOS = 10 мс, поэтому меньше тика не
+ *                                 получится (в Avis было vTaskDelay(2) при
+ *                                 тике 1 мс). Байты при этом не теряются: их
+ *                                 копит ISR в кольце.
+ * VECTOR_TASKS_MEASURE_DELAY_MS   пауза потока измерений между проходами.
+ *                                 Период Vector_Run_Measure() макросом НЕ
+ *                                 задаётся: это флаг timer.flag_1s (такт 1 с
+ *                                 даёт Timer_Tick_1ms() от TIM3).
+ *
+ * Модули внутри заглушек закрыты своими CONFIG_* из config_device.h
+ * (CONFIG_UART, CONFIG_LORA, CONFIG_BLE, CONFIG_G4/CONFIG_G2 для LTE) - как в
+ * Avis_main.c: конфигурация выключена -> тело пустое, вызов остаётся.        */
+#ifndef VECTOR_TASKS_ENABLE
+#define VECTOR_TASKS_ENABLE              1
+#endif
+
+#ifndef VECTOR_TASKS_RECEIVER_PRIORITY
+#define VECTOR_TASKS_RECEIVER_PRIORITY   12u
+#endif
+
+#ifndef VECTOR_TASKS_RECEIVER_STACK
+#define VECTOR_TASKS_RECEIVER_STACK      2048u
+#endif
+
+#ifndef VECTOR_TASKS_RECEIVER_DELAY_MS
+#define VECTOR_TASKS_RECEIVER_DELAY_MS   10u
+#endif
+
+#ifndef VECTOR_TASKS_MEASURE_PRIORITY
+#define VECTOR_TASKS_MEASURE_PRIORITY    13u
+#endif
+
+#ifndef VECTOR_TASKS_MEASURE_STACK
+#define VECTOR_TASKS_MEASURE_STACK       4096u
+#endif
+
+#ifndef VECTOR_TASKS_MEASURE_DELAY_MS
+#define VECTOR_TASKS_MEASURE_DELAY_MS    50u
+#endif
+
+/* --- РАБОЧЕЕ: экран TFT (ST7789P3 172x320, SPI2 + GPDMA1 Channel8) ---------
+ * Драйвер - Core/VectorLib/Src/TFT/LCD_platform.c (v17 переведён с AT32 на HAL,
+ * названия функций сохранены). Периферию задаёт CubeMX: SPI2 8 бит Simplex TX,
+ * GPDMA1 Channel8 = SPI2_TX (Normal mode), пины LCD_CS PB14 / LCD_DC PB10 /
+ * LCD_RST PB12 / LCD_LED PC6. Модель панели и размеры - CONFIG_MODEL_LCD в
+ * config_device.h и TFT_WIDTH/TFT_HEIGHT/TFT_COL_OFFSET в TFT.h.
+ *
+ * VECTOR_LCD_USE_LVGL       1 = LCD_platform включает lvgl.h и зовёт
+ *                           lv_display_flush_ready(disp) по концу DMA-кадра
+ *                           (LVGL 9.2 в Drivers/lvgl - см. docs/LVGL.md).
+ *                           0 = экран без LVGL: TFT_Init/TFT_Fill/TFT_Test
+ *                           работают сами по себе (проверка SPI без графики).
+ * VECTOR_LCD_SWAP_RGB565    1 = менять байты пикселя перед выдачей: LVGL рисует
+ *                           в little-endian, а ST7789P3 ждёт старший байт
+ *                           первым. Цвета правильные без обмена -> ставьте 0.
+ * VECTOR_LCD_SPI_TIMEOUT_MS таймаут блокирующей передачи и ожидания свободного
+ *                           порта; по истечении порт освобождается принудительно
+ *                           (счётчик lcd_status.cnt_wait_timeout).
+ * VECTOR_LCD_PWM_PERIOD     период ШИМ подсветки - исторический макрос (Avis
+ *                           TMR8 CH3, период 249). Сейчас НЕ используется:
+ *                           ШИМ настроен в кубе (TIM8_CH1 PC6 AF3, PSC 159 /
+ *                           ARR 39 -> 25 кГц), backlight_set() масштабирует
+ *                           скважность от фактического ARR таймера.
+ *
+ * ЧАСТОТА SPI2: в кубе сейчас Baud Rate Prescaler = 2, то есть 80 МГц при
+ * PCLK1 160 МГц. Для ST7789P3 это выше допустимого (запись ~62.5 МГц max) -
+ * поставьте /4 (40 МГц) или /8 (20 МГц), иначе возможны битые пиксели и
+ * зависания выдачи кадра.                                                    */
+#ifndef VECTOR_LCD_USE_LVGL
+#define VECTOR_LCD_USE_LVGL            1
+#endif
+
+#ifndef VECTOR_LCD_SWAP_RGB565
+#define VECTOR_LCD_SWAP_RGB565         1
+#endif
+
+#ifndef VECTOR_LCD_SPI_TIMEOUT_MS
+#define VECTOR_LCD_SPI_TIMEOUT_MS      200u
+#endif
+
+#ifndef VECTOR_LCD_PWM_PERIOD
+#define VECTOR_LCD_PWM_PERIOD          249u
+#endif
+
+/* --- РАБОЧЕЕ: датчики на I2C1 (BME280, LIS3DH, MAX17048) -------------------
+ * Чтение - sensors_read() в Vector_main.c: конфигурационные измерения (T/H/P,
+ * батарея) -> Sns_Cfg_struct.Config_common, живость чипов -> маска
+ * Config_common.Sensors_ok; runtime-данные (оси Accel_x/y/z, статусы падения,
+ * копия Orientation/Screen_rotation) и счётчики диагностики шины I2C1 ->
+ * sensors_status (Vector_main.h).
+ * Включение каждой микросхемы - CONFIG_BME / CONFIG_LIS3DH / CONFIG_MAX17048 в
+ * config_device.h: при 0 драйвер не компилируется вовсе (тело файла под #if).
+ *
+ * VECTOR_SCREEN_ROTATION   1 = при смене 6D-ориентации LIS3DH (прерывание
+ *                          ACCEL_INT, PC11) Measure Task вызывает
+ *                          TFT_Rotation(Config_common.Screen_rotation).
+ *                          0 = ориентация считается, экран не крутится.
+ * VECTOR_BME_CALIBRATION   1 = калибровка температуры BME280 с записью поправки
+ *                          во flash (Calib_bme280_Temp из Avis). Сейчас 0:
+ *                          механизма калибровки и страницы под неё в проекте
+ *                          нет, код вырезан из сборки.     */
+#ifndef VECTOR_SCREEN_ROTATION
+#define VECTOR_SCREEN_ROTATION         1
+#endif
+
+#ifndef VECTOR_BME_CALIBRATION
+#define VECTOR_BME_CALIBRATION         0
 #endif
 
 /* --- РАБОЧЕЕ: время в проекте берётся ТОЛЬКО от тика RTOS (Azure/ThreadX) --
@@ -223,9 +411,19 @@
  *     Отсюда "антидребезг 50 мс длится секунды" и "пауза цикла 40 с".
  * 0 = обычное поведение (таймер крутится и под отладчиком).
  * На боевой прошивке ни на что не влияет - ядро там не останавливается.
- * Строка стоит в vector_board_init() (до RTOS).                              */
+ * Строка стоит в Vector_Run_Board_Init() (до RTOS, Vector_main.c).                              */
 #ifndef VECTOR_DBG_FREEZE_TICK
 #define VECTOR_DBG_FREEZE_TICK    1
+#endif
+
+/* --- ОТЛАДКА: лог больших чтений внешней flash (spiflash.c) ----------------
+ * 1 = каждое чтение >= VECTOR_SPI_DMA_MIN_LEN печатается в INFO:
+ *     "read 8192 b @1acccc ok, 0 ms". При стриминге звука это ~11 строк в
+ *     секунду - они забивают терминал и мешают видеть остальной лог.
+ * 0 = та же строка уходит в DEBUG-уровень (по умолчанию не печатается).
+ * На скорость и надёжность не влияет: это только вывод.                     */
+#ifndef VECTOR_SPI_LOG_READS
+#define VECTOR_SPI_LOG_READS      0
 #endif
 
 /* --- ОТЛАДКА: консольный лог (vector_log.h) -------------------------------
@@ -240,8 +438,10 @@
  *   Если отладчик не подключён, ITM_SendChar() просто ничего не делает.
  *
  * VECTOR_LOG_UART: 0 = не печатать в UART, 1..4 = USART1/USART2/USART3/UART4.
- *   Сейчас 4 - вы видите сообщения в своём терминале на UART4 (PC10).
- *   UART4 принадлежит ТОЛЬКО логу; USART2 свободен под рабочий протокол.
+ *   Сейчас 4 - вы видите сообщения в своём терминале на UART4 (PC10, один
+ *   провод, полудуплекс). UART4 = лог + терминал COM (USART_COM/USART_DEBUG,
+ *   кольцо TYPE_USART); USART1 занят GPS, USART2 - LTE, USART3 - BLE:
+ *   значения 1/2/3 конфликтуют с портами модулей.
  *
  * VECTOR_LOG_ENABLE: 0 = ВСЁ выключено на этапе компиляции: макросы LOG_*
  *   становятся ((void)0), vector_log.c пустой, в прошивке не остаётся ни

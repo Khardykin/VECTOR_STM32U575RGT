@@ -156,7 +156,7 @@ PA8 (SCK) = 1 411 200 Гц (= 32 × FS, кадр I2S 16 бит × 2 слота).
   `ext_read` куском 8 КБ (~3 мс по DMA), громкость, хвост добивается тишиной.
 * Запас на дозагрузку = `CHUNK / 44100` = **93 мс** при стоимости чтения
   ~3 мс, то есть в ~30 раз. Не успел — DMA повторит предыдущий кусок (слышно
-  как заикание) и вырастет `audio_dbg_underrun`.
+  как заикание) и вырастет `audio_status.cnt_underruns`.
 * `VECTOR_AUDIO_STREAM_SMALLBUF` теперь **1 по умолчанию**: буфер плеера =
   2 куска (16 КБ RAM). Circular-режим задан в `.ioc`
   (GPDMA1.CIRCULARMODE_GPDMACH11=ENABLE), поэтому запасной путь «одной
@@ -216,23 +216,46 @@ python tools/pack_sounds.py tools/b_click.wav tools/c_voice_gas.wav tools/d_myvo
 
 ## 5. Управление
 
-### Состояния и цикл
+### Индексы, очередь и повтор
 
-`audio_set_state(st)` — смена режима: текущий звук прерывается, играет звук
-нового состояния (таблица `ap_state_map[]` в `audio_player.c`: состояние 0 =
-`SND_STATE_DEFAULT_0`, 1 = `SND_STATE_DEFAULT_1`, 2 = третий звук образа или
-тишина). `VECTOR_AUDIO_LOOP_STATE 1` — звук состояния повторяется с паузой
-`VECTOR_AUDIO_LOOP_PAUSE_MS` (сигнализация «один звук по кругу»).
+Слоя «состояний» (`audio_set_state()` / `ap_state_map[]`) больше нет: плеер
+играет звуки **по индексу** в образе, и порядок воспроизведения не важен.
+
+Как индекс превращается в адрес во внешней flash (перебора нет):
+
+1. `load_image()` вызывается **один раз** из `audio_init()` (и по явному
+   запросу из `audio_reload_image()`) и читает с адреса `AUDIO_IMG_BASE_ADDR`
+   заголовок (24 байта: magic, version, `count`, CRC32 таблицы) и таблицу
+   записей (`count × 36 байт`), проверяет CRC и распаковывает записи в
+   RAM-массив `ap_tab[32]`: `offset`, `length`, `samples`, `rate`, `ch`, `fmt`,
+   `crc`, `name[16]`. Цена в RAM ≈ 1.2 КБ + столько же временного буфера.
+2. Дальше `start_now(idx)` — это `idx >= ap_hdr.count ? AUDIO_ERR_BAD_INDEX
+   : ap_tab[idx]`, а адрес данных = `AUDIO_IMG_BASE_ADDR + e->offset`.
+   То есть обращение к звуку №4 стоит столько же, сколько к №0: смещения
+   абсолютные, «пролистывать» предыдущие не нужно.
+
+| Вызов | Что делает |
+|---|---|
+| `audio_play(idx)` | в очередь: сыграет **после** текущего (если занято — в один слот ожидания `ap_pending_idx`, последняя команда побеждает) |
+| `audio_play_now(idx)` | **прервать** текущий и сразу играть `idx` — одна команда очереди `CMD_PLAY_NOW` |
+| `audio_play_name("zvonok_1")` | то же по имени: единственный линейный перебор в плеере (≤32 записи × 16 байт в RAM) |
+| `audio_stop()` | стоп сейчас + очистка очереди, отложенного звука и текущего повтора |
+| `audio_set_loop(1)` | повторять **последний запущенный** звук с паузой `VECTOR_AUDIO_LOOP_PAUSE_MS` (сигнализация «один звук по кругу»); по умолчанию выключен |
+
+Повтор взводится для последнего успешно стартовавшего звука, поэтому
+`audio_set_loop(1)` можно вызвать и заранее — зациклится то, что сыграют
+первым. Одноразовые `audio_play()`/`audio_play_now()` встраиваются в повтор:
+звучат вместо него, затем повтор продолжается.
 
 ### API
 
 ```c
-audio_play(SND_C_VOICE_GAS);  /* в очередь: сыграет после текущего          */
-audio_play_name("d_myvoice"); /* то же по имени из таблицы образа           */
-audio_stop();                 /* стоп сейчас + очистка очереди и цикла      */
+audio_play(SND_PHONE_1);      /* в очередь: сыграет после текущего          */
+audio_play_now(SND_KOLOKOL_1);/* прервать текущий и сразу играть этот       */
+audio_play_name("zvonok_1");  /* то же по имени из таблицы образа           */
+audio_stop();                 /* стоп сейчас + очистка очереди и повтора    */
 audio_beep();                 /* аварийный писк из внутренней flash         */
-audio_set_state(0);           /* смена режима (звук состояния)              */
-audio_set_loop(1);            /* повторять звук текущего состояния          */
+audio_set_loop(1);            /* повторять последний запущенный звук        */
 audio_set_loop_pause(500);    /* пауза между повторами, мс                  */
 audio_set_volume(80);         /* программная громкость 0..100               */
 audio_image_ok(); audio_count(); audio_name(i);   /* справка по образу      */
@@ -240,16 +263,17 @@ audio_reload_image();         /* перечитать таблицу (образ
                                  живом устройстве)                          */
 ```
 
-Контекст вызова `audio_play/stop/set_state/set_loop/beep` — любой (поток или
-ISR): это неблокирующие `tx_queue_send` + `tx_semaphore_put`.
+Контекст вызова `audio_play/play_now/stop/set_loop/beep` — любой (поток или
+ISR): это неблокирующие `tx_queue_send` + `tx_semaphore_put`, глубина очереди
+`AUDIO_QUEUE_LEN = 8`.
 
 ### Кнопки (`VECTOR_AUDIO_DEMO_KEYS = 1`, тестовый режим)
 
 | Кнопка | Действие |
 |---|---|
-| BUTTON1 (PB1) | цикл состояний 0 → 1 → 2 → 0 |
-| BUTTON2 (PB2) | следующий звук образа по кругу |
-| BUTTON3 (PB3) | стоп |
+| BUTTON1 (PB1) | перебор **всех** звуков образа по кругу: `audio_play_now(idx)` — прерывает текущий и сразу играет следующий (kolokol_1 → kolokol_2 → phone_1 → phone_2 → zvonok_1 → снова #0). Индекс по модулю `audio_count()`, поэтому состав образа может быть любым; текущий индекс — в `demo_status.sound_index` |
+| BUTTON2 (PB2) | play/stop: если плеер играет (`audio_is_playing()`) — `audio_stop()` (стоп сейчас + очистка очереди и текущего повтора), если тишина — `audio_play_now()` звука, на котором остановилась BUTTON1 (после старта, когда BUTTON1 ещё не нажимали, — звук #0). Состояние берётся из плеера, а не из своего флага, поэтому кнопка не «промахивается» после того, как звук закончился сам; зеркало для отладчика — `demo_status.playing` |
+| BUTTON3 (PB3) | тест громкости: цикл 100 → 75 → 50 → 25 → 0 → 100 %, текущее значение в `demo_status.volume_percent`, применение видно в логе строкой `volume NN% (q15=...)` |
 
 Для серии поставьте `VECTOR_AUDIO_DEMO_KEYS 0` — кнопки отдадутся вашему
 обработчику, плеер управляется только API.
@@ -288,9 +312,10 @@ python tools/gen_beep.py --rate 44100
 ### Карта внешней flash (8 МБ, `sfmap.h`)
 
 ```
-0x000000  SOUNDS  4 МБ    sounds.bin целиком   <- пишет программатор (FLASHING.md)
-0x400000  CONFIG  4 КБ    конфигурация         <- пишет только прошивка
-0x401000  LOG     ~3.9 МБ кольцевой журнал     <- пишет только прошивка
+0x000000  SOUNDS         4 МБ    sounds.bin целиком   <- пишет программатор (FLASHING.md)
+0x400000  CONFIG         4 КБ    рабочий конфиг       <- пишет только прошивка
+0x401000  CONFIG_DEFAULT 4 КБ    заводской конфиг     <- пишет только прошивка (v23)
+0x402000  LOG            ~4 МБ   кольцевой журнал     <- пишет только прошивка
 ```
 
 Область SOUNDS при записи образа программатором стирается только в пределах
@@ -306,14 +331,28 @@ python tools/gen_beep.py --rate 44100
 
 ### 7.1 Писков нет вообще → аналоговая часть
 
+`VECTOR_AUDIO_SELFTEST = N` играет N писков **до старта RTOS** (пауза ~300 мс),
+причём цикл обрывается на первом же сбое — поэтому по услышанному и по логу
+место проблемы определяется однозначно. Писк идёт из const-массива во
+внутренней flash напрямую в SAI-DMA: внешняя flash, образ, очередь и поток
+плеера в проверке не участвуют.
+
+| Что слышно | Строка лога | Возврат | Где проблема |
+|---|---|---|---|
+| все N писков | `selftest: done, guard=...` (N раз) | 0 | цифровая часть рабочая → аналог: `SD_MODE` (PC9), питание усилителя, обвязка, динамик |
+| ни одного | `selftest: SAI DMA start FAIL hal=N` | 1 | `HAL_SAI_Transmit_DMA` отказала: SAI не инициализирован или канал занят |
+| частая «очередь» писков ~1 с и тишина | `selftest: DMA started but NOT finished (GPDMA1_Channel11_IRQn?)` | 2 | circular DMA прокручивает писк по кругу, но прерывание завершения не приходит → в NVIC не включён `GPDMA1_Channel11_IRQn` |
+
+Дополнительно:
+
 1. `SD_MODE` (PC9) = High? (CubeMX: GPIO output level = High; в коде страховка
-   в `vector_board_init()`.)
-2. В логе старта: `selftest: done, guard=...` без ошибок → DMA/SAI работают,
-   проблема после них: питание усилителя, динамик, обвязка.
-3. `selftest: DMA started but NOT finished` → не включён `GPDMA1_Channel11_IRQn`
-   (NVIC).
-4. Куб: SAI1 Mode = Master, I2S standard, 16-bit, 2 слота, Mono,
+   в `Vector_Run_Board_Init()`.)
+2. Куб: SAI1 Mode = Master, I2S standard, 16-bit, 2 слота, Mono,
    Audio Frequency = 44.1 kHz; пины PA8=SCK, PA9=FS, PA10=SD.
+3. Пауза между писками отсчитывается циклами ядра (`DelayInt(300)` в
+   `Vector_Run_Board_Init()`), поэтому по ней видно реальную частоту SYSCLK:
+   при заниженной вдвое она растягивается до ~600 мс. Сам писк всегда 240 мс —
+   его темп задаёт SAI.
 
 ### 7.2 Писки есть, звука из образа нет
 
@@ -328,25 +367,47 @@ play #2 'd_myvoice' stream 358306 samples @44100 Hz (chunk 4096)
 * Нет строки `stream` в `play #...` → SAI DMA не в circular-режиме
   (раздел 3, «Что нужно в CubeMX»).
 * `start #N failed, err=4 (io)` → чтение flash/DMA; смотрите
-  `audio_dbg_last_err`, `sf_dbg_*`, строки `ext_read: recovered` (редкие
+  `audio_status.last_error`, `sf_dbg_*`, строки `ext_read: recovered` (редкие
   транзиенты под отладчиком — норма, они теперь ретраятся).
 * `watchdog: stuck sound killed` → не пришёл колбэк завершения DMA: NVIC
   GPDMA1_Channel11, ошибки SAI (`HAL_SAI_ErrorCallback`).
-* Звук «заикается» → растёт `audio_dbg_underrun`: кто-то долго держит мьютекс
-  шины (журнал/конфиг) или поднимите `VECTOR_AUDIO_STREAM_CHUNK` до 8192.
+* Звук «заикается» → растёт `audio_status.cnt_underruns`: кто-то долго держит мьютекс
+  шины (журнал/конфиг — с v22 стирания под звук откладываются, см.
+  `ext_dbg_erase_defer`) или поднимите `VECTOR_AUDIO_STREAM_CHUNK` до 8192.
 
 ### 7.3 Счётчики (Expressions)
 
 | Переменная | Смысл |
 |---|---|
-| `audio_dbg_boot_stage` | 0 = init, 1 = образ ок, 2 = образа нет/невалиден, 3 = рабочий цикл |
-| `audio_dbg_keys / started / played` | команд принято / DMA стартовала / звук доигран |
-| `audio_dbg_last_err / errors` | код ошибки (`audio_err_t`) / их число |
-| `audio_dbg_underrun / stuck / dropped / loops` | заикания стрима / убитые watchdog / вытесненные play / повторы цикла |
+| `audio_status.output` | что звучит: `AUDIO_OUT_SILENT` / `_SOUND` / `_ALARM_BEEP` (прежнее `-1 / >=0 / -2`) |
+| `audio_status.sound_index` | индекс звука в образе; `-1`, если сейчас не звук образа |
+| `audio_status.boot_stage` | `AUDIO_BOOT_INIT` / `_IMAGE_OK` / `_IMAGE_BAD` / `_RUNNING` |
+| `audio_status.cnt_commands / cnt_started / cnt_played` | команд принято / DMA стартовала / звук доигран |
+| `audio_status.last_error / sai_error_code / cnt_errors` | код `audio_err_t` / сырой `SAI.ErrorCode` / число ошибок |
+| `audio_status.cnt_underruns / cnt_watchdog / cnt_dropped / cnt_loops` | заикания стрима / убитые watchdog / вытесненные play / повторы цикла |
+| `audio_status.loop_enabled / loop_index / loop_next_at_ms` | повтор: включён / какой звук / когда следующий |
 | `sf_probe_rc, sf_jedec[3]` | жива ли внешняя flash (`C2 28 17`, `rc=0`) |
 | `ext_dbg_*` | состояние журнала/конфига во внешней flash |
-| `demo_dbg_*` | доходят ли нажатия кнопок (EXTI/уровень/антидребезг) |
+| `demo_status` | доходят ли нажатия кнопок (EXTI/уровень/антидребезг) |
 | `ub_*` | счётчики моста UART4↔USART2 (мост больше ничего не логирует) |
+
+Старые имена (до v14) → новые: все 14 переменных `audio_dbg_*` и внутренние
+дубли (`ap_playing_idx`, `ap_loop_*`, `ap_img_ok`) заменены ОДНОЙ структурой
+`audio_status`. Сохранённые Expressions нужно поправить так:
+
+| Было | Стало |
+|---|---|
+| `audio_dbg_cur_idx` (`-1` тишина, `-2` писк, `>=0` звук) | `audio_status.output` (`AUDIO_OUT_SILENT` / `AUDIO_OUT_ALARM_BEEP` / `AUDIO_OUT_SOUND`) + `audio_status.sound_index` |
+| `audio_dbg_boot_stage` (0..3) | `audio_status.boot_stage` (`AUDIO_BOOT_INIT` / `_IMAGE_OK` / `_IMAGE_BAD` / `_RUNNING`) |
+| `audio_dbg_keys` / `_last_cmd` | `audio_status.cnt_commands` / `last_command` (`AUDIO_CMD_*`) |
+| `audio_dbg_started` / `_played` / `_errors` | `audio_status.cnt_started` / `cnt_played` / `cnt_errors` |
+| `audio_dbg_last_err` (в т.ч. `0x1000|ErrorCode`) | `audio_status.last_error` + `audio_status.sai_error_code` |
+| `audio_dbg_underrun` / `_stuck` / `_dropped` / `_loops` | `audio_status.cnt_underruns` / `cnt_watchdog` / `cnt_dropped` / `cnt_loops` |
+| `audio_dbg_wakes` / `_timeouts` | `audio_status.cnt_wakes` / `cnt_wake_timeouts` |
+| `demo_dbg_*` | `demo_status.*` (`cnt_edges`, `cnt_pressed`, `cnt_inactive_level`, `cnt_debounced`, `last_pin`, `sound_index`, `volume_percent`, `playing`) |
+
+В коде вместо сравнений с `-1/-2` — `audio_is_playing()` (звучит звук образа),
+`audio_is_busy()` (звучит что-либо), `audio_get_output()`.
 
 ---
 
@@ -358,7 +419,6 @@ play #2 'd_myvoice' stream 358306 samples @44100 Hz (chunk 4096)
 | `VECTOR_AUDIO_STREAM_CHUNK` | `4096` | сэмплов в половине буфера (93 мс @44.1 кГц, 16 КБ RAM) |
 | `VECTOR_AUDIO_STREAM_SMALLBUF` | `1` | буфер = 2 куска (16 КБ вместо 131 КБ) |
 | `VECTOR_SF_READ_RETRY` | `3` | повторы сбойного чтения внешней flash (1..16) |
-| `VECTOR_AUDIO_LOOP_STATE` | `0` | звук состояния по кругу |
 | `VECTOR_AUDIO_LOOP_PAUSE_MS` | `500` | пауза между повторами |
 | `VECTOR_AUDIO_SELFTEST` | `0` | писков при старте (до RTOS) |
 | `VECTOR_AUDIO_BOOT_PLAY` | `0` | что сыграть при старте |
@@ -379,3 +439,9 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
   формата образа и SAI до 24/32-битных слотов (MAX98357A их принимает).
   Для голосовых сообщений через малогабаритный динамик 16 бит/44.1 кГц —
   потолок слышимой разницы.
+* Журнал/конфиг не мешают звуку (v22, «окно тишины»): запись во внешнюю flash
+  идёт только когда плеер молчит (пауза повтора 500 мс или тишина), стирания
+  под звучащий звук откладываются (`ext_dbg_erase_defer`), поэтому ротация
+  сектора журнала больше не рвёт стрим. Плата: старт звука может подождать
+  шину до `VECTOR_EXT_LOCK_READ_MS` (250 мс), если в этот момент идёт запись
+  (обычно единицы мс).

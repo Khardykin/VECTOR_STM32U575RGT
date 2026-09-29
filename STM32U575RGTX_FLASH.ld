@@ -47,7 +47,11 @@ MEMORY
 {
   RAM	(xrw)	: ORIGIN = 0x20000000,	LENGTH = 768K
   SRAM4	(xrw)	: ORIGIN = 0x28000000,	LENGTH = 16K
-  FLASH	(rx)	: ORIGIN = 0x08000000,	LENGTH = 1024K
+  /* 1016K = 1024K - 8K: последняя страница банка 2 (0x080FE000) занята
+     заводскими данными (калибровка/бренд/AppKey, Config_save_read.c) -
+     код и константы не должны в неё попадать. ВНИМАНИЕ: CubeMX регенерирует
+     .ld - после перегенерации правку LENGTH повторить. */
+  FLASH	(rx)	: ORIGIN = 0x08000000,	LENGTH = 1016K
 }
 
 /* Sections */
@@ -154,6 +158,23 @@ SECTIONS
     . = . + _Min_Stack_Size;
     . = ALIGN(8);
   } >RAM
+
+  /* Буферы, явно помеченные __attribute__((section(".sram4"))) - в SRAM4
+     (16 КБ @0x28000000): buffer_transmit[] из Core/VectorLib/Src/buffer.c.
+     Без этой выходной секции .sram4 была секцией-сиротой и линкер размещал
+     её на своё усмотрение (PLAN.md §7 п.7). NOLOAD: данные не инициализируются
+     прошивкой. ВАЖНО: такт SRAM4 по умолчанию выключен - его включает
+     vector_board_init() через __HAL_RCC_SRAM4_CLK_ENABLE(), иначе первое же
+     обращение даст bus fault. GPDMA1 SRAM4 видит (системная шина), LPDMA - нет. */
+  .sram4 (NOLOAD) :
+  {
+    . = ALIGN(4);
+    _ssram4 = .;
+    *(.sram4)
+    *(.sram4*)
+    . = ALIGN(4);
+    _esram4 = .;
+  } >SRAM4
 
   /* Remove information from the compiler libraries */
   /DISCARD/ :

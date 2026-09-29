@@ -32,7 +32,24 @@ extern "C" {
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
+extern uint8_t 				flag_end_data_exchange;
+extern uint32_t         	timer_end_data_exchange;
 
+/* timer / countdown_time / countdown_time_rtc и тип Timer_variables
+   объявлены в shared_types.h (v19): там же макросы-типы DOWN_TIMER. */
+
+
+typedef struct
+{
+	uint32_t 	button_count;				// Таймер нажатия кнопки
+	uint8_t 	button_flag;				// Старт таймера нажатия кнопки
+	uint8_t     button_pressed;             // Статус нажатия и отжатия кнопки
+	uint8_t     button_pressed_action;      // Статус нажатия и выполнение действия
+}Button_variables;
+extern Button_variables button1;
+extern Button_variables button2;
+extern Button_variables button3;
+extern Button_variables button_sos;
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -52,14 +69,20 @@ void MemManage_Handler(void);
 void BusFault_Handler(void);
 void UsageFault_Handler(void);
 void DebugMon_Handler(void);
+void RTC_IRQHandler(void);
 void EXTI1_IRQHandler(void);
 void EXTI2_IRQHandler(void);
 void EXTI3_IRQHandler(void);
+void TIM3_IRQHandler(void);
 void TIM6_IRQHandler(void);
 void I2C1_ER_IRQHandler(void);
 void SPI1_IRQHandler(void);
+void SPI2_IRQHandler(void);
+void USART1_IRQHandler(void);
 void USART2_IRQHandler(void);
+void USART3_IRQHandler(void);
 void UART4_IRQHandler(void);
+void GPDMA1_Channel8_IRQHandler(void);
 void GPDMA1_Channel9_IRQHandler(void);
 void GPDMA1_Channel10_IRQHandler(void);
 void GPDMA1_Channel11_IRQHandler(void);

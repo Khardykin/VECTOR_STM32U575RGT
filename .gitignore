@@ -1,5 +1,6 @@
 /Debug/
-/Drivers/
+/Drivers/*
+!/Drivers/ui_Vector/
 /Middlewares/
 *.o
 *.su
@@ -9,5 +10,4 @@
 
 # патчи и временные артефакты (в репозиторий не несём)
 *.patch
-/patches/
-__pycache__/
+*.diff

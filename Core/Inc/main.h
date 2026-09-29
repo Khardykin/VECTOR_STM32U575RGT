@@ -29,6 +29,17 @@ extern "C" {
 /* Includes ------------------------------------------------------------------*/
 #include "stm32u5xx_hal.h"
 
+#include "stm32u5xx_ll_crs.h"
+#include "stm32u5xx_ll_rcc.h"
+#include "stm32u5xx_ll_bus.h"
+#include "stm32u5xx_ll_system.h"
+#include "stm32u5xx_ll_exti.h"
+#include "stm32u5xx_ll_cortex.h"
+#include "stm32u5xx_ll_utils.h"
+#include "stm32u5xx_ll_pwr.h"
+#include "stm32u5xx_ll_dma.h"
+#include "stm32u5xx_ll_gpio.h"
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
@@ -46,7 +57,63 @@ extern "C" {
 
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
+#define I2C_Mem_Write(x1,x2,x3,x4,x5,x6,x7)		HAL_I2C_Mem_Write(x1,x2,x3,x4,x5,x6,x7)
+#define I2C_Mem_Read(x1,x2,x3,x4,x5,x6,x7)		HAL_I2C_Mem_Read(x1,x2,x3,x4,x5,x6,x7)
+#define I2C_Master_Transmit(x1,x2,x3,x4,x5)		HAL_I2C_Master_Transmit(x1,x2,x3,x4,x5)
+#define I2C_Master_Receive(x1,x2,x3,x4,x5)		HAL_I2C_Master_Receive(x1,x2,x3,x4,x5)
+#define i2c_status_type						HAL_StatusTypeDef
+#define I2C_IsBusy(x1)						(HAL_I2C_GetState(x1) != HAL_I2C_STATE_READY)
+#define I2C_ReConfig(x1)					do { (void)HAL_I2C_DeInit(x1); (void)HAL_I2C_Init(x1); } while (0)
 
+/* --- SPI: экран (SPI2+DMA) и внешняя flash (SPI1) --- */
+#define SPI_OK							HAL_OK
+#define SPI_Transmit(x1,x2,x3,x4)			HAL_SPI_Transmit(x1,x2,x3,x4)
+#define SPI_Transmit_DMA(x1,x2,x3)			HAL_SPI_Transmit_DMA(x1,x2,x3)
+#define SPI_Abort(x1)						HAL_SPI_Abort(x1)
+#define SPI_GetErrorCode(x1)				((x1)->ErrorCode)
+#define SPI_GetDataSize(x1)					((x1)->Init.DataSize)
+#define SPI_GetDMA(x1)						((x1)->hdmatx)
+#define SPI_INSTANCE(x1)					((x1)->Instance)
+#define SPI_DATA_SIZE_8BIT				SPI_DATASIZE_8BIT
+#define MAX_DELAY						HAL_MAX_DELAY
+
+/* --- GPIO: пины экрана/модулей --- */
+#define GPIO_WritePin(x1,x2,x3)				HAL_GPIO_WritePin(x1,x2,x3)
+#define GPIO_ReadPin(x1,x2)					HAL_GPIO_ReadPin(x1,x2)
+#define PIN_SET							GPIO_PIN_SET
+#define PIN_RESET						GPIO_PIN_RESET
+
+/* --- UART: перенос скорости на ходу (Gps.c зовёт usart_init из AT32) ---
+   Разрядность и стоп-биты не меняем: их задаёт CubeMX (8N1), поэтому
+   аргументы databits/stopbits макросом игнорируются. Реализация
+   Uart_SetBaudrate() - в vector_macros.c.                                  */
+#define UART_OK							HAL_OK
+#define Uart_Init(x1)						HAL_UART_Init(x1)
+#define Uart_Enable_IT(x1,x2)				__HAL_UART_ENABLE_IT(x1,x2)
+#define UART_IT_RX_ERR					UART_IT_ERR
+#define UART_IT_RX_BYTE					UART_IT_RXNE
+#define USART_DATA_8BITS				(8u)
+#define USART_STOP_1_BIT				(1u)
+#define usart_init(port,baud,databits,stopbits)	Uart_SetBaudrate(&(port),(baud))
+
+void Uart_SetBaudrate(UART_HandleTypeDef *huart, uint32_t baud);
+
+#define READ_PIN_IN(x)  	(LL_GPIO_IsInputPinSet(x##_GPIO_Port, x##_Pin))
+#define READ_PIN_OUT(x)  	(LL_GPIO_IsOutputPinSet(x##_GPIO_Port, x##_Pin))
+#define SET_OFF(x)  		LL_GPIO_ResetOutputPin(x##_GPIO_Port, x##_Pin);
+#define SET_ON(x)   		LL_GPIO_SetOutputPin(x##_GPIO_Port, x##_Pin);
+#define SET_TGL(x)			LL_GPIO_TogglePin(x##_GPIO_Port, x##_Pin);
+
+#define USART_COM			(huart4)
+#define USART_DEBUG			(huart4)
+
+
+#define BUTTON_1_EXTI_LINE 	LL_EXTI_LINE_1
+#define BUTTON_2_EXTI_LINE 	LL_EXTI_LINE_2
+#define BUTTON_3_EXTI_LINE 	LL_EXTI_LINE_3
+#define ACCEL_INT_EXINT_LINE LL_EXTI_LINE_11
+#define error_status 		ErrorStatus
+#define I2C_OK				HAL_OK
 /* USER CODE END EM */
 
 /* Exported functions prototypes ---------------------------------------------*/
@@ -77,12 +144,12 @@ void Error_Handler(void);
 #define USART3_RX_BLE_GPIO_Port GPIOC
 #define STATE_LED_Pin GPIO_PIN_0
 #define STATE_LED_GPIO_Port GPIOB
-#define BUTTON1_Pin GPIO_PIN_1
-#define BUTTON1_GPIO_Port GPIOB
-#define BUTTON1_EXTI_IRQn EXTI1_IRQn
-#define BUTTON2_Pin GPIO_PIN_2
-#define BUTTON2_GPIO_Port GPIOB
-#define BUTTON2_EXTI_IRQn EXTI2_IRQn
+#define BUTTON_1_Pin GPIO_PIN_1
+#define BUTTON_1_GPIO_Port GPIOB
+#define BUTTON_1_EXTI_IRQn EXTI1_IRQn
+#define BUTTON_2_Pin GPIO_PIN_2
+#define BUTTON_2_GPIO_Port GPIOB
+#define BUTTON_2_EXTI_IRQn EXTI2_IRQn
 #define LCD_DC_Pin GPIO_PIN_10
 #define LCD_DC_GPIO_Port GPIOB
 #define LCD_RST_Pin GPIO_PIN_12
@@ -103,11 +170,13 @@ void Error_Handler(void);
 #define ALARM_LED_2_GPIO_Port GPIOA
 #define VIBRO_Pin GPIO_PIN_15
 #define VIBRO_GPIO_Port GPIOA
+#define ACCEL_INT_Pin GPIO_PIN_11
+#define ACCEL_INT_GPIO_Port GPIOC
 #define BLE_RESET_Pin GPIO_PIN_12
 #define BLE_RESET_GPIO_Port GPIOC
-#define BUTTON3_Pin GPIO_PIN_3
-#define BUTTON3_GPIO_Port GPIOB
-#define BUTTON3_EXTI_IRQn EXTI3_IRQn
+#define BUTTON_3_Pin GPIO_PIN_3
+#define BUTTON_3_GPIO_Port GPIOB
+#define BUTTON_3_EXTI_IRQn EXTI3_IRQn
 #define GNSS_MODE_Pin GPIO_PIN_4
 #define GNSS_MODE_GPIO_Port GPIOB
 #define GNSS_RST_Pin GPIO_PIN_5
