@@ -129,6 +129,7 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
   }
   else
   {
+	audio_set_volume(50);
     audio_stop();
   }
 }
