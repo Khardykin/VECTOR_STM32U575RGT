@@ -48,6 +48,15 @@
 static uint32_t demo_last_ms[DEMO_KEYS] = { 0, 0, 0 };
 static uint8_t  demo_next_idx = 0;
 
+/* ТЕСТ громкости (BUTTON3): значения по кругу. demo_dbg_volume видно в Live
+   Watch / Expressions - из ISR лог не печатается (vlog такие вызовы
+   отбрасывает в vlog_dbg_isr_skipped), а подтверждение, что громкость реально
+   применена к звучащим данным, печатает сам плеер из потока: строка
+   строка "volume NN% (q15=...)" из apply_volume().                                */
+static const uint8_t demo_vol_tbl[] = { 100u, 75u, 50u, 25u, 0u };
+static uint8_t       demo_vol_idx   = 0;
+volatile uint8_t     demo_dbg_volume = 100u;   /* текущая громкость, %      */
+
 /* Номер кнопки (0..2) по пину; 0xFF - не наша. */
 static uint8_t demo_key_index(uint16_t pin)
 {
@@ -129,8 +138,16 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
   }
   else
   {
-	audio_set_volume(50);
-    audio_stop();
+    /* BUTTON3: ТЕСТ audio_set_volume(). Цикл 100 -> 75 -> 50 -> 25 -> 0 -> 100.
+       audio_stop() убран НАМЕРЕННО: вместе с ним проверить громкость нельзя -
+       звук обрывается в тот же миг, слушать нечего. В рабочем (стриминговом)
+       режиме новая громкость применяется к следующему дозагружаемому куску,
+       то есть слышна уже через ~93 мс (AP_CHUNK/44100) прямо во время
+       звучания. Как только тест не нужен - верните строку audio_stop().    */
+    demo_vol_idx = (uint8_t)((demo_vol_idx + 1u) % (uint8_t)sizeof demo_vol_tbl);
+    audio_set_volume(demo_vol_tbl[demo_vol_idx]);
+    demo_dbg_volume = demo_vol_tbl[demo_vol_idx];
+    /* audio_stop(); */
   }
 }
 
