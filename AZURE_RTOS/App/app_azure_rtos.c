@@ -24,7 +24,6 @@
 /* USER CODE BEGIN Includes */
 #include "audio_player.h"
 #include "extstore.h"
-#include "uart_bridge.h"
 #include "vector_config.h"
 #include "vector_log.h"
 #include "main.h"
@@ -104,14 +103,10 @@ VOID tx_application_define(VOID *first_unused_memory)
   /* Порядок важен:
        0) vlog_init - консольный лог (USART1), чтобы шаги ниже были видны
        1) ext_init  - мьютекс шины flash + сканирование журнала (до потоков!)
-       2) audio_init- читает sounds.bin, создаёт поток плеера
-       3) uart_bridge_init - мост UART4<->USART2                       */
+       2) audio_init- читает sounds.bin, создаёт поток плеера          */
   vlog_init();
   ext_init();
   audio_init();
-#if VECTOR_UART_BRIDGE_TEST
-  uart_bridge_init();
-#endif
 
   /* Создаем поток для Графики LVGL (Приоритет 15 - средний). Звук целиком
      живёт в потоке "Audio Player" из audio_player.c (создан в audio_init). */

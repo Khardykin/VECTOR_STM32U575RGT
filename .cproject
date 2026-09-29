@@ -38,7 +38,6 @@
 									<listOptionValue builtIn="false" value="../Core/Inc"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Inc"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Audio/Inc"/>
-									<listOptionValue builtIn="false" value="../Core/VectorLib/Comm/Inc"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Test/Inc"/>
 									<listOptionValue builtIn="false" value="../AZURE_RTOS/App"/>
 									<listOptionValue builtIn="false" value="../Drivers/STM32U5xx_HAL_Driver/Inc"/>
@@ -64,7 +63,6 @@
 									<listOptionValue builtIn="false" value="../Core/Inc"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Inc"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Audio/Inc"/>
-									<listOptionValue builtIn="false" value="../Core/VectorLib/Comm/Inc"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Test/Inc"/>
 									<listOptionValue builtIn="false" value="../AZURE_RTOS/App"/>
 									<listOptionValue builtIn="false" value="../Drivers/STM32U5xx_HAL_Driver/Inc"/>
@@ -144,7 +142,6 @@
 									<listOptionValue builtIn="false" value="../Core/Inc"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Inc"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Audio/Inc"/>
-									<listOptionValue builtIn="false" value="../Core/VectorLib/Comm/Inc"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Test/Inc"/>
 									<listOptionValue builtIn="false" value="../AZURE_RTOS/App"/>
 									<listOptionValue builtIn="false" value="../Drivers/STM32U5xx_HAL_Driver/Inc"/>
@@ -169,7 +166,6 @@
 									<listOptionValue builtIn="false" value="../Core/Inc"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Inc"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Audio/Inc"/>
-									<listOptionValue builtIn="false" value="../Core/VectorLib/Comm/Inc"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Test/Inc"/>
 									<listOptionValue builtIn="false" value="../AZURE_RTOS/App"/>
 									<listOptionValue builtIn="false" value="../Drivers/STM32U5xx_HAL_Driver/Inc"/>

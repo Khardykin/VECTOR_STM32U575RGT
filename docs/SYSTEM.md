@@ -2,8 +2,7 @@
 
 Короткий ответ на вопрос «где что делается» и «что настраивается в CubeMX».
 Про звук (управление, образ, сборка, диагностика) — `AUDIO.md`, про запись
-всего программатором — `FLASHING.md`, про мост UART — `UART_BRIDGE.md`,
-история правок — `archive/`.
+всего программатором — `FLASHING.md`, история правок — `archive/`.
 
 ---
 
@@ -30,7 +29,6 @@ Audio/Inc, Audio/Src
 Common/Src/vector_log.c    консольный лог: ITM/SWO и/или UART (выключается макросом)
 Common/Src/vector_board.c  всё, что делается в main() до RTOS (усилитель, проба, selftest)
 Inc/vector_tick.h          ЕДИНСТВЕННЫЙ источник времени приложения - тик ThreadX
-Comm/  uart_bridge.[ch]    ТЕСТ: прозрачный мост UART4 <-> USART2 (без лога)
 Test/  audio_demo.[ch]     ТЕСТ: кнопки PB1/PB2/PB3 как пульт плеера
 ```
 
@@ -68,7 +66,6 @@ main()
       ├─ ext_init()         мьютекс шины, sf_dma_init(), сканирование журнала
       ├─ audio_init()       семафор ap_wake, очередь ap_queue, поток "Audio Player",
       │                     load_image()  <-- чтение таблицы образа из внешней flash
-      ├─ uart_bridge_init() (VECTOR_UART_BRIDGE_TEST) семафор + поток + Receive_IT
       └─ tx_thread_create(lvgl_thread)     заглушка под будущую графику
 ```
 
@@ -145,8 +142,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 |---|---|---|
 | SPI1 + внешняя flash | `extstore` | `ext_mtx` (мьютекс на всю операцию, включая стирание) |
 | SAI1_A + GPDMA ch11 + `ap_buf[]` (2 × 4096 сэмплов = 16 КБ) | поток `Audio Player` | один владелец: ISR ставит только флаги «половина освободилась» и счётчик, дозагружает всегда поток |
-| UART4/USART2 | `uart_bridge` | кольца single-producer/single-consumer |
-| USART1/UART4 (лог) | `vector_log.c` (`VECTOR_LOG_ENABLE`) | только инициализация/поток, из ISR вызов отбрасывается; шина делится с мостом через `vlog_bus_lock()` |
+| USART1/UART4 (лог) | `vector_log.c` (`VECTOR_LOG_ENABLE`) | только инициализация/поток, из ISR вызов отбрасывается; UART4 занят только логом |
 
 Внешняя flash поделена без пересечений (`sfmap.h`): `SOUNDS 0..4 МБ` (пишет
 программатор), `CONFIG 0x400000 (4 КБ)`, `LOG 0x401000..8 МБ` (пишет прошивка).
@@ -168,9 +164,6 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | `audio_dbg_loops` | сколько повторов цикла сыграно |
 | `audio_dbg_errors` / `_last_err` | код `audio_err_t` или `0x1000|SAI.ErrorCode` |
 | `sf_dbg_dma_chunks` / `_fallback` / `_tmo` | работает ли SPI-DMA и сколько раз откатились на опрос |
-| `ub_rx4_bytes` / `ub_tx2_bytes` | жив ли мост UART (подробно — `UART_BRIDGE.md`) |
-| `ub_dbg_err4` / `_rearm4` | ошибки приёма UART4: 8 = ORE, 4 = FE (скорость!), 2 = NE |
-| `ub_dbg_echo` | сколько байт собственного эха выброшено (UART4 = полудуплекс) |
 | `vlog_dbg_lines` | сколько строк ушло в лог |
 
 ---
@@ -184,11 +177,6 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 |---|---|---|
 | ITM/SWO | `VECTOR_LOG_ITM 1` | **консоль внутри CubeIDE** (вкладка SWV). Нужен подключённый ST-LINK и **свободный PB3**: PB3 = JTDO/TRACESWO, а сейчас там BUTTON3, поэтому SWO-вывода физически нет, пока кнопка на PB3 |
 | UART | `VECTOR_LOG_UART 4` | ваш терминал на UART4 (PC10). `0` = не печатать, `1/2/3` = USART1/2/3 |
-
-Конфликт, о котором надо помнить: `VECTOR_LOG_UART 4` + `VECTOR_UART_BRIDGE_TEST 1`
-— это один и тот же UART4, поэтому в терминале будет смесь лога и данных моста
-(строки не рвутся: мост берёт ту же блокировку `vlog_bus_lock()`, но байты
-чередуются). На время теста моста ставьте `VECTOR_LOG_UART 0`.
 
 Три выключателя:
 
@@ -224,7 +212,6 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | `spiflash.c` | чтение ≥ 1 КБ (адрес, объём, миллисекунды), каждая запись и стирание сектора, откат с DMA на опрос |
 | `extstore.c` | ретраи чтения (`ext_read: recovered after N retry`), конфиг/журнал (DEBUG) |
 | `audio_player.c` | старт, состояние образа, команды, запуск и ошибки звука, «звук доигран», watchdog |
-| `uart_bridge.c` | ничего (счётчики `ub_*` — в отладчике) |
 
 Правила модуля (важно при доработке):
 
@@ -309,7 +296,6 @@ ThreadX отстаёт от настенных часов, метки лога �
 | `FLASHING.md` | **запись программатором**: прошивка MCU, external loader для внешней flash, запись sounds.bin, CubeMX-настройки |
 | `AUDIO.md` | как запустить/остановить звук, 44.1 кГц, качество, набор звуков, сборка образа, диагностика |
 | `SYSTEM.md` | этот: слои кода, контексты, цепочки, IRQ, время, лог, что настраивать в CubeMX |
-| `UART_BRIDGE.md` | мост UART4 ↔ USART2: полудуплекс, `0x99` → `0xFD`, счётчики |
 | `archive/FIX_REPORT.md` | история: разбор «зависания» в `tx_semaphore_get`, SPI-DMA |
 | `archive/AUDIO_MAP.md` | исторический справочник по фазам разработки |
 
@@ -438,7 +424,7 @@ BUTTON3 с PB3, оставьте `SYS_JTDO-SWV` и включите SWV в Run C
 `AZURE_RTOS/App/app_azure_rtos.c`, `tx_application_define`:
 
 ```c
-  vlog_init();  ext_init();  audio_init();  uart_bridge_init();
+  vlog_init();  ext_init();  audio_init();
   /* + создание потока LVGL-заглушки */
 ```
 

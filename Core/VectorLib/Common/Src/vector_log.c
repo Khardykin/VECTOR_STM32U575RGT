@@ -50,12 +50,6 @@
 #define VLOG_UART_NAME  "none"
 #endif
 
-/* Лог и мост на одном UART4: предупреждение на этапе компиляции, чтобы потом
-   не разбирать "почему в терминале каша". См. vector_config.h.              */
-#if (VECTOR_LOG_UART == 4) && VECTOR_UART_BRIDGE_TEST
-#warning "vector_log: log and bridge share UART4 - disable one of them (VECTOR_LOG_UART 0 or VECTOR_UART_BRIDGE_TEST 0)"
-#endif
-
 static TX_MUTEX        vlog_mtx;
 static volatile uint8_t vlog_mtx_ok = 0;   /* мьютекс создан (vlog_init)      */
 static char            vlog_line[VLOG_LINE];
