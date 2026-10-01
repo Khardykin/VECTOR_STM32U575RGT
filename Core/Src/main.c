@@ -224,7 +224,7 @@ void PeriphCommonClock_Config(void)
   {
   }
   LL_RCC_PLL3FRACN_Enable();
-  LL_RCC_PLL3_SetFRACN(3686);
+  LL_RCC_PLL3_SetFRACN(3671);
 }
 
 /* USER CODE BEGIN 4 */
