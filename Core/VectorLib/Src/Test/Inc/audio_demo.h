@@ -42,6 +42,7 @@ extern volatile uint32_t demo_dbg_level0;
 extern volatile uint32_t demo_dbg_debounce;
 extern volatile uint32_t demo_dbg_last_pin;
 extern volatile uint8_t  demo_dbg_volume;  /* ТЕСТ: текущая громкость, % */
+extern volatile uint16_t demo_dbg_sound;   /* ТЕСТ: индекс звука BUTTON1 */
 
 #endif /* VECTOR_AUDIO_DEMO_KEYS */
 

@@ -209,7 +209,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | Модуль | События |
 |---|---|
 | `vector_board.c` | результат `sf_probe()` (JEDEC ID) — ещё до RTOS |
-| `spiflash.c` | чтение ≥ 1 КБ (адрес, объём, миллисекунды), каждая запись и стирание сектора, откат с DMA на опрос |
+| `spiflash.c` | чтение ≥ 1 КБ (адрес, объём, миллисекунды) — только при `VECTOR_SPI_LOG_READS 1`, иначе уровень DEBUG; каждая запись и стирание сектора, откат с DMA на опрос |
 | `extstore.c` | ретраи чтения (`ext_read: recovered after N retry`), конфиг/журнал (DEBUG) |
 | `audio_player.c` | старт, состояние образа, команды, запуск и ошибки звука, «звук доигран», watchdog |
 

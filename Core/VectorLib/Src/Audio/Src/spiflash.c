@@ -400,7 +400,14 @@ HAL_StatusTypeDef sf_read(uint32_t addr, uint8_t *dst, uint32_t len)
   {
     if (len >= VECTOR_SPI_DMA_MIN_LEN)
     {
+#if VECTOR_SPI_LOG_READS
       LOG_I(VLOG_M_FLASH, "read %u b @%x ok, %u ms", len, addr, VTICK_MS() - t0);
+#else
+      /* При стриминге звука такие чтения идут каждые ~93 мс и забивают
+         терминал, поэтому по умолчанию строка уходит в DEBUG-уровень
+         (VECTOR_LOG_LEVEL). Вернуть в INFO: VECTOR_SPI_LOG_READS 1.      */
+      LOG_D(VLOG_M_FLASH, "read %u b @%x ok, %u ms", len, addr, VTICK_MS() - t0);
+#endif
     }
     else
     {

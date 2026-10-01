@@ -47,9 +47,9 @@
    приводил к тому, что второе нажатие другой кнопкой в течение 200 мс съедалось. */
 static uint32_t demo_last_ms[DEMO_KEYS] = { 0, 0, 0 };
 
-/* Позиция в цикле BUTTON1: 0/1/2 = состояния плеера, 3 = СТОП. Старт с 3,
-   чтобы ПЕРВОЕ нажатие дало состояние 0, а не 1.                           */
-static uint8_t  demo_state_idx = 5u;
+/* Индекс звука для BUTTON1: перебор ВСЕХ звуков образа по кругу
+   (0 .. audio_count()-1). Старт с 0xFFFF, чтобы первое нажатие дало звук #0. */
+static uint16_t demo_snd_idx = 0xFFFFu;
 
 /* ТЕСТ громкости (BUTTON3): значения по кругу. demo_dbg_volume видно в Live
    Watch / Expressions - из ISR лог не печатается (vlog такие вызовы
@@ -59,6 +59,7 @@ static uint8_t  demo_state_idx = 5u;
 static const uint8_t demo_vol_tbl[] = { 100u, 75u, 50u, 25u, 0u };
 static uint8_t       demo_vol_idx   = 0;
 volatile uint8_t     demo_dbg_volume = 100u;   /* текущая громкость, %      */
+volatile uint16_t    demo_dbg_sound  = 0xFFFFu;/* BUTTON1: индекс звука      */
 
 /* Номер кнопки (0..2) по пину; 0xFF - не наша. */
 static uint8_t demo_key_index(uint16_t pin)
@@ -87,8 +88,8 @@ volatile uint32_t demo_dbg_last_pin= 0;   /* последний обработа
  * Логика: фронт уже случился - читаем ТЕКУЩИЙ уровень пина и событием считаем
  * только тот фронт, на котором пин в активном состоянии (то есть нажатие, а не
  * отбой). Плюс защита от дребезга по интервалу DEMO_DEBOUNCE_MS.
- * Кнопки: BUTTON1 - цикл состояний 0 -> 1 -> 2 -> СТОП -> 0,
- *         BUTTON2 - не используется, BUTTON3 - тест громкости.              */
+ * Кнопки: BUTTON1 - перебор всех звуков образа по кругу (с прерыванием
+ *                   текущего), BUTTON2 - стоп, BUTTON3 - тест громкости.     */
 void audio_demo_key_handler(uint16_t GPIO_Pin)
 {
   uint32_t now = VTICK_MS();
@@ -128,29 +129,41 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
 
   if (GPIO_Pin == BUTTON_1_Pin)
   {
-    /* Цикл: состояние 0 -> 1 -> 2 -> СТОП -> 0 ...
-       Звук состояния берётся из ap_state_map[] (audio_player.c):
-         0 = SND_STATE_DEFAULT_0 = kolokol_1
-         1 = SND_STATE_DEFAULT_1 = kolokol_2
-         2 = ТРЕТИЙ звук образа (phone_1), пока SND_COUNT > 2; тишиной оно
-             бывает только если в образе два звука или меньше (AP_STATE_SND2).
-       audio_set_state() прерывает текущий звук и чистит очередь, поэтому
-       переключение слышно сразу; если включён цикл (audio_set_loop(1)),
-       звук состояния повторяется.
-       Позиция 3 - audio_stop(): полный стоп + очистка очереди + снятие цикла,
-       ap_state при этом НЕ меняется (в лог уйдёт "stop: loop off (state=N)").
-       BUTTON2 больше не используется: audio_play(idx) отличался тем, что НЕ
-       прерывал текущий звук, а откладывал следующий в один слот ожидания, и
-       позволял прослушать все звуки образа (phone_2, zvonok_1 состояниями
-       0..2 недостижимы). Вернуть - см. историю, это 4 строки.             */
-    demo_state_idx = (uint8_t)((demo_state_idx + 1u) % 6u);
-    if (demo_state_idx < 5u)
+    /* BUTTON1: перебор ВСЕХ звуков образа по кругу - 0, 1, 2, 3, 4, снова 0.
+
+       Почему НЕ audio_set_state(): таблица состояний ap_state_map[] в
+       audio_player.c состоит ровно из ТРЁХ ячеек (0 = SND_STATE_DEFAULT_0,
+       1 = SND_STATE_DEFAULT_1, 2 = AP_STATE_SND2), а audio_set_state(st)
+       при st >= 3 берёт AUDIO_STATE_SILENT. Отсюда и было
+       "state 3 = silent, state 4 = silent": состояний в плеере три, звуков
+       в образе пять, и расширить цикл до %6/%5 без правки плеера нельзя.
+
+       audio_stop() + audio_play(idx) переключают звук СРАЗУ: обе команды
+       уходят в очередь плеера (глубина AUDIO_QUEUE_LEN = 8, из ISR вызывать
+       разрешено), поток выполняет их по порядку - текущий звук обрывается,
+       очередь чистится, следующий стартует немедленно. ap_state (режим
+       прибора) при этом не меняется; если нужен именно режим с циклом -
+       это audio_set_state(0..2) и audio_set_loop(1).
+
+       audio_play() отдельно (без stop) тоже работает, но НЕ прерывает
+       текущий звук: команда уходит в один слот ожидания ap_pending_idx и
+       звук сменится только когда доиграет текущий (для 9-секундного
+       phone_1 ждать долго).                                                 */
+    uint16_t n = audio_count();
+    if (n > 0u)
     {
-      audio_set_state(demo_state_idx);
-    }
-    else
-    {
+      /* 0xFFFF на старте -> первое нажатие даёт звук #0, дальше по кругу */
+      if (demo_snd_idx >= n)
+      {
+        demo_snd_idx = 0u;
+      }
+      else
+      {
+        demo_snd_idx = (uint16_t)((demo_snd_idx + 1u) % n);
+      }
       audio_stop();
+      (void)audio_play(demo_snd_idx);
+      demo_dbg_sound = demo_snd_idx;
     }
   }
   else if (GPIO_Pin == BUTTON_2_Pin)
