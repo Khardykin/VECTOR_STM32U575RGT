@@ -81,13 +81,13 @@ void HAL_SAI_MspInit(SAI_HandleTypeDef* saiHandle)
     PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_SAI1;
     PeriphClkInit.Sai1ClockSelection = RCC_SAI1CLKSOURCE_PLL3;
     PeriphClkInit.PLL3.PLL3Source = RCC_PLLSOURCE_HSE;
-    PeriphClkInit.PLL3.PLL3M = 1;
-    PeriphClkInit.PLL3.PLL3N = 12;
-    PeriphClkInit.PLL3.PLL3P = 9;
+    PeriphClkInit.PLL3.PLL3M = 2;
+    PeriphClkInit.PLL3.PLL3N = 56;
+    PeriphClkInit.PLL3.PLL3P = 20;
     PeriphClkInit.PLL3.PLL3Q = 2;
     PeriphClkInit.PLL3.PLL3R = 2;
-    PeriphClkInit.PLL3.PLL3RGE = RCC_PLLVCIRANGE_1;
-    PeriphClkInit.PLL3.PLL3FRACN = 5741.0;
+    PeriphClkInit.PLL3.PLL3RGE = RCC_PLLVCIRANGE_0;
+    PeriphClkInit.PLL3.PLL3FRACN = 3686.0;
     PeriphClkInit.PLL3.PLL3ClockOut = RCC_PLL3_DIVP;
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
     {

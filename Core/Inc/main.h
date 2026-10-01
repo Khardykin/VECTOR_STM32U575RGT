@@ -132,7 +132,6 @@ void Error_Handler(void);
 #define BLE_RESET_GPIO_Port GPIOC
 #define BUTTON_3_Pin LL_GPIO_PIN_3
 #define BUTTON_3_GPIO_Port GPIOB
-#define BUTTON_3_EXTI_IRQn EXTI3_IRQn
 #define GNSS_MODE_Pin LL_GPIO_PIN_4
 #define GNSS_MODE_GPIO_Port GPIOB
 #define GNSS_RST_Pin LL_GPIO_PIN_5
