@@ -192,7 +192,7 @@
  * Одноразовые audio_play() встраиваются в цикл: звучат вместо повтора, затем
  * цикл продолжается.                                                       */
 #ifndef VECTOR_AUDIO_LOOP_STATE
-#define VECTOR_AUDIO_LOOP_STATE   0
+#define VECTOR_AUDIO_LOOP_STATE   1
 #endif
 
 /* Пауза между повторами цикла, мс. Меняется в рантайме: audio_set_loop_pause(). */

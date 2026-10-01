@@ -49,7 +49,7 @@ static uint32_t demo_last_ms[DEMO_KEYS] = { 0, 0, 0 };
 
 /* Позиция в цикле BUTTON1: 0/1/2 = состояния плеера, 3 = СТОП. Старт с 3,
    чтобы ПЕРВОЕ нажатие дало состояние 0, а не 1.                           */
-static uint8_t  demo_state_idx = 3u;
+static uint8_t  demo_state_idx = 5u;
 
 /* ТЕСТ громкости (BUTTON3): значения по кругу. demo_dbg_volume видно в Live
    Watch / Expressions - из ISR лог не печатается (vlog такие вызовы
@@ -143,8 +143,8 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
        прерывал текущий звук, а откладывал следующий в один слот ожидания, и
        позволял прослушать все звуки образа (phone_2, zvonok_1 состояниями
        0..2 недостижимы). Вернуть - см. историю, это 4 строки.             */
-    demo_state_idx = (uint8_t)((demo_state_idx + 1u) % 4u);
-    if (demo_state_idx < 3u)
+    demo_state_idx = (uint8_t)((demo_state_idx + 1u) % 6u);
+    if (demo_state_idx < 5u)
     {
       audio_set_state(demo_state_idx);
     }

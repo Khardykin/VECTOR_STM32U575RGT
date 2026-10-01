@@ -287,20 +287,7 @@ void EXTI1_IRQHandler(void)
   /* USER CODE BEGIN EXTI1_IRQn 0 */
 
   /* USER CODE END EXTI1_IRQn 0 */
-  if (LL_EXTI_IsActiveFallingFlag_0_31(LL_EXTI_LINE_1) != RESET)
-  {
-    LL_EXTI_ClearFallingFlag_0_31(LL_EXTI_LINE_1);
-    /* USER CODE BEGIN LL_EXTI_LINE_1_FALLING */
-
-    /* USER CODE END LL_EXTI_LINE_1_FALLING */
-  }
-  if (LL_EXTI_IsActiveRisingFlag_0_31(LL_EXTI_LINE_1) != RESET)
-  {
-    LL_EXTI_ClearRisingFlag_0_31(LL_EXTI_LINE_1);
-    /* USER CODE BEGIN LL_EXTI_LINE_1_RISING */
-
-    /* USER CODE END LL_EXTI_LINE_1_RISING */
-  }
+  HAL_GPIO_EXTI_IRQHandler(BUTTON_1_Pin);
   /* USER CODE BEGIN EXTI1_IRQn 1 */
 
   /* USER CODE END EXTI1_IRQn 1 */
@@ -314,23 +301,24 @@ void EXTI2_IRQHandler(void)
   /* USER CODE BEGIN EXTI2_IRQn 0 */
 
   /* USER CODE END EXTI2_IRQn 0 */
-  if (LL_EXTI_IsActiveFallingFlag_0_31(LL_EXTI_LINE_2) != RESET)
-  {
-    LL_EXTI_ClearFallingFlag_0_31(LL_EXTI_LINE_2);
-    /* USER CODE BEGIN LL_EXTI_LINE_2_FALLING */
-
-    /* USER CODE END LL_EXTI_LINE_2_FALLING */
-  }
-  if (LL_EXTI_IsActiveRisingFlag_0_31(LL_EXTI_LINE_2) != RESET)
-  {
-    LL_EXTI_ClearRisingFlag_0_31(LL_EXTI_LINE_2);
-    /* USER CODE BEGIN LL_EXTI_LINE_2_RISING */
-
-    /* USER CODE END LL_EXTI_LINE_2_RISING */
-  }
+  HAL_GPIO_EXTI_IRQHandler(BUTTON_2_Pin);
   /* USER CODE BEGIN EXTI2_IRQn 1 */
 
   /* USER CODE END EXTI2_IRQn 1 */
+}
+
+/**
+  * @brief This function handles EXTI Line3 interrupt.
+  */
+void EXTI3_IRQHandler(void)
+{
+  /* USER CODE BEGIN EXTI3_IRQn 0 */
+
+  /* USER CODE END EXTI3_IRQn 0 */
+  HAL_GPIO_EXTI_IRQHandler(BUTTON_3_Pin);
+  /* USER CODE BEGIN EXTI3_IRQn 1 */
+
+  /* USER CODE END EXTI3_IRQn 1 */
 }
 
 /**

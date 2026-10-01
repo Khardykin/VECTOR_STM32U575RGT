@@ -70,29 +70,11 @@ void HAL_SAI_MspInit(SAI_HandleTypeDef* saiHandle)
 
   GPIO_InitTypeDef GPIO_InitStruct;
   DMA_NodeConfTypeDef NodeConfig;
-  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 /* SAI1 */
     if(saiHandle->Instance==SAI1_Block_A)
     {
     /* SAI1 clock enable */
-
-  /** Initializes the peripherals clock
-  */
-    PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_SAI1;
-    PeriphClkInit.Sai1ClockSelection = RCC_SAI1CLKSOURCE_PLL3;
-    PeriphClkInit.PLL3.PLL3Source = RCC_PLLSOURCE_HSE;
-    PeriphClkInit.PLL3.PLL3M = 2;
-    PeriphClkInit.PLL3.PLL3N = 56;
-    PeriphClkInit.PLL3.PLL3P = 20;
-    PeriphClkInit.PLL3.PLL3Q = 2;
-    PeriphClkInit.PLL3.PLL3R = 2;
-    PeriphClkInit.PLL3.PLL3RGE = RCC_PLLVCIRANGE_0;
-    PeriphClkInit.PLL3.PLL3FRACN = 3686.0;
-    PeriphClkInit.PLL3.PLL3ClockOut = RCC_PLL3_DIVP;
-    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
-    {
-      Error_Handler();
-    }
+    LL_RCC_SetSAIClockSource(LL_RCC_SAI1_CLKSOURCE_PLL3);
 
     if (SAI1_client == 0)
     {
