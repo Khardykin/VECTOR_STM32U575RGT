@@ -29,6 +29,17 @@ extern "C" {
 /* Includes ------------------------------------------------------------------*/
 #include "stm32u5xx_hal.h"
 
+#include "stm32u5xx_ll_system.h"
+#include "stm32u5xx_ll_gpio.h"
+#include "stm32u5xx_ll_exti.h"
+#include "stm32u5xx_ll_lpgpio.h"
+#include "stm32u5xx_ll_bus.h"
+#include "stm32u5xx_ll_cortex.h"
+#include "stm32u5xx_ll_rcc.h"
+#include "stm32u5xx_ll_utils.h"
+#include "stm32u5xx_ll_pwr.h"
+#include "stm32u5xx_ll_dma.h"
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
@@ -46,7 +57,21 @@ extern "C" {
 
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
+#define READ_PIN_IN(x)  	(LL_GPIO_IsInputPinSet(x##_GPIO_Port, x##_Pin))
+#define READ_PIN_OUT(x)  	(LL_GPIO_IsOutputPinSet(x##_GPIO_Port, x##_Pin))
+#define SET_OFF(x)  		LL_GPIO_ResetOutputPin(x##_GPIO_Port, x##_Pin);
+#define SET_ON(x)   		LL_GPIO_SetOutputPin(x##_GPIO_Port, x##_Pin);
+#define SET_TGL(x)			LL_GPIO_TogglePin(x##_GPIO_Port, x##_Pin);
 
+#define USART_COM			(huart4)
+#define USART_DEBUG			(huart4)
+
+
+#define BUTTON_1_EXTI_LINE 	LL_EXTI_LINE_1
+#define BUTTON_2_EXTI_LINE 	LL_EXTI_LINE_2
+#define BUTTON_3_EXTI_LINE 	LL_EXTI_LINE_3
+#define error_status 		ErrorStatus
+#define I2C_OK				HAL_OK
 /* USER CODE END EM */
 
 /* Exported functions prototypes ---------------------------------------------*/
@@ -57,60 +82,60 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define LTE_LED_Pin GPIO_PIN_0
+#define LTE_LED_Pin LL_GPIO_PIN_0
 #define LTE_LED_GPIO_Port GPIOC
-#define LTE_EN_Pin GPIO_PIN_1
+#define LTE_EN_Pin LL_GPIO_PIN_1
 #define LTE_EN_GPIO_Port GPIOC
-#define LTE_STATUS_Pin GPIO_PIN_2
+#define LTE_STATUS_Pin LL_GPIO_PIN_2
 #define LTE_STATUS_GPIO_Port GPIOC
-#define LTE_RESET_Pin GPIO_PIN_3
+#define LTE_RESET_Pin LL_GPIO_PIN_3
 #define LTE_RESET_GPIO_Port GPIOC
-#define USART2_TX_LTE_Pin GPIO_PIN_2
+#define USART2_TX_LTE_Pin LL_GPIO_PIN_2
 #define USART2_TX_LTE_GPIO_Port GPIOA
-#define USART2_RX_LTE_Pin GPIO_PIN_3
+#define USART2_RX_LTE_Pin LL_GPIO_PIN_3
 #define USART2_RX_LTE_GPIO_Port GPIOA
-#define CS_FLASH_Pin GPIO_PIN_4
+#define CS_FLASH_Pin LL_GPIO_PIN_4
 #define CS_FLASH_GPIO_Port GPIOA
-#define USART3_TX_BLE_Pin GPIO_PIN_4
+#define USART3_TX_BLE_Pin LL_GPIO_PIN_4
 #define USART3_TX_BLE_GPIO_Port GPIOC
-#define USART3_RX_BLE_Pin GPIO_PIN_5
+#define USART3_RX_BLE_Pin LL_GPIO_PIN_5
 #define USART3_RX_BLE_GPIO_Port GPIOC
-#define STATE_LED_Pin GPIO_PIN_0
+#define STATE_LED_Pin LL_GPIO_PIN_0
 #define STATE_LED_GPIO_Port GPIOB
-#define BUTTON1_Pin GPIO_PIN_1
-#define BUTTON1_GPIO_Port GPIOB
-#define BUTTON1_EXTI_IRQn EXTI1_IRQn
-#define BUTTON2_Pin GPIO_PIN_2
-#define BUTTON2_GPIO_Port GPIOB
-#define BUTTON2_EXTI_IRQn EXTI2_IRQn
-#define LCD_DC_Pin GPIO_PIN_10
+#define BUTTON_1_Pin LL_GPIO_PIN_1
+#define BUTTON_1_GPIO_Port GPIOB
+#define BUTTON_1_EXTI_IRQn EXTI1_IRQn
+#define BUTTON_2_Pin LL_GPIO_PIN_2
+#define BUTTON_2_GPIO_Port GPIOB
+#define BUTTON_2_EXTI_IRQn EXTI2_IRQn
+#define LCD_DC_Pin LL_GPIO_PIN_10
 #define LCD_DC_GPIO_Port GPIOB
-#define LCD_RST_Pin GPIO_PIN_12
+#define LCD_RST_Pin LL_GPIO_PIN_12
 #define LCD_RST_GPIO_Port GPIOB
-#define LCD_CS_Pin GPIO_PIN_14
+#define LCD_CS_Pin LL_GPIO_PIN_14
 #define LCD_CS_GPIO_Port GPIOB
-#define LCD_LED_Pin GPIO_PIN_6
+#define LCD_LED_Pin LL_GPIO_PIN_6
 #define LCD_LED_GPIO_Port GPIOC
-#define ALRT_Pin GPIO_PIN_7
+#define ALRT_Pin LL_GPIO_PIN_7
 #define ALRT_GPIO_Port GPIOC
-#define CHARGE_STATE_Pin GPIO_PIN_8
+#define CHARGE_STATE_Pin LL_GPIO_PIN_8
 #define CHARGE_STATE_GPIO_Port GPIOC
-#define SD_MODE_Pin GPIO_PIN_9
+#define SD_MODE_Pin LL_GPIO_PIN_9
 #define SD_MODE_GPIO_Port GPIOC
-#define ALARM_LED_1_Pin GPIO_PIN_11
+#define ALARM_LED_1_Pin LL_GPIO_PIN_11
 #define ALARM_LED_1_GPIO_Port GPIOA
-#define ALARM_LED_2_Pin GPIO_PIN_12
+#define ALARM_LED_2_Pin LL_GPIO_PIN_12
 #define ALARM_LED_2_GPIO_Port GPIOA
-#define VIBRO_Pin GPIO_PIN_15
+#define VIBRO_Pin LL_GPIO_PIN_15
 #define VIBRO_GPIO_Port GPIOA
-#define BLE_RESET_Pin GPIO_PIN_12
+#define BLE_RESET_Pin LL_GPIO_PIN_12
 #define BLE_RESET_GPIO_Port GPIOC
-#define BUTTON3_Pin GPIO_PIN_3
-#define BUTTON3_GPIO_Port GPIOB
-#define BUTTON3_EXTI_IRQn EXTI3_IRQn
-#define GNSS_MODE_Pin GPIO_PIN_4
+#define BUTTON_3_Pin LL_GPIO_PIN_3
+#define BUTTON_3_GPIO_Port GPIOB
+#define BUTTON_3_EXTI_IRQn EXTI3_IRQn
+#define GNSS_MODE_Pin LL_GPIO_PIN_4
 #define GNSS_MODE_GPIO_Port GPIOB
-#define GNSS_RST_Pin GPIO_PIN_5
+#define GNSS_RST_Pin LL_GPIO_PIN_5
 #define GNSS_RST_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */

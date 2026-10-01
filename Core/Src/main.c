@@ -107,7 +107,9 @@ int main(void)
   MX_USART2_UART_Init();
   MX_ICACHE_Init();
   MX_RTC_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
+
   /* Вся бортовая инициализация до RTOS: усилитель (SD_MODE), проба внешней
      flash и selftest звука. Что именно делает и что из этого надо перенести
      в CubeMX - см. vector_board.h и docs/SYSTEM.md (раздел 9).              */
@@ -198,6 +200,9 @@ void SystemClock_Config(void)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   /* USER CODE BEGIN Callback 0 */
+	if (htim->Instance == TIM6){
+		SET_TGL(ALARM_LED_1);
+	}
   /* пусто: мигалку/счётчики сюда ставить не нужно, всё ниже в hook */
   /* USER CODE END Callback 0 */
   if (htim->Instance == TIM6)
@@ -205,6 +210,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
+  else if(htim->Instance == TIM3){
+	  SET_TGL(STATE_LED);
+  }
   /* пусто: время приложения считается только от тика ThreadX (vector_tick.h),
      TIM6 обслуживает исключительно внутреннюю тайм-базу HAL.               */
   /* USER CODE END Callback 1 */

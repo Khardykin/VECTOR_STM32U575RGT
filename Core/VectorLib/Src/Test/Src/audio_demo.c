@@ -63,9 +63,9 @@ volatile uint8_t     demo_dbg_volume = 100u;   /* текущая громкос�
 /* Номер кнопки (0..2) по пину; 0xFF - не наша. */
 static uint8_t demo_key_index(uint16_t pin)
 {
-  if (pin == BUTTON1_Pin) { return 0u; }
-  if (pin == BUTTON2_Pin) { return 1u; }
-  if (pin == BUTTON3_Pin) { return 2u; }
+  if (pin == BUTTON_1_Pin) { return 0u; }
+  if (pin == BUTTON_2_Pin) { return 1u; }
+  if (pin == BUTTON_3_Pin) { return 2u; }
   return 0xFFu;
 }
 
@@ -126,7 +126,7 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
   demo_last_ms[key] = now;
   demo_dbg_press++;
 
-  if (GPIO_Pin == BUTTON1_Pin)
+  if (GPIO_Pin == BUTTON_1_Pin)
   {
     /* Цикл: состояние 0 -> 1 -> 2 -> СТОП -> 0 ...
        Звук состояния берётся из ap_state_map[] (audio_player.c):
@@ -153,11 +153,11 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
       audio_stop();
     }
   }
-  else if (GPIO_Pin == BUTTON2_Pin)
+  else if (GPIO_Pin == BUTTON_2_Pin)
   {
 	  audio_stop();
   }
-  else if (GPIO_Pin == BUTTON3_Pin)
+  else if (GPIO_Pin == BUTTON_3_Pin)
   {
     /* BUTTON3: ТЕСТ audio_set_volume(). Цикл 100 -> 75 -> 50 -> 25 -> 0 -> 100.
        audio_stop() убран НАМЕРЕННО: вместе с ним проверить громкость нельзя -
@@ -170,19 +170,6 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
     demo_dbg_volume = demo_vol_tbl[demo_vol_idx];
     /* audio_stop(); */
   }
-}
-
-/* Колбэки HAL GPIO. КОНТЕКСТ: ISR EXTI1/2/3. Куб настроил пины на ОБА фронта
-   (RISING_FALLING), поэтому ловим оба, а было ли это нажатие - решает чтение
-   уровня пина в audio_demo_key_handler().                                  */
-void HAL_GPIO_EXTI_Rising_Callback(uint16_t GPIO_Pin)
-{
-  audio_demo_key_handler(GPIO_Pin);
-}
-
-void HAL_GPIO_EXTI_Falling_Callback(uint16_t GPIO_Pin)
-{
-  audio_demo_key_handler(GPIO_Pin);
 }
 
 #endif /* VECTOR_AUDIO_DEMO_KEYS */
