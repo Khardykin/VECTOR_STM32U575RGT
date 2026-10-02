@@ -21,9 +21,9 @@ loader пишут «сырой» бинарник, .bin — штатное ра�
                          Именно по нему видно, почему два образа совпали/различаются.
   audio_ids.h            enum SND_<ИМЯ> = порядковый номер + SND_COUNT,
                          таблица-комментарий (номер, имя, сэмплы, байты, Гц, секунды)
-                         и SND_STATE_DEFAULT_0/1 для таблицы состояний плеера.
+                         и SND_STATE_DEFAULT_0/1 (первые два звука образа).
                          Путь задаётся --ids-out (по умолчанию
-                         Core/VectorLib/Audio/Inc/audio_ids.h).
+                         Core/VectorLib/Src/Audio/Inc/audio_ids.h).
 
 Использование:
     python3 tools/pack_sounds.py tools/*.wav                 # -> tools/sounds.bin
@@ -69,7 +69,7 @@ ENTRY_SIZE = 36
 NAME_LEN = 16
 FMT_PCM16 = 0
 FLASH_SIZE = 8 * 1024 * 1024
-DEFAULT_IDS = Path("Core/VectorLib/Audio/Inc/audio_ids.h")
+DEFAULT_IDS = Path("Core/VectorLib/Src/Audio/Inc/audio_ids.h")
 DEFAULT_OUT = Path("tools/sounds.bin")   # образ звуков: расширение .bin
 IMAGE_SUFFIXES = (".bin", ".img")        # .img — только на чтение старых образов
 
@@ -230,12 +230,13 @@ def emit_ids(entries, img_sha, out_img, path: Path):
     lines.append(f"  SND_COUNT = {len(entries)}")
     lines.append("};")
     lines.append("")
-    lines.append("/* Значения по умолчанию для таблицы состояний плеера")
-    lines.append("   (ap_state_map в audio_player.c). Если звуков меньше двух,")
-    lines.append("   недостающие состояния = тишина (0xFFFF). */")
+    lines.append("/* Первые два звука образа - удобные значения по умолчанию")
+    lines.append("   (например, для старта или тестов). Плеер играет звуки ПО ИНДЕКСУ")
+    lines.append("   (audio_play/audio_play_now), никакой таблицы состояний нет.")
+    lines.append("   Если звуков меньше двух, недостающее значение = 0xFFFF. */")
     lines.append(f"#define SND_STATE_DEFAULT_0  {('SND_' + entries[0]['enum']) if len(entries) > 0 else '0xFFFFu'}")
     d1 = ('SND_' + entries[1]['enum']) if len(entries) > 1 else '0xFFFFu'
-    c1 = '  /* звуков меньше двух - тишина */' if len(entries) < 2 else ''
+    c1 = '  /* звуков меньше двух */' if len(entries) < 2 else ''
     lines.append(("#define SND_STATE_DEFAULT_1  " + d1 + c1).rstrip())
     lines.append("")
     lines.append("#endif /* AUDIO_IDS_H */")

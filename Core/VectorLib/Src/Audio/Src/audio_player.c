@@ -1,17 +1,17 @@
 /**
   ******************************************************************************
   * @file    audio_player.c
-  * @brief   Плеер звуков из внешней SPI flash (очередь, состояния, громкость)
+  * @brief   Плеер звуков из внешней SPI flash (очередь, цикл, громкость)
   *
   *          Поток-владелец воспроизведения: только он трогает SAI/DMA.
   *          Команды приходят через tx_queue, пробуждение - через семафор,
   *          который взводят и команды, и ISR завершения DMA.
   *
-  *          Тестовый вход - кнопки:
-  *            BUTTON1 (PB1) - цикл состояний 0 -> 1 -> 2 -> 0
-  *                            st0 = звук #0, st1 = звук #1, st2 = ТИШИНА
-  *            BUTTON2 (PB2) - проиграть следующий звук образа по очереди
-  *            BUTTON3 (PB3) - стоп
+  *          Тестовый вход - кнопки (audio_demo.c):
+  *            BUTTON1 (PB1) - перебор всех звуков образа по кругу
+  *                            (audio_play_now: прервать текущий и играть новый)
+  *            BUTTON2 (PB2) - стоп
+  *            BUTTON3 (PB3) - тест громкости
   *
   *          ПОРЯДОК СТАРТА (важно, см. также docs/SYSTEM.md):
   *            main()                    - периферия (CubeMX), sf_probe(), кнопки
@@ -64,11 +64,12 @@ static ULONG        ap_queue_mem[AUDIO_QUEUE_LEN];
 static TX_SEMAPHORE ap_wake;
 
 /* Команды */
-#define CMD_PLAY    1u
-#define CMD_STOP    2u
-#define CMD_STATE   3u
-#define CMD_BEEP    4u
-#define CMD_LOOP    5u   /* пересчитать цикл (audio_set_loop) */
+#define CMD_PLAY      1u   /* в очередь: сыграет ПОСЛЕ текущего             */
+#define CMD_STOP      2u   /* немедленный стоп + очистка очереди и цикла    */
+/* 3u занимал CMD_STATE: слой "состояний" удалён, номер оставлен свободным.  */
+#define CMD_BEEP      4u   /* аварийный писк, прерывает текущий звук        */
+#define CMD_LOOP      5u   /* пересчитать цикл (audio_set_loop)             */
+#define CMD_PLAY_NOW  6u   /* прервать текущий и СРАЗУ играть новый         */
 #define MSG(cmd, arg)   ((((ULONG)(cmd)) << 16) | ((ULONG)(arg) & 0xFFFFu))
 
 /* ---------------------------------------------------------------- образ --- */
@@ -97,51 +98,6 @@ static uint8_t            ap_img_ok = 0;
 #endif
 static int16_t ap_buf[AP_BUF_SAMPLES];
 
-/* -------------------------------------------------------------- состояние -
- * Таблица "состояние -> звук". По умолчанию берётся из СГЕНЕРИРОВАННОГО
- * audio_ids.h (первые два звука образа), поэтому при добавлении звуков
- * править здесь ничего не нужно: enum и SND_STATE_DEFAULT_* пересоздаются
- * скриптом pack_sounds.py вместе с образом.
- *
- * Хотите другую привязку - подставьте имена SND_* из audio_ids.h, например:
- *     { SND_C_VOICE_GAS, SND_B_CLICK, AUDIO_STATE_SILENT }
- * Кнопка BUTTON1 крутит состояния по кругу (см. HAL_GPIO_EXTI_Rising_Callback).
- *
- * Состояние 2 - третий звук образа, если он в наборе есть. pack_sounds.py
- * генерирует только SND_STATE_DEFAULT_0/1, поэтому дальше берём индекс прямо:
- * при пересборке образа на месте 2 окажется тот звук, который шёл третьим в
- * команде сборки. Если звуков меньше трёх - тишина. Защита от выхода за
- * состав образа есть ниже (ap_state_assert2), при SND_COUNT <= 2 ветка
- * выбирает AUDIO_STATE_SILENT и ассерт проходит.
- *
- * Зачем это нужно: без третьего состояния самый длинный звук образа вообще
- * недостижим с кнопки, и стриминг (раздел 3, docs/AUDIO.md) не проверить.   */
-/* Третий звук берём индексом, а не макросом: pack_sounds.py генерирует только
-   SND_STATE_DEFAULT_0/1. ВАЖНО - проверка через ТЕРНАРНЫЙ оператор, а не через
-   #if: SND_COUNT объявлен в enum, препроцессор его не видит и в #if подставил
-   бы 0, из-за чего ветка "тишина" выбиралась бы даже для образа из трёх
-   звуков. Как константное выражение AP_STATE_SND2 годится и в инициализатор
-   массива, и в ассерт ниже.                                                  */
-#define AP_STATE_SND2  ((SND_COUNT > 2) ? (uint16_t)2 : (uint16_t)AUDIO_STATE_SILENT)
-
-static volatile uint8_t  ap_state = 0;
-static const uint16_t    ap_state_map[3] = {
-  SND_STATE_DEFAULT_0,      /* состояние 0 */
-  SND_STATE_DEFAULT_1,      /* состояние 1 */
-  AP_STATE_SND2             /* состояние 2 = третий звук образа или тишина */
-};
-
-/* Защита на этапе компиляции: индексы из таблицы обязаны существовать
-   в данном составе образа (0xFFFF = тишина, проверяется отдельно). */
-typedef char ap_state_assert0
-    [((SND_STATE_DEFAULT_0 == 0xFFFFu) || (SND_STATE_DEFAULT_0 < SND_COUNT)) ? 1 : -1];
-typedef char ap_state_assert1
-    [((SND_STATE_DEFAULT_1 == 0xFFFFu) || (SND_STATE_DEFAULT_1 < SND_COUNT)) ? 1 : -1];
-/* третье состояние - константное выражение, поэтому проверяется так же:
-   либо тишина (0xFFFF), либо существующий звук образа.                      */
-typedef char ap_state_assert2
-    [((AP_STATE_SND2 == 0xFFFFu) || (AP_STATE_SND2 < SND_COUNT)) ? 1 : -1];
-
 /* --------------------------------------------------------------- громкость */
 static volatile int32_t ap_vol_q15 = 32767;   /* 100% */
 
@@ -153,18 +109,20 @@ static volatile int32_t ap_vol_q15 = 32767;   /* 100% */
 static volatile int32_t ap_playing_idx = -1;
 static volatile int32_t ap_pending_idx = -1;
 
-/* ------------------------------------------------------- ЦИКЛ состояния ---
- * Режим "один звук по кругу": звук ТЕКУЩЕГО СОСТОЯНИЯ повторяется с паузой,
- * пока состояние не сменят (audio_set_state) или не остановят (audio_stop /
- * состояние "тишина"). Одноразовые audio_play() встраиваются в этот цикл:
- * звучат вместо повтора, после чего цикл продолжается.
+/* ----------------------------------------------------------------- ЦИКЛ ---
+ * Режим "один звук по кругу": повторяется ПОСЛЕДНИЙ ЗАПУЩЕННЫЙ звук образа
+ * (ap_last_idx) с паузой ap_loop_pause. Включается audio_set_loop(1),
+ * снимается audio_set_loop(0) или audio_stop(). Одноразовые audio_play()
+ * встраиваются в цикл: звучат вместо повтора, после чего цикл продолжается.
  *
- *   ap_loop_on      0/1 - режим включён (audio_set_loop, дефолт из конфига)
+ *   ap_loop_on      0/1 - режим включён (audio_set_loop)
+ *   ap_last_idx     индекс последнего успешно запущенного звука; -1 = не было
  *   ap_loop_idx     звук, который повторяется; -1 = цикла нет
  *   ap_loop_pause   пауза между повторами, мс (audio_set_loop_pause)
  *   ap_next_at      момент (VTICK_MS) следующего повтора; 0 = ещё не задан,
  *                   то есть звук только что закончился и пауза не началась    */
-static volatile uint8_t  ap_loop_on    = (uint8_t)VECTOR_AUDIO_LOOP_STATE;
+static volatile uint8_t  ap_loop_on    = 0u;
+static volatile int32_t  ap_last_idx   = -1;
 static volatile int32_t  ap_loop_idx   = -1;
 static volatile uint32_t ap_loop_pause = (uint32_t)VECTOR_AUDIO_LOOP_PAUSE_MS;
 static volatile uint32_t ap_next_at    = 0;
@@ -235,20 +193,19 @@ volatile uint32_t audio_dbg_stuck     = 0;  /* звук добит watchdog'ом
 
 
 /* ============================================================ внутреннее == */
-/* Пересчитать ap_loop_idx по текущему состоянию. КОНТЕКСТ: поток плеера.
-   Цикл взводится только если: режим включён, образ прочитан и состоянию
-   назначен звук (AUDIO_STATE_SILENT = "пустая ячейка" таблицы -> тишина).
-   Вызывается из CMD_STATE и CMD_LOOP.                                       */
+/* Пересчитать ap_loop_idx. КОНТЕКСТ: поток плеера. Цикл повторяет ПОСЛЕДНИЙ
+   ЗАПУЩЕННЫЙ звук образа (ap_last_idx), поэтому audio_set_loop(1) можно
+   вызвать и во время звучания (повтор начнётся после текущего звука), и в
+   тишине (цикл взведётся, как только что-то сыграют).
+   Вызывается из CMD_LOOP; при старте звука цикл взводится прямо в start_now().
+
+   ap_img_ok обязателен: без образа start_now() каждый раз уходил бы в
+   аварийный писк, и цикл превратился бы в бесконечную пищалку.              */
 static void ap_loop_update(void)
 {
-  uint16_t snd = (ap_state < (sizeof ap_state_map / sizeof ap_state_map[0]))
-                 ? ap_state_map[ap_state] : AUDIO_STATE_SILENT;
-
-  /* ap_img_ok обязателен: без образа start_now() каждый раз уходил бы в
-     аварийный писк, и цикл превратился бы в бесконечную пищалку.            */
-  if ((ap_loop_on != 0u) && (ap_img_ok != 0u) && (snd != AUDIO_STATE_SILENT))
+  if ((ap_loop_on != 0u) && (ap_img_ok != 0u) && (ap_last_idx >= 0))
   {
-    ap_loop_idx = (int32_t)snd;
+    ap_loop_idx = ap_last_idx;
   }
   else
   {
@@ -625,7 +582,19 @@ static audio_err_t start_now(uint16_t idx)
     }
   }
 
-  if (rc != AUDIO_OK)
+  if (rc == AUDIO_OK)
+  {
+    /* Звук пошёл: запоминаем его для цикла и сразу взводим повтор, если режим
+       включён. Поэтому audio_set_loop(1) работает и до старта звука, и во
+       время него, а одноразовые audio_play()/audio_play_now() встраиваются
+       в цикл: звучат вместо повтора, после чего повтор продолжается.      */
+    ap_last_idx = (int32_t)idx;
+    if ((ap_loop_on != 0u) && (ap_img_ok != 0u))
+    {
+      ap_loop_idx = (int32_t)idx;
+    }
+  }
+  else
   {
     audio_dbg_errors++;
     audio_dbg_last_err = (uint32_t)rc;
@@ -671,7 +640,7 @@ static void queue_clear(void)
  *
  * Цикл: проснулись (событие или heartbeat-таймаут) -> разобрали ВСЕ команды
  * из очереди -> если свободно и в очереди что-то лежит, взяли следующий звук.
- * Команды кладут audio_play()/audio_stop()/audio_set_state()/audio_beep(),
+ * Команды кладут audio_play()/audio_play_now()/audio_stop()/audio_beep(),
  * а пробуждение даёт либо они же, либо ISR завершения DMA (см. конец файла).
  *
  * Внешнюю flash поток НЕ программирует никогда: образ sounds.bin записывает
@@ -703,18 +672,12 @@ static void ap_thread_entry(ULONG arg)
      кнопки слышно, жив ли звук вообще. В боевом режиме ставится 0.          */
 #if (VECTOR_AUDIO_BOOT_PLAY == 1)
   {
-    /* войти в состояние 0, как по команде: стартует звук и, если
-       VECTOR_AUDIO_LOOP_STATE=1, он пойдёт по кругу с паузой */
-    uint16_t snd = ap_state_map[0];
-    ap_state = 0;
+    /* звук #0 ПО КРУГУ: взводим цикл и стартуем; ap_last_idx и ap_loop_idx
+       выставит сам start_now(), дальше поток повторяет звук с паузой.      */
+    ap_loop_on = 1u;
     ap_next_at = 0;
-    ap_loop_update();
-    LOG_I(VLOG_M_AUDIO, "boot: state 0, sound #%u, loop=%u pause=%u ms",
-          (uint32_t)snd, (uint32_t)ap_loop_on, ap_loop_pause);
-    if (snd != AUDIO_STATE_SILENT)
-    {
-      (void)start_now(snd);
-    }
+    LOG_I(VLOG_M_AUDIO, "boot: sound #0 in loop, pause=%u ms", ap_loop_pause);
+    (void)start_now(0u);
   }
 #elif (VECTOR_AUDIO_BOOT_PLAY == 2)
   LOG_I(VLOG_M_AUDIO, "boot play: sound #0");
@@ -784,32 +747,28 @@ static void ap_thread_entry(ULONG arg)
 
       if (cmd == CMD_STOP)
       {
-        /* ПОЛНЫЙ стоп: гасим звук, чистим очередь, отложенный звук И цикл.
-           Чтобы снова начать цикл - audio_set_state(нужное состояние).     */
+        /* ПОЛНЫЙ стоп: гасим звук, чистим очередь, отложенный звук И текущий
+           повтор. ap_loop_on и ap_last_idx сохраняются: следующий запущенный
+           звук снова пойдёт по кругу, если режим цикла включён.            */
         stop_now();
         queue_clear();
+        ap_pending_idx = -1;
         ap_loop_idx = -1;
         ap_next_at  = 0;
-        LOG_I(VLOG_M_AUDIO, "stop: loop off (state=%u)", (uint32_t)ap_state);
+        LOG_I(VLOG_M_AUDIO, "stop: queue cleared, loop off (loop_on=%u)",
+              (uint32_t)ap_loop_on);
       }
-      else if (cmd == CMD_STATE)
+      else if (cmd == CMD_PLAY_NOW)
       {
-        uint16_t snd;
+        /* Прервать текущий и СРАЗУ запустить новый - одна команда вместо пары
+           audio_stop() + audio_play(). Отложенный звук сбрасываем, иначе он
+           сыграл бы следом за новым. Цикл НЕ снимаем: ap_loop_on остаётся,
+           и start_now() взведёт повтор уже для нового звука.               */
         stop_now();
         queue_clear();
-        ap_state = (uint8_t)a;
-        snd = (a < (sizeof ap_state_map / sizeof ap_state_map[0]))
-              ? ap_state_map[a] : AUDIO_STATE_SILENT;
+        ap_pending_idx = -1;
         ap_next_at = 0;
-        ap_loop_update();             /* взвести/снять цикл под новое состояние */
-        if (snd != AUDIO_STATE_SILENT)
-        {
-          (void)start_now(snd);       /* смена режима прерывает текущий звук */
-        }
-        else
-        {
-          LOG_I(VLOG_M_AUDIO, "state %u = silent", (uint32_t)a);
-        }
+        (void)start_now((uint16_t)a);
       }
       else if (cmd == CMD_BEEP)
       {
@@ -1229,24 +1188,25 @@ void audio_stop(void)
   }
 }
 
-/* Смена РЕЖИМА: текущий звук прерывается, играется звук нового состояния из
-   ap_state_map[] (или тишина, если состоянию назначен AUDIO_STATE_SILENT).
-   Контекст: любой. st < 3, иначе берётся тишина.                          */
-void audio_set_state(uint8_t st)
+/* Прервать текущий звук и СРАЗУ запустить idx - одна команда очереди вместо
+   пары audio_stop() + audio_play(). Контекст: любой (поток или ISR).
+   Возврат: AUDIO_OK или AUDIO_ERR_QUEUE_FULL (очередь на AUDIO_QUEUE_LEN).
+   Цикл не снимается: при audio_set_loop(1) новый звук дальше пойдёт по кругу
+   с паузой audio_set_loop_pause().                                           */
+audio_err_t audio_play_now(uint16_t idx)
 {
-  ULONG msg = MSG(CMD_STATE, st);
-  if (tx_queue_send(&ap_queue, &msg, TX_NO_WAIT) == TX_SUCCESS)
+  ULONG msg = MSG(CMD_PLAY_NOW, idx);
+  if (tx_queue_send(&ap_queue, &msg, TX_NO_WAIT) != TX_SUCCESS)
   {
-    (void)tx_semaphore_put(&ap_wake);
+    return AUDIO_ERR_QUEUE_FULL;
   }
+  (void)tx_semaphore_put(&ap_wake);
+  return AUDIO_OK;
 }
 
-/* Текущий режим (0..2). Контекст: любой, чтение одного байта. */
-uint8_t audio_get_state(void) { return ap_state; }
-
-/* Включить/выключить цикл звука текущего состояния. КОНТЕКСТ: любой.
-   При включении уже звучащий/следующий звук пойдёт по кругу; при выключении
-   текущий повтор доиграет и наступит тишина.                                */
+/* Включить/выключить цикл ПОСЛЕДНЕГО ЗАПУЩЕННОГО звука. КОНТЕКСТ: любой.
+   При включении уже звучащий (или следующий запущенный) звук пойдёт по кругу;
+   при выключении текущий повтор доиграет и наступит тишина.                 */
 void audio_set_loop(uint8_t on)
 {
   ULONG msg;

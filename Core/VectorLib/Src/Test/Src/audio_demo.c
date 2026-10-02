@@ -9,7 +9,7 @@
   *              -> HAL_GPIO_EXTI_IRQHandler (stm32u5xx_hal_gpio.c)
   *              -> HAL_GPIO_EXTI_Rising_Callback / _Falling_ (ниже)
   *              -> audio_demo_key_handler()
-  *              -> audio_set_state()/audio_play()/audio_stop()  (audio_player.c)
+  *              -> audio_play_now()/audio_play()/audio_stop()   (audio_player.c)
   *              -> tx_queue_send + tx_semaphore_put -> поток "Audio Player"
   *
   *          КОНТЕКСТ: прерывание EXTI. Поэтому здесь только чтение пина,
@@ -88,8 +88,8 @@ volatile uint32_t demo_dbg_last_pin= 0;   /* последний обработа
  * Логика: фронт уже случился - читаем ТЕКУЩИЙ уровень пина и событием считаем
  * только тот фронт, на котором пин в активном состоянии (то есть нажатие, а не
  * отбой). Плюс защита от дребезга по интервалу DEMO_DEBOUNCE_MS.
- * Кнопки: BUTTON1 - перебор всех звуков образа по кругу (с прерыванием
- *                   текущего), BUTTON2 - стоп, BUTTON3 - тест громкости.     */
+ * Кнопки: BUTTON1 - перебор всех звуков образа по кругу (прерывая текущий),
+ *         BUTTON2 - стоп, BUTTON3 - тест громкости.                         */
 void audio_demo_key_handler(uint16_t GPIO_Pin)
 {
   uint32_t now = VTICK_MS();
@@ -131,24 +131,18 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
   {
     /* BUTTON1: перебор ВСЕХ звуков образа по кругу - 0, 1, 2, 3, 4, снова 0.
 
-       Почему НЕ audio_set_state(): таблица состояний ap_state_map[] в
-       audio_player.c состоит ровно из ТРЁХ ячеек (0 = SND_STATE_DEFAULT_0,
-       1 = SND_STATE_DEFAULT_1, 2 = AP_STATE_SND2), а audio_set_state(st)
-       при st >= 3 берёт AUDIO_STATE_SILENT. Отсюда и было
-       "state 3 = silent, state 4 = silent": состояний в плеере три, звуков
-       в образе пять, и расширить цикл до %6/%5 без правки плеера нельзя.
+       audio_play_now(idx) прерывает текущий звук и сразу запускает новый -
+       это ОДНА команда очереди (CMD_PLAY_NOW), а не пара audio_stop() +
+       audio_play(). Индекс берётся по модулю audio_count(), то есть состав
+       образа может быть любым: пересоберёте sounds.bin на три или семь
+       звуков - кнопка продолжит листать их все.
 
-       audio_stop() + audio_play(idx) переключают звук СРАЗУ: обе команды
-       уходят в очередь плеера (глубина AUDIO_QUEUE_LEN = 8, из ISR вызывать
-       разрешено), поток выполняет их по порядку - текущий звук обрывается,
-       очередь чистится, следующий стартует немедленно. ap_state (режим
-       прибора) при этом не меняется; если нужен именно режим с циклом -
-       это audio_set_state(0..2) и audio_set_loop(1).
-
-       audio_play() отдельно (без stop) тоже работает, но НЕ прерывает
-       текущий звук: команда уходит в один слот ожидания ap_pending_idx и
-       звук сменится только когда доиграет текущий (для 9-секундного
-       phone_1 ждать долго).                                                 */
+       Звуки лежат во внешней flash не "по порядку воспроизведения", а там,
+       куда их положил pack_sounds.py: load_image() один раз читает таблицу
+       образа в RAM (ap_tab[]: смещение, длина, частота, имя), и дальше
+       обращение к звуку N - это ap_tab[N].offset, никакой перебор не нужен.
+       Поэтому играть звуки в произвольном порядке можно так же быстро,
+       как и по порядку.                                                    */
     uint16_t n = audio_count();
     if (n > 0u)
     {
@@ -161,8 +155,7 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
       {
         demo_snd_idx = (uint16_t)((demo_snd_idx + 1u) % n);
       }
-      audio_stop();
-      (void)audio_play(demo_snd_idx);
+      (void)audio_play_now(demo_snd_idx);
       demo_dbg_sound = demo_snd_idx;
     }
   }

@@ -24,7 +24,7 @@ Inc/vector_config.h        ВСЕ переключатели проекта (т�
 Audio/Inc, Audio/Src
   spiflash.[ch]            драйвер MX25R6435F: команды, чтение (опрос/DMA), запись, стирание
   extstore.[ch]            мьютекс шины + конфиг (1 страница) + кольцевой журнал + ретраи чтения
-  audio_player.[ch]        ПЛЕЕР: поток, очередь команд, состояния, громкость, стриминг в SAI-DMA
+  audio_player.[ch]        ПЛЕЕР: поток, очередь команд, повтор звука, громкость, стриминг в SAI-DMA
   audio_beep.[ch]          аварийный писк (const PCM 44.1 кГц во внутренней flash)
 Common/Src/vector_log.c    консольный лог: ITM/SWO и/или UART (выключается макросом)
 Common/Src/vector_board.c  всё, что делается в main() до RTOS (усилитель, проба, selftest)
@@ -78,8 +78,7 @@ main()
 
 | Поток | Приоритет | Стек | Что делает |
 |---|---|---|---|
-| `Audio Player` (`ap_thread_entry`) | 10 | 4096 | **единственный владелец** SAI/DMA и `ap_buf[]`: ждёт `ap_wake` (heartbeat или будильник паузы цикла), разбирает команды, дозагружает половины стрим-буфера, запускает DMA, повторяет звук состояния по кругу |
-| `UART Bridge` | 12 | 2048 | перекладывает байты между кольцами и UART (тест) |
+| `Audio Player` (`ap_thread_entry`) | 10 | 4096 | **единственный владелец** SAI/DMA и `ap_buf[]`: ждёт `ap_wake` (heartbeat или будильник паузы повтора), разбирает команды, дозагружает половины стрим-буфера, запускает DMA, повторяет последний звук по кругу |
 | `LVGL Task` | 15 | 4096 | заглушка: спит по 1 с |
 
 Мёртвый поток `Audio Task` и семафор `audio_done_sem` удалены: звуком владеет
@@ -89,7 +88,7 @@ main()
 
 | IRQ | Что в нём | Можно ли звать ThreadX |
 |---|---|---|
-| `EXTI1/2/3` | `audio_demo_key_handler` → `audio_set_state/play/stop` → очередь + `tx_semaphore_put(ap_wake)` | да |
+| `EXTI1/2/3` | `audio_demo_key_handler` → `audio_play_now/stop/set_volume` → очередь + `tx_semaphore_put(ap_wake)` | да |
 | `GPDMA1_Channel11` | DMA звука SAI1_A → `HAL_SAI_TxHalfCplt/TxCpltCallback` → счётчик выданных сэмплов, флаг «половина освободилась», `tx_semaphore_put(ap_wake)` | да |
 | `GPDMA1_Channel10` + `SPI1` | DMA приёма SPI1 → ЕOT → `HAL_SPI_RxCpltCallback` → `tx_semaphore_put(sf_dma_sem)` | да |
 | `UART4` / `USART2` | 1 байт → кольцо → `tx_semaphore_put(ub_sem)` → снова `Receive_IT` | да |
@@ -112,9 +111,11 @@ ext_init -> audio_init -> load_image -> ap_img_ok=1 (или 0 -> только а
 
 **Кнопка → звук**
 ```
-EXTI -> audio_demo_key_handler -> audio_set_state(st)
-     -> tx_queue_send(ap_queue) + tx_semaphore_put(ap_wake)
-     -> ap_thread: CMD_STATE -> stop_now -> ap_loop_update -> start_now(idx)
+EXTI -> audio_demo_key_handler -> audio_play_now(idx)
+     -> tx_queue_send(ap_queue, CMD_PLAY_NOW) + tx_semaphore_put(ap_wake)
+     -> ap_thread: CMD_PLAY_NOW -> stop_now -> queue_clear -> start_now(idx)
+          idx -> ap_tab[idx] (таблица образа в RAM, загружена в load_image)
+               -> адрес во внешней flash = AUDIO_IMG_BASE_ADDR + offset
         -> stream_start_src: ext_read кусками в 2 половины + громкость
         -> HAL_SAI_Transmit_DMA (circular) -> звук
 ```
@@ -131,8 +132,9 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
                                   3) тишина
 ```
 
-Цикл снимается `audio_stop()` (CMD_STOP гасит и `ap_loop_idx`) или состоянием
-«тишина» (`ap_state_map[] = AUDIO_STATE_SILENT`). Подробно — `AUDIO.md`.
+Повтор снимается `audio_stop()` (CMD_STOP гасит и `ap_loop_idx`) или
+`audio_set_loop(0)`. Включается `audio_set_loop(1)` и взводится для последнего
+успешно запущенного звука (`ap_last_idx` в `start_now()`). Подробно — `AUDIO.md`.
 
 ---
 
