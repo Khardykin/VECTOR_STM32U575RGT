@@ -21,7 +21,6 @@ loader пишут «сырой» бинарник, .bin — штатное ра�
                          Именно по нему видно, почему два образа совпали/различаются.
   audio_ids.h            enum SND_<ИМЯ> = порядковый номер + SND_COUNT,
                          таблица-комментарий (номер, имя, сэмплы, байты, Гц, секунды)
-                         и SND_STATE_DEFAULT_0/1 (первые два звука образа).
                          Путь задаётся --ids-out (по умолчанию
                          Core/VectorLib/Src/Audio/Inc/audio_ids.h).
 
@@ -230,14 +229,8 @@ def emit_ids(entries, img_sha, out_img, path: Path):
     lines.append(f"  SND_COUNT = {len(entries)}")
     lines.append("};")
     lines.append("")
-    lines.append("/* Первые два звука образа - удобные значения по умолчанию")
-    lines.append("   (например, для старта или тестов). Плеер играет звуки ПО ИНДЕКСУ")
-    lines.append("   (audio_play/audio_play_now), никакой таблицы состояний нет.")
-    lines.append("   Если звуков меньше двух, недостающее значение = 0xFFFF. */")
-    lines.append(f"#define SND_STATE_DEFAULT_0  {('SND_' + entries[0]['enum']) if len(entries) > 0 else '0xFFFFu'}")
-    d1 = ('SND_' + entries[1]['enum']) if len(entries) > 1 else '0xFFFFu'
-    c1 = '  /* звуков меньше двух */' if len(entries) < 2 else ''
-    lines.append(("#define SND_STATE_DEFAULT_1  " + d1 + c1).rstrip())
+    lines.append("/* Плеер играет звуки ПО ИНДЕКСУ (audio_play/audio_play_now) -")
+    lines.append("   enum выше и есть единственная привязка имени к номеру.       */")
     lines.append("")
     lines.append("#endif /* AUDIO_IDS_H */")
     lines.append("")

@@ -8,9 +8,6 @@
 #ifndef VECTORLIB_INC_CONFIG_DEVICE_H_
 #define VECTORLIB_INC_CONFIG_DEVICE_H_
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 #define MIRAX 1
 #define BACS 2
 #define MIRAX_BACS_BUILD	MIRAX		// 1-Mirax, 2- Bacs
@@ -23,6 +20,8 @@ extern "C" {
 
 #if (DEVICE_NUMBER == Dev1)
 	#define FIRMWARE_VERSION                (1)     		// Версия прошивки
+#else
+	#define FIRMWARE_VERSION                (0)     		// Версия прошивки
 #endif
 //===========================================================================================================================
 #define DEVICE_NUMBER_COM				(DEVICE_NUMBER + DEVICE_NUMBER_MODIF)

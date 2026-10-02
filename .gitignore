@@ -11,3 +11,4 @@
 *.patch
 /patches/
 __pycache__/
+*.diff

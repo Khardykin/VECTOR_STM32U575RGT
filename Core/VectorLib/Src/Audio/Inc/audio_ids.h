@@ -27,4 +27,7 @@ enum {
   SND_COUNT = 6
 };
 
+/* Плеер играет звуки ПО ИНДЕКСУ (audio_play/audio_play_now) -
+   enum выше и есть единственная привязка имени к номеру.       */
+
 #endif /* AUDIO_IDS_H */
