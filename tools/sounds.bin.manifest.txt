@@ -1,21 +1,23 @@
 # manifest сборки sounds.bin (tools/pack_sounds.py)
 out        = tools\sounds.bin
-out_bytes  = 2276724
-out_sha256 = 0cf19b5466f3b9a738993b02da28249f17947a7f3e0dc126989af8d90e4d957c
+out_bytes  = 3749888
+out_sha256 = 1d971aa897ea050b3f228a192ea2da6033ce1179dfa0f8ae39939edb3defd290
 rate       = 44100
 gain       = 1.0
 
 # звуки в порядке сборки (этот порядок = индексы в прошивке):
   0  tools/kolokol_1.wav
       sha256=cca913d30fd4c3aa38d7c27075f3e3e45778daa941f3e2dc3cbbfa17acd8522b  src=2ch 44100Гц  -> 176400 сэмплов 44100Гц, 4.00 с
-  1  tools/kolokol_2.wav
+  1  tools/zvuk-po-sinusoide.wav
+      sha256=bd3867432c1bc911809da3b6110f20c3a69ee995f26abb0bc1e8350693c39670  src=1ch 44100Гц  -> 736563 сэмплов 44100Гц, 16.70 с
+  2  tools/kolokol_2.wav
       sha256=3be93a1787590a5f8d8108aa3b7b6de1185e8efe1e91dcd124cc1b3ad7976d45  src=2ch 44100Гц  -> 328943 сэмплов 44100Гц, 7.46 с
-  2  tools/phone_1.wav
+  3  tools/phone_1.wav
       sha256=542159028b533a11f0ff003d66236f5171981a29b997afec179c124f3260b94c  src=2ch 44100Гц  -> 412416 сэмплов 44100Гц, 9.35 с
-  3  tools/phone_2.wav
+  4  tools/phone_2.wav
       sha256=11b00cb56c30d267560ebde7a6affc3a9855036626c45b6e14dca48ae6f1e2b7  src=2ch 44100Гц  -> 132300 сэмплов 44100Гц, 3.00 с
-  4  tools/zvonok_1.wav
+  5  tools/zvonok_1.wav
       sha256=42e7b23acff713095f8920a58d09bf16c53632fdac20bbee23daa4d05da66899  src=2ch 44100Гц  -> 88200 сэмплов 44100Гц, 2.00 с
 
 # команда для ТОЧНОГО воспроизведения этой сборки:
-python tools/pack_sounds.py tools/kolokol_1.wav tools/kolokol_2.wav tools/phone_1.wav tools/phone_2.wav tools/zvonok_1.wav --rate 44100 --gain 1.0 --out tools\sounds.bin
+python tools/pack_sounds.py tools/kolokol_1.wav tools/zvuk-po-sinusoide.wav tools/kolokol_2.wav tools/phone_1.wav tools/phone_2.wav tools/zvonok_1.wav --rate 44100 --gain 1.0 --out tools\sounds.bin
