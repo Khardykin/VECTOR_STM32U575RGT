@@ -161,7 +161,9 @@ void HAL_GPIO_EXTI_Falling_Callback(uint16_t GPIO_Pin)
 			LL_EXTI_DisableFallingTrig_0_31(BUTTON_3_EXTI_LINE);
 		}
 	}
+#if VECTOR_AUDIO_DEMO_KEYS
 	audio_demo_key_handler(GPIO_Pin);
+#endif
 }
 
 void HAL_UART_TxHalfCpltCallback(UART_HandleTypeDef *huart)
