@@ -65,6 +65,9 @@ extern volatile uint32_t sf_dbg_dma_tmo;       /* таймаутов ожида�
 extern volatile uint32_t sf_dbg_dma_err;       /* HAL_SPI_ErrorCallback       */
 extern volatile uint32_t sf_dbg_dma_fallback;  /* чтений перечитано опросом   */
 extern volatile uint32_t sf_dbg_poll_bytes;    /* байт принято опросом        */
+extern volatile uint32_t sf_dbg_selftest_bad;  /* sf_selftest: байт-расхождений при
+                                                  двойном чтении (0 = линия чистая) */
+extern volatile uint32_t sf_dbg_selftest_runs; /* sf_selftest: сколько прогонов сделано */
 
 /* --- API ------------------------------------------------------------------ */
 /** Поднять CS, прочитать JEDEC ID и статус. Вызывать после MX_SPI1_Init().
@@ -88,6 +91,17 @@ HAL_StatusTypeDef sf_program(uint32_t addr, const uint8_t *src, uint32_t len);
 
 /** Сравнить содержимое с образцом (верификация после записи). */
 HAL_StatusTypeDef sf_verify(uint32_t addr, const uint8_t *src, uint32_t len);
+
+/** ДВОЙНОЕ чтение одного и того же блока (диагностика целостности линии SPI).
+    Каждый из passes прогонов читает блок len байт (<= 8192) по адресу
+    addr + pass*len ДВАЖДЫ и сравнивает побайтно: расхождение = битовые ошибки
+    на линии (SCK 20 МГц на длинных проводах, наводки, плохая земля) - именно
+    они дают "хрип" в звуке при чистых данных во flash. Счётчики:
+    sf_dbg_selftest_bad (байт-расхождений), sf_dbg_selftest_runs.
+    КОНТЕКСТ: поток (чтобы проверка шла тем же DMA-путём, что и подкачка
+    звука); до RTOS тоже отработает, но опросом.
+    Возврат: HAL_OK = расхождений не было, HAL_ERROR = были или чтение упало. */
+HAL_StatusTypeDef sf_selftest(uint32_t addr, uint32_t len, uint32_t passes);
 
 #ifdef __cplusplus
 }

@@ -33,6 +33,7 @@
 #include "vector_tick.h"   /* VTICK_MS(): источник времени выбирается в vector_config.h */
 #include "spi.h"
 #include "main.h"
+#include <string.h>        /* memcmp в sf_selftest(): каждый .c несёт свои include */
 #if VECTOR_SPI_DMA
 #include "tx_api.h"
 #endif
@@ -79,6 +80,10 @@ volatile uint32_t sf_dbg_dma_err      = 0;
 volatile uint32_t sf_dbg_dma_fallback = 0;
 volatile uint32_t sf_dbg_poll_bytes   = 0;
 #endif /* VECTOR_SPI_DMA */
+
+/* Счётчики sf_selftest() - общие (не зависят от VECTOR_SPI_DMA). */
+volatile uint32_t sf_dbg_selftest_bad  = 0;  /* байт-расхождений при двойном чтении */
+volatile uint32_t sf_dbg_selftest_runs = 0;  /* сколько прогонов сделано            */
 
 /* ------------------------------------------------------------------ CS --- */
 /* Опустить CS (PA4). Начало любой команды. Контекст: поток/инициализация. */
@@ -557,4 +562,71 @@ HAL_StatusTypeDef sf_verify(uint32_t addr, const uint8_t *src, uint32_t len)
     done += chunk;
   }
   return HAL_OK;
+}
+
+/* ------------------------------------------------------------- selftest ---
+ * Диагностика ЦЕЛОСТНОСТИ линии SPI (поиск "хрипа" в звуке при чистом образе).
+ * Один и тот же блок читается ДВАЖДЫ и сравнивается побайтно. NOR-flash
+ * детерминирована: любое расхождение = битовые ошибки передачи (наводки,
+ * длинные провода, SCK 20 МГц на пределе, плохая земля). Обычные счётчики
+ * (dma_tmo/dma_err) такие ошибки НЕ ловят: обмен формально успешен, биты
+ * уже пришли испорченными, CRC у звука в образе нет.
+ *
+ * len ограничена 8192 - размером куска подкачки звука (VECTOR_AUDIO_STREAM_CHUNK
+ * * 2 байта), чтобы проверка шла ровно тем же путём и тем же размером, что и
+ * рабочее чтение. Вызывать из ПОТОКА: тогда len >= VECTOR_SPI_DMA_MIN_LEN
+ * уходит в DMA (dma_usable() требует контекст потока) - проверяется боевой
+ * путь подкачки. Прогон passes x len x 2 байт; адрес каждого прогона сдвигается.
+ * Возврат: HAL_OK = расхождений нет, HAL_ERROR = были (или чтение упало).     */
+#define SF_SELFTEST_MAX_LEN  8192u
+
+HAL_StatusTypeDef sf_selftest(uint32_t addr, uint32_t len, uint32_t passes)
+{
+  static uint8_t a[SF_SELFTEST_MAX_LEN];
+  static uint8_t b[SF_SELFTEST_MAX_LEN];
+  HAL_StatusTypeDef rc = HAL_OK;
+  uint32_t pass;
+
+  if ((len == 0u) || (len > SF_SELFTEST_MAX_LEN) || (passes == 0u))
+  {
+    return HAL_ERROR;
+  }
+
+  for (pass = 0; pass < passes; pass++)
+  {
+    uint32_t base = addr + (pass * len);
+    uint32_t i;
+
+    if ((sf_read(base, a, len) != HAL_OK) || (sf_read(base, b, len) != HAL_OK))
+    {
+      LOG_E(VLOG_M_FLASH, "selftest: read fail @%x (pass %u)", base, pass);
+      return HAL_ERROR;
+    }
+
+    for (i = 0; i < len; i++)
+    {
+      if (a[i] != b[i])
+      {
+        uint32_t bad = 0;
+        uint32_t j;
+        for (j = 0; j < len; j++)
+        {
+          if (a[j] != b[j]) { bad++; }
+        }
+        sf_dbg_selftest_bad += bad;
+        LOG_E(VLOG_M_FLASH, "selftest: %u byte diff @%x off %u -> SPI line noisy",
+              bad, base, i);
+        rc = HAL_ERROR;
+        break;
+      }
+    }
+    sf_dbg_selftest_runs++;
+  }
+
+  if (rc == HAL_OK)
+  {
+    LOG_I(VLOG_M_FLASH, "selftest: %u pass x %u b clean (dma_tmo=%u dma_err=%u fallback=%u)",
+          passes, len, sf_dbg_dma_tmo, sf_dbg_dma_err, sf_dbg_dma_fallback);
+  }
+  return rc;
 }

@@ -32,6 +32,12 @@ void vector_board_init(void)
   uint32_t i;
 #endif
 
+  /* 0. Такт SRAM4 (16 КБ @0x28000000) по умолчанию ВЫКЛЮЧЕН (RCC_AHB3ENR.31):
+        без него любое обращение к секции .sram4 (buffer_transmit[] из
+        buffer.c, см. STM32U575RGTX_FLASH.ld) - это bus fault. Включаем до
+        первого использования. Для сна потом не забыть SRAM4PDS/SRAM4PD.   */
+  __HAL_RCC_SRAM4_CLK_ENABLE();
+
 #if VECTOR_DBG_FREEZE_TICK
   /* Остановка тайм-базы HAL (TIM6), пока ядро стоит на брейкпоинте: без этого
      TIM6 считает и во время halt, но прерывание не обслуживается, и внутренние

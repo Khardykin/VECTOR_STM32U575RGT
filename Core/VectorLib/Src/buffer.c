@@ -1,9 +1,14 @@
 #include "Vector_main.h"
 
+#include <string.h>   /* memcpy: каждый .c несёт свои include сам */
+
 #if (DMA_USART == 1)
 //	#include "gpdma.h"
 #endif
 T_Buffer InputBuffer[TYPE_USART_COUNT] = {0}; //Буфер приема по usart
+/* Секция .sram4 объявлена в STM32U575RGTX_FLASH.ld / _RAM.ld (>SRAM4, 16 КБ
+   @0x28000000). Такт SRAM4 включает vector_board_init(): __HAL_RCC_SRAM4_CLK_ENABLE().
+   Пока DMA_USART == 0 массив не используется (передача опросом).             */
 __attribute__((section(".sram4")))  uint8_t buffer_transmit[TYPE_USART_COUNT][300];
 //======================================================================================================================================
 //Инициализация меток буфера
@@ -14,29 +19,33 @@ void Init_Buffer(T_Buffer *Buffer)
 }
 
 //======================================================================================================================================
-//добавление принятого байта
+/* Добавление принятого байта. КОНТЕКСТ: ISR приёма UART (единственный
+   производитель - правило SPSC, см. buffer.h).
+   Маскирование прерываний здесь НЕ НУЖНО и даже вредно: прежние безусловные
+   __disable_irq()/__enable_irq() из потока внутри критической секции RTOS
+   сорвали бы маску. Писатель трогает только свою метку end, читатель - только
+   свою begin; на Cortex-M33 выровненное 16-битное чтение/запись атомарно.
+   Возврат: 0 = байт добавлен, 1 = буфер полон (байт ПОТЕРЯН).               */
 uint16_t add_to_buffer(T_Buffer *Buffer, uint8_t ch)
 {
-  uint16_t res = 0;
-  __disable_irq();
+  uint16_t end  = Buffer->end;                 /* своя метка - можно в локаль */
+  uint16_t next = (uint16_t)(end + 1u);
 
-  if(Buffer->end == BUFFER_LENGTH) {
-    if(Buffer->begin == 0) {
-      res = 1;
-    } else {
-    Buffer->end = 0;
-      Buffer->buffer[Buffer->end] = ch;
-    };
-  } else {
-    if(Buffer->begin == Buffer->end + 1) {
-      res = 1;
-    } else {
-      Buffer->buffer[Buffer->end] = ch;
-      Buffer->end++;
-    };
-  };
-  __enable_irq();
-  return res;
+  if (next >= BUFFER_LENGTH)
+  {
+    next = 0;
+  }
+  if (next == Buffer->begin)
+  {
+    return 1;                                  /* полно: один слот всегда пуст */
+  }
+
+  Buffer->buffer[end] = ch;
+  __DMB();                                 /* сначала данные, ПОТОМ метка:
+                                              барьер не даёт компилятору/ядру
+                                              опубликовать end раньше байта */
+  Buffer->end = next;                      /* публикуем байт ПОСЛЕ записи */
+  return 0;
 }
 
 //======================================================================================================================================
@@ -45,6 +54,14 @@ void transmit_buffer(uint8_t *pData, uint16_t Size, uint8_t type_transmit)
 {
 #if CONFIG_UART
 	UART_HandleTypeDef *huart_ptr = NULL;
+
+	/* Проверки границ: неизвестный тип или пустой/нулевой указатель раньше
+	   уводили бы в memcpy за пределы buffer_transmit (PLAN.md §7 п.6).      */
+	if ((pData == NULL) || (Size == 0u) || (type_transmit >= TYPE_USART_COUNT))
+	{
+		return;
+	}
+
 	if(type_transmit == TYPE_USART){
 		huart_ptr  = &USART_COM;
 	}
@@ -89,6 +106,13 @@ void transmit_buffer(uint8_t *pData, uint16_t Size, uint8_t type_transmit)
 		}
 		else
 		{
+			// Пакет длиннее буфера передачи - не урезаем (обрезанный пакет
+			// протокол всё равно не разберёт), отбрасываем целиком.
+			if (Size > (uint16_t)sizeof(buffer_transmit[0]))
+			{
+				return;
+			}
+
 			// Для остальных типов копируем в ваш массив buffer_transmit
 			memcpy(&buffer_transmit[type_transmit], pData, Size);
 
@@ -104,31 +128,37 @@ void transmit_buffer(uint8_t *pData, uint16_t Size, uint8_t type_transmit)
 }
 
 //======================================================================================================================================
-//прием пакета
+/* Чтение ОДНОГО байта. КОНТЕКСТ: поток (единственный потребитель - SPSC).
+   Метка end читается ОДИН раз в локальную копию: если ISR добавит байт между
+   проверкой и чтением - не страшно, его заберёт следующий вызов. Прежняя
+   версия сравнивала begin с end трижды и при begin == end обнуляла ОБЕ
+   метки, включая чужую end, - байт, принятый ISR в этот момент, терялся
+   (гонка, PLAN.md §7 п.2). Возврат: 1 = байт прочитан, 0 = буфер пуст.      */
 uint16_t receive_buffer(T_Buffer *Buffer, uint8_t * ch)
 {
-  uint16_t res = 0;
-//  __disable_irq();
+  uint16_t end   = Buffer->end;                /* один volatile-снимок */
+  uint16_t begin = Buffer->begin;
 
-  if(Buffer->begin >= BUFFER_LENGTH) {
-    Buffer->begin = 0;
+  if (begin >= BUFFER_LENGTH)                  /* страховка, в норме не бывает */
+  {
+    begin = 0;
   }
-  if(Buffer->begin < Buffer->end) {
-    *ch = (uint8_t)(Buffer->buffer [Buffer->begin]);
-    Buffer->begin++;
-    res = 1;
+  if (begin == end)
+  {
+    Buffer->begin = begin;
+    return 0;                                  /* пусто */
   }
-  if(Buffer->begin > Buffer->end) {
-    *ch = (uint8_t)(Buffer->buffer [Buffer->begin]);
-    Buffer->begin++;
-    res = 1;
+
+  *ch = Buffer->buffer[begin];
+  begin++;
+  if (begin >= BUFFER_LENGTH)
+  {
+    begin = 0;
   }
-  if(Buffer->begin == Buffer->end) {
-     Buffer->begin = 0;
-     Buffer->end = 0;
-  }
-//  __enable_irq();
-  return res;
+  __DMB();                                 /* сначала прочитать байт, ПОТОМ
+                                              освобождать слот (publish begin) */
+  Buffer->begin = begin;                       /* своя метка - публикуем */
+  return 1;
 }
 
 //======================================================================================================================================

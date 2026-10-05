@@ -668,6 +668,20 @@ static void ap_thread_entry(ULONG arg)
   /* иначе оставляем AP_BOOT_IMG_BAD: по boot_stage сразу видно, что плеер
      работает без образа (только аварийный писк) */
 
+#if (VECTOR_SPI_SELFTEST > 0u)
+  /* Диагностика линии SPI ДО начала звучания: каждый блок 8 КБ читается
+     дважды и сравнивается побайтно. sf_dbg_selftest_bad != 0 означает, что
+     данные при чтении портятся (наводки/провода/SCK 20 МГц на пределе) -
+     это одна из причин "хрипа" при заведомо чистом образе. Контекст здесь -
+     поток, поэтому чтение идёт тем же DMA-путём, что и подкачка звука.
+     Подробности: VECTOR_SPI_SELFTEST в vector_config.h, sf_selftest() в
+     spiflash.c. На боевой прошивке выставить VECTOR_SPI_SELFTEST 0.          */
+  if (sf_selftest(AUDIO_IMG_BASE_ADDR, 8192u, VECTOR_SPI_SELFTEST) != HAL_OK)
+  {
+    LOG_E(VLOG_M_AUDIO, "SPI selftest: two reads DIFFER -> noisy SPI line (see sf_dbg_selftest_bad)");
+  }
+#endif
+
   /* Стартовая проверка тракта (VECTOR_AUDIO_BOOT_PLAY): до первого нажатия
      кнопки слышно, жив ли звук вообще. В боевом режиме ставится 0.          */
 #if (VECTOR_AUDIO_BOOT_PLAY == 1)

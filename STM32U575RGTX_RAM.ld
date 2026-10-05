@@ -153,6 +153,18 @@ SECTIONS
     . = ALIGN(8);
   } >RAM
 
+  /* Буферы __attribute__((section(".sram4"))) - в SRAM4 (см. FLASH.ld:
+     там же про такт SRAM4 и NOLOAD). */
+  .sram4 (NOLOAD) :
+  {
+    . = ALIGN(4);
+    _ssram4 = .;
+    *(.sram4)
+    *(.sram4*)
+    . = ALIGN(4);
+    _esram4 = .;
+  } >SRAM4
+
   /* Remove information from the compiler libraries */
   /DISCARD/ :
   {
