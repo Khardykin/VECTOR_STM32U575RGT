@@ -84,7 +84,7 @@ volatile uint32_t demo_dbg_level0  = 0;   /* отброшено: пин в не�
 volatile uint32_t demo_dbg_debounce= 0;   /* отброшено антидребезгом         */
 volatile uint32_t demo_dbg_last_pin= 0;   /* последний обработанный пин      */
 
-uint8_t audio_play_now_flag = 0;
+volatile uint8_t audio_play_now_flag = 0;
 /* Обработчик события кнопки. КОНТЕКСТ: ISR EXTI.
  * Логика: фронт уже случился - читаем ТЕКУЩИЙ уровень пина и событием считаем
  * только тот фронт, на котором пин в активном состоянии (то есть нажатие, а не
