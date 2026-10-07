@@ -12,12 +12,13 @@
   *                                        Lora_Receive()     - LoRa S7678S
   *                                        Ble_Receive()      - BLE-модуль
   *                                        Lte_Receive()      - LTE-модем
+  *                                        Gps_Receive()      - GPS/GNSS (Gps.c)
   *                                        Uart_Channel_Receive() - сенсоры
   *                                        Vector_Options_System() - сервис
   *            measure_task_function()   периодика (1 с):
   *                                        Vector_Run_Measure()
   *                                          -> измерения прибора (наполнить)
-  *                                          -> Ble_Run(); Lora_Run(); Lte_Run();
+  *                                          -> Ble_Run(); Lora_Run(); Lte_Run(); Gps_Run();
   *                                        Vector_RunFlashMemory()
   *
   *          Отличия API ThreadX от FreeRTOS, которые надо держать в голове при
@@ -54,6 +55,7 @@ typedef enum
   TASK_MOD_LORA,       /* LoRa S7678S                                        */
   TASK_MOD_BLE,        /* BLE-модуль                                         */
   TASK_MOD_LTE,        /* сотовый модем LTE/GSM                              */
+  TASK_MOD_GPS,        /* GPS/GNSS-модуль (Gps.c)                            */
   TASK_MOD_SENSOR,     /* сенсорный UART (каналы измерения)                  */
   TASK_MOD_COUNT
 } task_module_t;
@@ -120,6 +122,7 @@ void Uart_Channel_Receive(void);   /* сенсорный UART: InputBuffer[TYPE_
 void Ble_Run(void);
 void Lora_Run(void);
 void Lte_Run(void);
+void Gps_Run(void);   /* Gps_Receive() объявлен в Gps.h (под CONFIG_GPS) */
 
 /* Короткое имя модуля для лога ("com"/"lora"/"ble"/"lte"/"sensor"), "?" если
    id вне диапазона. Возвращает статическую строку, не освобождать.           */

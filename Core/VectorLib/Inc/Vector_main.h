@@ -27,6 +27,10 @@
 	#include "Lora_S7678S.h"
 #endif
 
+#if CONFIG_GPS
+	#include "Gps.h"
+#endif
+
 #include "buffer.h"
 
 #include "audio_demo.h"

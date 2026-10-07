@@ -7,19 +7,20 @@
   *            vector_tasks_init()        создать оба потока (из
   *                                       tx_application_define)
   *            receiver_task_function()   ПОТОК "Receiver Task": приём и парсинг
-  *                                       ПО КАЖДОМУ UART (COM, LoRa, BLE, LTE,
+  *                                       ПО КАЖДОМУ UART (COM, LoRa, BLE, LTE, GPS,
   *                                       сенсоры) + Vector_Options_System()
   *            measure_task_function()    ПОТОК "Measure Task": периодика
   *                                       VECTOR_TASKS_MEASURE_PERIOD_MS (1 с)
   *            Vector_Run_Pre_Init()      однократно при старте (аналог
   *                                       Avis_Run_Pre_Init)
   *            Vector_Run_Measure()       измерения прибора + вызов модулей
-  *                                       Ble_Run/Lora_Run/Lte_Run (аналог
+  *                                       Ble_Run/Lora_Run/Lte_Run/Gps_Run (аналог
   *                                       Avis_Run_Measure)
   *            Vector_RunFlashMemory()    журнал/конфиг во внешней flash
   *            Vector_Options_System()    сервис (аналог Avis_Options_System)
   *            command_message(), Ble_Receive(), Lte_Receive(),
-  *            Uart_Channel_Receive(), Ble_Run(), Lora_Run(), Lte_Run()
+  *            Uart_Channel_Receive(), Ble_Run(), Lora_Run(), Lte_Run(),
+ *            Gps_Run()
   *                                       СЛАБЫЕ заглушки модулей: ваша
   *                                       реализация в файле модуля заменит их
   *                                       при линковке сама
@@ -99,9 +100,10 @@ static void receiver_task_function(ULONG thread_input)
   (void)thread_input;
 
   tasks_status.receiver_running = 1u;
-  LOG_I(VLOG_M_TASKS, "receiver task: com=%u lora=%u ble=%u lte=%u (delay %u ms)",
+  LOG_I(VLOG_M_TASKS, "receiver task: com=%u lora=%u ble=%u lte=%u gps=%u (delay %u ms)",
         (uint32_t)CONFIG_UART, (uint32_t)CONFIG_LORA, (uint32_t)CONFIG_BLE,
-        (uint32_t)(CONFIG_G4 || CONFIG_G2), (uint32_t)VECTOR_TASKS_RECEIVER_DELAY_MS);
+        (uint32_t)(CONFIG_G4 || CONFIG_G2), (uint32_t)CONFIG_GPS,
+        (uint32_t)VECTOR_TASKS_RECEIVER_DELAY_MS);
 
   while (1)
   {
@@ -139,6 +141,17 @@ static void receiver_task_function(ULONG thread_input)
     /* --- LTE/GSM ------------------------------------------------------------ */
     mod_receive_call(TASK_MOD_LTE);
     Lte_Receive();
+
+    /* --- GPS/GNSS: приём и разбор NMEA -------------------------------------
+     * Gps_Receive() реализован в Gps.c (приложен к проекту, закрыт CONFIG_GPS).
+     * Координаты оттуда забирает LoRa-трек (Lora_UpdateGPSTrack).            */
+#if CONFIG_GPS
+    /* if (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GPS)) */
+    {
+      mod_receive_call(TASK_MOD_GPS);
+      Gps_Receive();
+    }
+#endif
 
     /* --- сенсорный UART (каналы измерения) ---------------------------------- */
     mod_receive_call(TASK_MOD_SENSOR);
@@ -235,6 +248,9 @@ void Vector_Run_Measure(void)
 
   mod_run_call(TASK_MOD_LTE);
   Lte_Run();
+
+  mod_run_call(TASK_MOD_GPS);
+  Gps_Run();
 }
 
 /* Журнал и конфигурация во внешней flash. Аналог Avis_RunFlashMemory().
@@ -384,6 +400,25 @@ __attribute__((weak)) void Lte_Run(void)
 #endif
 }
 
+/* GPS/GNSS: инициализация, выбор навигационных систем, контроль ошибки.
+   Аналог Gps_Run() в Avis_main.c. Драйвер - Gps.c (приложен к проекту).
+   Приём NMEA - Gps_Receive() в потоке receiver_task, НЕ здесь.              */
+__attribute__((weak)) void Gps_Run(void)
+{
+#if CONFIG_GPS
+  /* TODO: по образцу Avis_main.c:
+     if (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GPS)) {
+       get_state_init_flag_gps() == 0 -> подать питание/снять сброс модуля
+         (пины GNSS_MODE PB4 и GNSS_RST PB5, main.h) и взвести таймер
+         инициализации (TIMER_RTC_GPS_DATA_INIT);
+       по таймеру: Gps_Init(&Sns_Cfg_struct) == 1 -> RESET таймера и
+         Gps_Init_Nav_Sys(&Sns_Cfg_struct) (маска систем GPS/GLONASS/BDS/GAL);
+     } else { Gps_DeInit(0); }
+     ошибка приёма (get_state_err_gps()) -> SET/CLEAR_STATUS_COMMON_ERR_BIT(
+     ST_COMMON_BIT_ERR_GPS).                                                */
+#endif
+}
+
 /* ============================================================================
  *                                  СЛУЖЕБНОЕ
  * ============================================================================ */
@@ -398,6 +433,7 @@ const char *task_module_name(task_module_t mod)
     case TASK_MOD_LORA:   return "lora";
     case TASK_MOD_BLE:    return "ble";
     case TASK_MOD_LTE:    return "lte";
+    case TASK_MOD_GPS:    return "gps";
     case TASK_MOD_SENSOR: return "sensor";
     default:              return "?";
   }

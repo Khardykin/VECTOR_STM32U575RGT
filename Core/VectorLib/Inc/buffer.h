@@ -12,6 +12,7 @@ enum TYPE_USART
  TYPE_RF	,
  TYPE_BLE	,
  TYPE_LTE	,	//LTE-модем: кольцо приёма для потока Receiver Task (Vector_main.c)
+ TYPE_GPS	,	//GPS/GNSS-модуль: кольцо приёма и тип передачи (Gps.c)
  TYPE_SENSOR,
  TYPE_USART_COUNT,
 };

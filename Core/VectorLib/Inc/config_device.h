@@ -36,6 +36,7 @@
 #define CONFIG_LORA						0				// Конфигурация включающая LORA
 #define CONFIG_G4						0				// Конфигурация включающая G4
 #define CONFIG_G2						0				// Конфигурация включающая G2
+#define CONFIG_GPS						0				// Конфигурация включающая GPS
 #define CONFIG_SLEEP                    1               // Включение конфигурации со сном
 #define CONFIG_SAVE_PARAM_LOG           1               // Включение конфигурации с использованием микросхемы памяти
 #define CONFIG_DISPLAY                  1               // Включение конфигурации с использованием управления дисплеем

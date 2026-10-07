@@ -27,10 +27,12 @@ Audio/Inc, Audio/Src
   audio_player.[ch]        ПЛЕЕР: поток, очередь команд, повтор звука, громкость, стриминг в SAI-DMA
   audio_beep.[ch]          аварийный писк (const PCM 44.1 кГц во внутренней flash)
 Src/Vector_main.c          ПОТОКИ ПРИБОРА: receiver_task (приём/парсинг UART) + measure_task
+Src/Gps.c                  GPS/GNSS: NMEA-приём, координаты для LoRa (CONFIG_GPS 0)
 Common/Src/vector_log.c    консольный лог: ITM/SWO и/или UART (выключается макросом)
 Common/Src/vector_board.c  всё, что делается в main() до RTOS (усилитель, проба, selftest)
 Inc/vector_tick.h          ЕДИНСТВЕННЫЙ источник времени приложения - тик ThreadX
 Inc/vector_tasks.h         API потоков: vector_tasks_init, Vector_Run_*, структура tasks_status
+Inc/Gps.h                  API GPS-модуля + что нужно донести при CONFIG_GPS 1
 Test/  audio_demo.[ch]     ТЕСТ: кнопки PB1/PB2/PB3 как пульт плеера
 ```
 
@@ -83,8 +85,8 @@ main()
 | Поток | Приоритет | Стек | Что делает |
 |---|---|---|---|
 | `Audio Player` (`ap_thread_entry`) | 10 | 4096 | **единственный владелец** SAI/DMA и `ap_buf[]`: ждёт `ap_wake` (heartbeat или будильник паузы повтора), разбирает команды, дозагружает половины стрим-буфера, запускает DMA, повторяет последний звук по кругу |
-| `Receiver Task` (`receiver_task_function`) | 12 | 2048 | **единственный потребитель** колец приёма `InputBuffer[TYPE_USART/TYPE_LORA/TYPE_BLE/TYPE_LTE/TYPE_SENSOR]`: `command_message()`, `Lora_Receive()`, `Ble_Receive()`, `Lte_Receive()`, `Uart_Channel_Receive()`, затем `Vector_Options_System()`; пауза `VECTOR_TASKS_RECEIVER_DELAY_MS` |
-| `Measure Task` (`measure_task_function`) | 13 | 4096 | `Vector_Run_Pre_Init()` один раз, затем каждые `VECTOR_TASKS_MEASURE_PERIOD_MS` (1 с): `Vector_Run_Measure()` (измерения + `Ble_Run/Lora_Run/Lte_Run`) и `Vector_RunFlashMemory()` |
+| `Receiver Task` (`receiver_task_function`) | 12 | 2048 | **единственный потребитель** колец приёма `InputBuffer[TYPE_USART/TYPE_LORA/TYPE_BLE/TYPE_LTE/TYPE_GPS/TYPE_SENSOR]`: `command_message()`, `Lora_Receive()`, `Ble_Receive()`, `Lte_Receive()`, `Gps_Receive()`, `Uart_Channel_Receive()`, затем `Vector_Options_System()`; пауза `VECTOR_TASKS_RECEIVER_DELAY_MS` |
+| `Measure Task` (`measure_task_function`) | 13 | 4096 | `Vector_Run_Pre_Init()` один раз, затем каждые `VECTOR_TASKS_MEASURE_PERIOD_MS` (1 с): `Vector_Run_Measure()` (измерения + `Ble_Run/Lora_Run/Lte_Run/Gps_Run`) и `Vector_RunFlashMemory()` |
 | `LVGL Task` | 15 | 4096 | заглушка: спит по 1 с |
 
 Мёртвый поток `Audio Task` и семафор `audio_done_sem` удалены: звуком владеет
@@ -179,7 +181,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | `audio_status.cnt_loops` | сколько повторов цикла сыграно |
 | `audio_status.last_error` / `sai_error_code` | код `audio_err_t` и сырой `SAI.ErrorCode` (больше не смешаны в одном числе) |
 | `audio_status.loop_enabled` / `loop_index` / `loop_next_at_ms` | повтор: включён ли, какой звук, когда следующий |
-| `tasks_status` | потоки прибора: `receiver_running` / `measure_running`, `cnt_receiver_passes`, `cnt_measure_runs`, по модулям `mod[0..4]` (com/lora/ble/lte/sensor) — `cnt_receive_calls`, `cnt_run_calls`, `cnt_rx_bytes`, `last_*_ms` |
+| `tasks_status` | потоки прибора: `receiver_running` / `measure_running`, `cnt_receiver_passes`, `cnt_measure_runs`, по модулям `mod[0..5]` (com/lora/ble/lte/gps/sensor) — `cnt_receive_calls`, `cnt_run_calls`, `cnt_rx_bytes`, `cnt_rx_frames`, `cnt_tx_frames`, `cnt_errors`, `last_*_ms` |
 | `sf_dbg_dma_chunks` / `_fallback` / `_tmo` | работает ли SPI-DMA и сколько раз откатились на опрос |
 | `vlog_dbg_lines` | сколько строк ушло в лог |
 
@@ -220,7 +222,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 [0.010] 2/A: audio init
 [0.060] 2/A: image ok=1 sounds=5
 [0.065] 2/T: tasks init: receiver(prio 12 stack 2048) measure(prio 13 stack 4096)
-[0.070] 2/T: receiver task: com=1 lora=0 ble=0 lte=0 (delay 10 ms)
+[0.070] 2/T: receiver task: com=1 lora=0 ble=0 lte=0 gps=0 (delay 10 ms)
 [12.340] 2/A: play #2 'd_myvoice' stream 358306 samples @44100 Hz (chunk 4096)
 ```
 

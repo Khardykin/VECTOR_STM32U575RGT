@@ -32,7 +32,8 @@
 | Внешняя flash | `Src/Audio/Src/spiflash.c`, `extstore.c` | работает: DMA/опрос, ретраи, области SOUNDS/CONFIG/LOG (`sfmap.h`) |
 | Лог | `Src/Common/Src/vector_log.c` | работает: ITM/SWO и/или UART4, уровни и маски, выключатели |
 | Кольцевые буферы UART | `Src/buffer.c`, `Inc/buffer.h` | каркас: приём по байту из ISR, передача polling/DMA |
-| Потоки прибора | `Src/Vector_main.c`, `Inc/vector_tasks.h` | каркас готов (v15) по образцу `Avis_main.c`: поток `Receiver Task` (приём и парсинг по каждому UART) и поток `Measure Task` (периодика 1 с → `Vector_Run_Measure()` → `Ble_Run/Lora_Run/Lte_Run`). Заглушки модулей — слабые (`__attribute__((weak))`): ваша реализация в файле модуля заменит их сама |
+| Потоки прибора | `Src/Vector_main.c`, `Inc/vector_tasks.h` | каркас готов (v15, GPS в v16) по образцу `Avis_main.c`: поток `Receiver Task` (приём и парсинг по каждому UART) и поток `Measure Task` (периодика 1 с → `Vector_Run_Measure()` → `Ble_Run/Lora_Run/Lte_Run/Gps_Run`). Заглушки модулей — слабые (`__attribute__((weak))`): ваша реализация в файле модуля заменит их сама |
+| GPS/GNSS | `Src/Gps.c`, `Inc/Gps.h` | **приложен из другого прибора (v16)**: NMEA (GGA/GLL/RMC), автоопределение чипа (Allystar/LOCOSYS), координаты для LoRa-трека, команды LOCOSYS. Закрыт `CONFIG_GPS 0`; что нужно для включения — раздел 7, п.26 |
 | Кнопки | `stm32u5xx_it.c` (EXTI), `Src/Test/Src/audio_demo.c` | два слоя: продуктовые флаги `button1/2/3/button_sos` и тестовое демо плеера |
 | LoRa S7678S | `Src/Lora_S7678S.c` (2094 строки) | реализация автора: AT-обмен, классы A/C, регионы, GPS-трек, `SNS_CFG` |
 | Конфигурация прибора | `Inc/config_device.h`, `Inc/shared_types.h` | флаги сборки `CONFIG_*`, структура `SNS_CFG`, биты статусов `ST_COMMON` |
@@ -46,6 +47,7 @@ UART-роли (как задумано):
 | `USART_BLE` (не определён) | USART3 (PC4/PC5, метки `USART3_*_BLE`) | BLE-модуль (`BLE_RESET` = PC12) |
 | `USART_LORA` | USART1 (PB6/PB7) | LoRa S7678S — порт задан в самом драйвере: `Lora_S7678S.h:21` `#define USART_LORA (USART1)`. **`USART1_IRQn` в NVIC не включён** — без этого приёма не будет |
 | (LTE, макроса нет) | USART2 (PA2/PA3, метки `USART2_*_LTE`) | сотовый модем: пины `LTE_EN`/`LTE_RESET`/`LTE_STATUS`/`LTE_LED` (PC0..PC3), кольцо `TYPE_LTE` |
+| (GPS) | не назначен | GNSS-модуль: пины `GNSS_MODE` (PB4) и `GNSS_RST` (PB5) в кубе есть, порт не выбран, `USART1_IRQn`/IRQ нужного порта не включён; кольцо `TYPE_GPS` (buffer.h) |
 | (сенсоры) | не назначен | кольцо `TYPE_SENSOR`; свободных портов кроме USART1 пока нет |
 
 Макросы `USART_BLE` и `USART_RF` в `main.h` пока **не определены** — они
@@ -89,14 +91,17 @@ UART-роли (как задумано):
 COM  (UART4)  --байты--> ISR --> InputBuffer[TYPE_USART]   ---\
 LoRa (USART1) --байты--> ISR --> InputBuffer[TYPE_LORA]     ---+--> Receiver Task
 BLE  (USART3) --байты--> ISR --> InputBuffer[TYPE_BLE]      ---+   (Vector_main.c)
-LTE  (USART2) --байты--> ISR --> InputBuffer[TYPE_LTE]      ---/
+LTE  (USART2) --байты--> ISR --> InputBuffer[TYPE_LTE]      ---+
+GPS  (порт TBD) --байты--> ISR --> InputBuffer[TYPE_GPS]     ---/   (Gps.c, CONFIG_GPS)
 
 Receiver Task: command_message() / Lora_Receive() / Ble_Receive() /
-               Lte_Receive() / Uart_Channel_Receive() + Vector_Options_System()
+               Lte_Receive() / Gps_Receive() / Uart_Channel_Receive() +
+               Vector_Options_System()
                кадр --> (а) статусы --> звук/индикация: audio_play_now(idx)
                       (б) данные   --> другой модуль: transmit_buffer(..., TYPE_*)
 
-Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lora_Run(); Lte_Run();
+Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lora_Run();
+                    Lte_Run(); Gps_Run();
                     Vector_RunFlashMemory() --> журнал/конфиг во внешней flash
 ```
 
@@ -144,6 +149,17 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 * [ ] `SNS_CFG` в CONFIG-странице внешней flash: загрузка при старте,
       сохранение по изменению, контроль `CRC_CONFIG`
 * [ ] передача: очередь пакетов + `transmit_buffer(..., TYPE_RF)` — вызывается из `Lora_Run()` (поток `Measure Task`), счётчики в `tasks_status.mod[TASK_MOD_LORA]`
+
+**Этап 2b. GPS/GNSS (модуль приложен к проекту, ждёт включения)**
+* [ ] `CONFIG_GPS 1` и перенести в `Gps.h` типы/константы модуля — точный список раздел 7, п.26
+* [ ] выбрать UART под GNSS, включить его IRQ в кубе, определить `USART_GPS`
+* [ ] `Uart_Gps_Set_Baudrate()`: AT32-вызов `usart_init(USART_GPS, ...)` заменить на HAL
+* [ ] общие хелперы `Delay()` / `GetTick()` / `Search_text()` (нужны и LoRa, и GPS):
+      по правилам проекта время — только тик RTOS (`VTICK_SLEEP_MS()` / `VTICK_MS()`)
+* [ ] приём: `Gps_Data_Verification()` из ISR UART (или чтение `InputBuffer[TYPE_GPS]`
+      в `Gps_Receive()`) и `Uart_Gps_Receive_Timer_Inc()` с периодом 1 мс (TIM3 1 кГц)
+* [ ] `Gps_Run()` наполнить по образцу `Avis_main.c` (weak-заглушка в `Vector_main.c`):
+      `Gps_Init()` → `Gps_Init_Nav_Sys()`, `Gps_DeInit()`, `ST_COMMON_BIT_ERR_GPS`
 
 **Этап 3. Мост и статусы**
 * [ ] таблица «статус → индекс звука» и «статус → LED»
@@ -195,7 +211,8 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 | Инклуды | каждый `.c` включает то, что использует сам; `Vector_main.h` остаётся тонким агрегатором конфигурации и модулей приложения, без CubeMX-заголовков периферии |
 | Патчи | правки передаются как `git apply --binary <file>.diff` (не `git am`: он срезает CRLF у `.bat`); коммиты делает автор проекта |
 | Состояние плеера | ОДНА volatile-структура `audio_status` (вместо 14 переменных `audio_dbg_*`): состояние — enum'ы `audio_output_t` (`AUDIO_OUT_SILENT/_SOUND/_ALARM_BEEP`), `audio_boot_t`, `audio_cmd_t`, `audio_err_t`; счётчики — `cnt_*`. Дубли состояния убраны: `ap_playing_idx`, `ap_loop_*`, `ap_img_ok` удалены. То же для кнопок — `demo_status` |
-| Потоки прибора | Два потока по образцу `Avis_main.c`: `Receiver Task` (приоритет 12, стек 2 КБ) — приём и парсинг по каждому UART; `Measure Task` (13 / 4 КБ) — `Vector_Run_Pre_Init()` один раз и `Vector_Run_Measure()` + `Vector_RunFlashMemory()` каждые `VECTOR_TASKS_MEASURE_PERIOD_MS`. Модули внутри закрыты `CONFIG_*` из `config_device.h`. Выключатель всего: `VECTOR_TASKS_ENABLE` |
+| Потоки прибора | Два потока по образцу `Avis_main.c`: `Receiver Task` (приоритет 12, стек 2 КБ) — приём и парсинг по каждому UART (`command_message`, `Lora_Receive`, `Ble_Receive`, `Lte_Receive`, `Gps_Receive`, `Uart_Channel_Receive`); `Measure Task` (13 / 4 КБ) — `Vector_Run_Pre_Init()` один раз и `Vector_Run_Measure()` + `Vector_RunFlashMemory()` каждые `VECTOR_TASKS_MEASURE_PERIOD_MS` (внутри `Ble_Run/Lora_Run/Lte_Run/Gps_Run`). Модули закрыты `CONFIG_*` из `config_device.h`, заглушки — `__attribute__((weak))`. Выключатель всего: `VECTOR_TASKS_ENABLE` |
+| Порядок работ (решение автора, v16) | Сначала **база**: модули прикладываем к проекту (`Gps.c`, потоки, кольца `TYPE_*`, флаги `CONFIG_* = 0`), периферию не трогаем. UART/куб/NVIC (`USART1_IRQn`, `USART_GPS`, `USART_BLE`/`USART_RF` в `main.h`) и значения `CONFIG_*` **пока не настраиваем и не включаем** — вернёмся к этому отдельным этапом |
 
 ---
 
@@ -309,3 +326,18 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
       `START_/TEST_/RESET_TIMER_RTC` (в `stm32u5xx_it.c` на них уже есть закомментированные
       вызовы) — без них `Ble_Run()`/`Lora_Run()` не написать как в `Avis_main.c`;
     * `FIRMWARE_VERSION` определён только для `DEVICE_NUMBER == Dev1` (п.19).
+26. `CONFIG_GPS 1` пока НЕ СОБИРАЕТСЯ (проверено gcc -fsyntax-only на `Gps.c`). Модуль
+    перенесён с прибора на AT32, поэтому не хватает:
+    * типов и констант из вашего `Gps.h`: `GNSS_CHIP_TYPE` (`CHIP_ALLYSTAR_OLD`,
+      `CHIP_LOCOSYS_AIROHA_NEW`, ...), `DETECT_STATE_t` (`DETECT_STATE_START_115200`,
+      `DETECT_STATE_LISTEN_115200`), команды `CMD_EN_DIS_MSG`, `CMD_TYPE_START`,
+      `CMD_SAVE_CONFIG`, `CMD_CONF_NAV_SYS`, `CMD_BLOCK_PROPRIETARY`, сообщения
+      `TYPE_MSG_GGA/GLL/GSA/GSV/RMC/VTG/ZDA/GRS/TXT`, старты `TYPE_HOT_START`,
+      `TYPE_WARM_START`, `TYPE_COLD_START`, `TYPE_RESET`, системы `TYPE_NAV_GPS_L1`,
+      `TYPE_NAV_BEIDOU_B1`, `TYPE_NAV_GLONASS_G1`, `TYPE_NAV_GALILEO_E1`,
+      `TIME_OUT_GPS`, `TEST_GPS`, `USART_GPS`;
+    * `SNS_CFG` — то же, что в п.25 (`shared_types.h` не включён в `Vector_main.h`);
+    * функций `Delay()`, `GetTick()`, `Search_text()` (их нет и у LoRa-драйвера,
+      см. п.8) и AT32-`usart_init()` — заменить на HAL/`VTICK_*`;
+    * `<string.h>` и `<stdio.h>` добавлены в `Gps.c` (v16): в Avis их тянул `Avis_main.h`.
+    Пока `CONFIG_GPS 0`, файл компилируется в пустой translation unit и сборке не мешает.

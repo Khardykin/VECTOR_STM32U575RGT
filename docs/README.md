@@ -39,7 +39,8 @@
    PB1 листает все звуки образа, PB2 — стоп, PB3 — громкость.
 7. **Диагностика**: структуры `audio_status` (всё состояние плеера),
    `demo_status` (кнопки), `tasks_status` (потоки прибора) и счётчики `sf_dbg_*`
-   в Expressions; расшифровка — `AUDIO.md` раздел 7 и `SYSTEM.md` раздел 5.
+   в Expressions; расшифровка — `AUDIO.md` раздел 7 и `SYSTEM.md` раздел 5. Модули BLE/LoRa/LTE/GPS
+   лежат в `Core/VectorLib/Src/` и закрыты своими `CONFIG_*` (пока выключены).
 
 Прошивка **не записывает** внешнюю flash никогда: ни при старте, ни по команде.
 Образ звуков во внутренней flash MCU больше не линкуется (модуль
@@ -102,7 +103,7 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 | `VECTOR_TASKS_MEASURE_PERIOD_MS` | `1000` | период `Vector_Run_Measure()` (в `Avis_main.c` — `timer.flag_1s`) |
 
 Модули внутри потока закрыты своими `CONFIG_*` из `config_device.h`: `CONFIG_UART` (COM),
-`CONFIG_LORA`, `CONFIG_BLE`, `CONFIG_G4`/`CONFIG_G2` (LTE) — как в `Avis_main.c`.
+`CONFIG_LORA`, `CONFIG_BLE`, `CONFIG_G4`/`CONFIG_G2` (LTE), `CONFIG_GPS` — как в `Avis_main.c`.
 
 ---
 
