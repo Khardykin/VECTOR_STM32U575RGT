@@ -23,7 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "audio_player.h"
-#include "rf_thread.h"
+#include "vector_tasks.h"
 #include "extstore.h"
 #include "vector_config.h"
 #include "vector_log.h"
@@ -105,11 +105,12 @@ VOID tx_application_define(VOID *first_unused_memory)
        0) vlog_init - консольный лог (USART1), чтобы шаги ниже были видны
        1) ext_init  - мьютекс шины flash + сканирование журнала (до потоков!)
        2) audio_init- читает sounds.bin, создаёт поток плеера
-       3) rf_init   - поток RF: приём LoRa/BLE/LTE из колец UART      */
+       3) vector_tasks_init - потоки "Receiver Task" (приём/парсинг UART)
+                          и "Measure Task" (периодика прибора)      */
   vlog_init();
   ext_init();
   audio_init();
-  rf_init();
+  vector_tasks_init();
 
   /* Создаем поток для Графики LVGL (Приоритет 15 - средний). Звук целиком
      живёт в потоке "Audio Player" из audio_player.c (создан в audio_init). */

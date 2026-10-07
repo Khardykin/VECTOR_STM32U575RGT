@@ -177,7 +177,7 @@ static char mask_char(uint32_t mask)
 {
   if (mask & VLOG_M_FLASH)  { return 'F'; }
   if (mask & VLOG_M_AUDIO)  { return 'A'; }
-  if (mask & VLOG_M_RF)     { return 'R'; }
+  if (mask & VLOG_M_TASKS)  { return 'T'; }
   return 'S';
 }
 

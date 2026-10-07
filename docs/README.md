@@ -38,7 +38,7 @@
    (повтор последнего звука). В тестовом режиме (`VECTOR_AUDIO_DEMO_KEYS 1`)
    PB1 листает все звуки образа, PB2 — стоп, PB3 — громкость.
 7. **Диагностика**: структуры `audio_status` (всё состояние плеера),
-   `demo_status` (кнопки), `rf_status` (поток RF) и счётчики `sf_dbg_*`
+   `demo_status` (кнопки), `tasks_status` (потоки прибора) и счётчики `sf_dbg_*`
    в Expressions; расшифровка — `AUDIO.md` раздел 7 и `SYSTEM.md` раздел 5.
 
 Прошивка **не записывает** внешнюю flash никогда: ни при старте, ни по команде.
@@ -90,17 +90,19 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 | `VECTOR_SPI_DMA_MIN_LEN` / `_CHUNK` / `_TMO_MS` | `1024` / `32768` / `250` | порог, размер куска, таймаут куска |
 | `VECTOR_DBG_FREEZE_TICK` | `1` | замораживать тайм-базу HAL (TIM6), пока ядро стоит под отладчиком |
 
-### Поток RF (LoRa / BLE / LTE)
+### Потоки прибора (`Core/VectorLib/Src/Vector_main.c`)
 
 | Макрос | По умолчанию | Смысл |
 |---|---|---|
-| `VECTOR_RF_THREAD` | `1` | `0` = модуль `rf_thread.c` не собирается вовсе |
-| `VECTOR_RF_LINK_LORA` / `_BLE` / `_LTE` | `1` | объявлен ли линк в потоке; для привязки к железу замените на `(CONFIG_LORA)` / `(CONFIG_BLE)` |
-| `VECTOR_RF_PRIORITY` / `_STACK_SIZE` | `12` / `4096` | приоритет и стек потока (Audio = 10, LVGL = 15) |
-| `VECTOR_RF_WAKE_TIMEOUT_MS` | `50` | heartbeat потока; `rf_notify()` из ISR будит сразу |
-| `VECTOR_RF_FRAME_GAP_MS` | `20` | пауза в линии, после которой байты считаются кадром |
-| `VECTOR_RF_LINE_LEN` | `256` | накопитель кадра на один линк |
-| `VECTOR_RF_BYTES_PER_CYCLE` | `128` | сколько байт разобрать за один проход потока |
+| `VECTOR_TASKS_ENABLE` | `1` | `0` = потоки прибора не создаются, вызовы вырождаются в макросы |
+| `VECTOR_TASKS_RECEIVER_PRIORITY` / `_STACK` | `12` / `2048` | поток приёма/парсинга UART (Audio = 10, LVGL = 15) |
+| `VECTOR_TASKS_RECEIVER_DELAY_MS` | `10` | пауза между проходами потока приёма (тик RTOS = 10 мс) |
+| `VECTOR_TASKS_MEASURE_PRIORITY` / `_STACK` | `13` / `4096` | поток периодики прибора |
+| `VECTOR_TASKS_MEASURE_DELAY_MS` | `50` | пауза между проходами потока измерений |
+| `VECTOR_TASKS_MEASURE_PERIOD_MS` | `1000` | период `Vector_Run_Measure()` (в `Avis_main.c` — `timer.flag_1s`) |
+
+Модули внутри потока закрыты своими `CONFIG_*` из `config_device.h`: `CONFIG_UART` (COM),
+`CONFIG_LORA`, `CONFIG_BLE`, `CONFIG_G4`/`CONFIG_G2` (LTE) — как в `Avis_main.c`.
 
 ---
 

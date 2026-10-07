@@ -26,11 +26,11 @@ Audio/Inc, Audio/Src
   extstore.[ch]            мьютекс шины + конфиг (1 страница) + кольцевой журнал + ретраи чтения
   audio_player.[ch]        ПЛЕЕР: поток, очередь команд, повтор звука, громкость, стриминг в SAI-DMA
   audio_beep.[ch]          аварийный писк (const PCM 44.1 кГц во внутренней flash)
-Rf/rf_thread.c             ПОТОК RF: приём LoRa/BLE/LTE из колец UART, парсеры модулей (каркас)
+Src/Vector_main.c          ПОТОКИ ПРИБОРА: receiver_task (приём/парсинг UART) + measure_task
 Common/Src/vector_log.c    консольный лог: ITM/SWO и/или UART (выключается макросом)
 Common/Src/vector_board.c  всё, что делается в main() до RTOS (усилитель, проба, selftest)
 Inc/vector_tick.h          ЕДИНСТВЕННЫЙ источник времени приложения - тик ThreadX
-Inc/rf_thread.h            API потока RF: rf_init/rf_notify/rf_send, структура rf_status
+Inc/vector_tasks.h         API потоков: vector_tasks_init, Vector_Run_*, структура tasks_status
 Test/  audio_demo.[ch]     ТЕСТ: кнопки PB1/PB2/PB3 как пульт плеера
 ```
 
@@ -68,8 +68,8 @@ main()
       ├─ ext_init()         мьютекс шины, sf_dma_init(), сканирование журнала
       ├─ audio_init()       семафор ap_wake, очередь ap_queue, поток "Audio Player",
       │                     load_image()  <-- чтение таблицы образа из внешней flash
-      ├─ rf_init()          кольца приёма TYPE_LORA/BLE/LTE, семафор rf_wake,
-      │                     поток "RF" (LoRa/BLE/LTE, rf_thread.c)
+      ├─ vector_tasks_init() потоки "Receiver Task" (приём/парсинг UART) и
+      │                     "Measure Task" (периодика прибора, Vector_main.c)
       └─ tx_thread_create(lvgl_thread)     заглушка под будущую графику
 ```
 
@@ -83,14 +83,16 @@ main()
 | Поток | Приоритет | Стек | Что делает |
 |---|---|---|---|
 | `Audio Player` (`ap_thread_entry`) | 10 | 4096 | **единственный владелец** SAI/DMA и `ap_buf[]`: ждёт `ap_wake` (heartbeat или будильник паузы повтора), разбирает команды, дозагружает половины стрим-буфера, запускает DMA, повторяет последний звук по кругу |
-| `RF` (`rf_thread_entry`) | 12 | 4096 | **единственный потребитель** колец `InputBuffer[TYPE_LORA/TYPE_BLE/TYPE_LTE]`: забирает байты (не больше `VECTOR_RF_BYTES_PER_CYCLE` за проход), отдаёт их парсерам `rf_lora_*`/`rf_ble_*`/`rf_lte_*`, собирает кадр по паузе `VECTOR_RF_FRAME_GAP_MS`. Парсеры пока пустые — наполнение за разработчиком |
+| `Receiver Task` (`receiver_task_function`) | 12 | 2048 | **единственный потребитель** колец приёма `InputBuffer[TYPE_USART/TYPE_LORA/TYPE_BLE/TYPE_LTE/TYPE_SENSOR]`: `command_message()`, `Lora_Receive()`, `Ble_Receive()`, `Lte_Receive()`, `Uart_Channel_Receive()`, затем `Vector_Options_System()`; пауза `VECTOR_TASKS_RECEIVER_DELAY_MS` |
+| `Measure Task` (`measure_task_function`) | 13 | 4096 | `Vector_Run_Pre_Init()` один раз, затем каждые `VECTOR_TASKS_MEASURE_PERIOD_MS` (1 с): `Vector_Run_Measure()` (измерения + `Ble_Run/Lora_Run/Lte_Run`) и `Vector_RunFlashMemory()` |
 | `LVGL Task` | 15 | 4096 | заглушка: спит по 1 с |
 
 Мёртвый поток `Audio Task` и семафор `audio_done_sem` удалены: звуком владеет
-только `Audio Player`. Поток `RF` создан `rf_init()` (модуль
-`Core/VectorLib/Src/Rf/rf_thread.c`, выключатель `VECTOR_RF_THREAD`):
-он владеет приёмом всех радио-линков сразу, отдельные потоки на LoRa/BLE/LTE
-не нужны.
+только `Audio Player`. Потоки прибора создаёт `vector_tasks_init()` (файл
+`Core/VectorLib/Src/Vector_main.c`, выключатель `VECTOR_TASKS_ENABLE`) — структура
+повторяет `Avis_main.c` с другого прибора: приём и парсинг в одном потоке,
+периодика и обмен модулей в другом. Заглушки модулей объявлены `weak`,
+поэтому ваша реализация в файле модуля заменит их без правки `Vector_main.c`.
 
 ### 2.3 Прерывания
 
@@ -153,7 +155,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | SPI1 + внешняя flash | `extstore` | `ext_mtx` (мьютекс на всю операцию, включая стирание) |
 | SAI1_A + GPDMA ch11 + `ap_buf[]` (2 × 4096 сэмплов = 16 КБ) | поток `Audio Player` | один владелец: ISR ставит только флаги «половина освободилась» и счётчик, дозагружает всегда поток |
 | USART1/UART4 (лог) | `vector_log.c` (`VECTOR_LOG_ENABLE`) | только инициализация/поток, из ISR вызов отбрасывается; UART4 занят только логом |
-| Кольца приёма `InputBuffer[TYPE_LORA/TYPE_BLE/TYPE_LTE]` | поток `RF` | SPSC: производитель — ISR UART (`add_to_buffer`), потребитель — **только** `rf_link_service()`; чужой `Lora_Receive()` звать из этого же потока (`rf_lora_poll`) |
+| Кольца приёма `InputBuffer[TYPE_*]` | поток `Receiver Task` | SPSC: производитель — ISR UART (`add_to_buffer`), потребитель — **только** `receiver_task_function()` (напрямую или через `Lora_Receive()`) |
 | Состояние плеера `audio_status` | `audio_player.c` | volatile-структура целиком; пишут поток и ISR SAI-DMA, порядок записи `sound_index`→`output` фиксирован |
 
 Внешняя flash поделена без пересечений (`sfmap.h`): `SOUNDS 0..4 МБ` (пишет
@@ -177,7 +179,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | `audio_status.cnt_loops` | сколько повторов цикла сыграно |
 | `audio_status.last_error` / `sai_error_code` | код `audio_err_t` и сырой `SAI.ErrorCode` (больше не смешаны в одном числе) |
 | `audio_status.loop_enabled` / `loop_index` / `loop_next_at_ms` | повтор: включён ли, какой звук, когда следующий |
-| `rf_status` | поток RF: `boot_stage`, по линкам `link[0..2]` (lora/ble/lte) — `enabled`, `state`, `cnt_rx_bytes`, `cnt_rx_frames`, `cnt_tx_frames` |
+| `tasks_status` | потоки прибора: `receiver_running` / `measure_running`, `cnt_receiver_passes`, `cnt_measure_runs`, по модулям `mod[0..4]` (com/lora/ble/lte/sensor) — `cnt_receive_calls`, `cnt_run_calls`, `cnt_rx_bytes`, `last_*_ms` |
 | `sf_dbg_dma_chunks` / `_fallback` / `_tmo` | работает ли SPI-DMA и сколько раз откатились на опрос |
 | `vlog_dbg_lines` | сколько строк ушло в лог |
 
@@ -203,7 +205,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 
 Уровни: `VLOG_DEBUG`(1) → `VLOG_INFO`(2, по умолчанию) → `VLOG_WARN`(3) →
 `VLOG_ERROR`(4). Маски модулей: `VLOG_M_SYS` (S), `VLOG_M_FLASH` (F),
-`VLOG_M_AUDIO` (A), `VLOG_M_RF` (R — поток RF). Модуль BRIDGE удалён: мост не
+`VLOG_M_AUDIO` (A), `VLOG_M_TASKS` (T — потоки прибора). Модуль BRIDGE удалён: мост не
 логирует ничего.
 
 Метка времени `[сек.мс]` — **тик ThreadX** (разрешение 10 мс). До планировщика
@@ -217,8 +219,8 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 [0.000] 2/S: level=2 mask=ffffffff
 [0.010] 2/A: audio init
 [0.060] 2/A: image ok=1 sounds=5
-[0.065] 2/R: rf init: thread created, prio=12 stack=4096
-[0.070] 2/R: rf thread: lora=1 ble=1 lte=1 (gap=20 ms, poll=50 ms)
+[0.065] 2/T: tasks init: receiver(prio 12 stack 2048) measure(prio 13 stack 4096)
+[0.070] 2/T: receiver task: com=1 lora=0 ble=0 lte=0 (delay 10 ms)
 [12.340] 2/A: play #2 'd_myvoice' stream 358306 samples @44100 Hz (chunk 4096)
 ```
 
@@ -230,7 +232,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | `spiflash.c` | чтение ≥ 1 КБ (адрес, объём, миллисекунды) — только при `VECTOR_SPI_LOG_READS 1`, иначе уровень DEBUG; каждая запись и стирание сектора, откат с DMA на опрос |
 | `extstore.c` | ретраи чтения (`ext_read: recovered after N retry`), конфиг/журнал (DEBUG) |
 | `audio_player.c` | старт, состояние образа, команды, запуск и ошибки звука, «звук доигран», watchdog |
-| `rf_thread.c` | старт потока RF (`rf thread: lora=1 ble=1 lte=1 ...`), создание потока в `rf_init()`, переключение линков (`link ble -> 1`) |
+| `Vector_main.c` | старт потоков прибора (`tasks init`, `receiver task`, `measure task`, `pre init`) |
 
 Правила модуля (важно при доработке):
 
@@ -444,7 +446,7 @@ BUTTON3 с PB3, оставьте `SYS_JTDO-SWV` и включите SWV в Run C
 `AZURE_RTOS/App/app_azure_rtos.c`, `tx_application_define`:
 
 ```c
-  vlog_init();  ext_init();  audio_init();  rf_init();
+  vlog_init();  ext_init();  audio_init();  vector_tasks_init();
   /* + создание потока LVGL-заглушки */
 ```
 

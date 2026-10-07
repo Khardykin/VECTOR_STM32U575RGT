@@ -232,82 +232,70 @@
 #define VECTOR_AUDIO_LOOP_PAUSE_MS 500u
 #endif
 
-/* --- РАБОЧЕЕ: поток RF (LoRa + BLE + LTE) ----------------------------------
- * Один поток "RF" (rf_thread.c) владеет приёмом всех радио-линков: забирает
- * байты из колец InputBuffer[TYPE_LORA/TYPE_BLE/TYPE_LTE], которые наполняют
- * ISR приёма UART, и отдаёт их парсерам модулей (rf_lora_xxx / rf_ble_xxx / rf_lte_xxx).
- * Каркас готов, парсеры пустые - наполнение за вами (PLAN.md этапы 1-3).
+/* --- РАБОЧЕЕ: потоки прибора (Vector_main.c, по образцу Avis_main.c) -------
+ * Два потока, как на другом приборе:
+ *   "Receiver Task" - приём и парсинг ПО КАЖДОМУ UART: command_message() (COM),
+ *                     Lora_Receive() (LoRa), Ble_Receive(), Lte_Receive(),
+ *                     Uart_Channel_Receive() (сенсоры) + Vector_Options_System();
+ *   "Measure Task"  - периодика прибора: Vector_Run_Pre_Init() один раз, затем
+ *                     каждые VECTOR_TASKS_MEASURE_PERIOD_MS вызов
+ *                     Vector_Run_Measure() (внутри Ble_Run/Lora_Run/Lte_Run)
+ *                     и Vector_RunFlashMemory().
  *
- * ПРАВИЛО ВЛАДЕЛЬЦА КОЛЬЦА: у каждого UART ровно ОДИН потребитель - поток RF
- * (SPSC, см. buffer.h). Существующий драйвер LoRa (Lora_Receive()) читает то
- * же кольцо TYPE_LORA, поэтому при CONFIG_LORA 1 вызывать его нужно из
- * rf_lora_poll(), а не из другого потока или таймера.
+ * ПРАВИЛО ВЛАДЕЛЬЦА КОЛЬЦА: у каждого UART ровно ОДИН потребитель (SPSC,
+ * buffer.h) - поток "Receiver Task". Кольца радио-модулей из других потоков и
+ * таймеров не читать.
  *
- * VECTOR_RF_THREAD          1 = модуль собирается, rf_init() создаёт поток
- *                               (вызов из tx_application_define());
- *                           0 = модуль исчезает из сборки целиком, вызовы
- *                               вырождаются в пустые макросы.
- * VECTOR_RF_LINK_LORA/BLE/LTE  объявлен ли линк в потоке. Сейчас все три
- *                           включены, чтобы каркас был виден в отладчике
- *                           сразу (rf_status). Когда модули начнут включаться
- *                           конфигурацией прибора, свяжите флаги с ней одной
- *                           строкой, например:
- *                             #define VECTOR_RF_LINK_LORA  (CONFIG_LORA)
- *                             #define VECTOR_RF_LINK_BLE   (CONFIG_BLE)
- *                           (config_device.h; для LTE своего CONFIG_* пока
- *                           нет). Дополнительно есть рантайм-выключатель
- *                           rf_link_enable() - под статусы ST_COMMON.
- * VECTOR_RF_PRIORITY        приоритет потока: Audio Player = 10, LVGL = 15,
- *                           обмен данными не должен обгонять звук.
- * VECTOR_RF_STACK_SIZE      стек потока, байт.
- * VECTOR_RF_WAKE_TIMEOUT_MS heartbeat: как часто поток просыпается без
- *                           событий (досмотреть таймауты кадров и линков).
- *                           rf_notify() из ISR будит его сразу, не дожидаясь
- *                           таймаута. 0 = ждать вечно.
- * VECTOR_RF_FRAME_GAP_MS    пауза в линии, после которой накопленные байты
- *                           считаются кадром и уходят в парсер модуля.
- * VECTOR_RF_LINE_LEN        накопитель кадра на один линк, байт (3 x RAM).
- * VECTOR_RF_BYTES_PER_CYCLE сколько байт максимум разобрать за один проход:
- *                           длинный приём не занимает поток целиком, остальное
- *                           забирает следующий проход.                      */
-#ifndef VECTOR_RF_THREAD
-#define VECTOR_RF_THREAD            1
+ * VECTOR_TASKS_ENABLE         1 = потоки создаются (vector_tasks_init() из
+ *                                 tx_application_define()); 0 = модуль не
+ *                                 собирается, вызовы вырождаются в макросы.
+ * VECTOR_TASKS_*_PRIORITY     приоритеты (в ThreadX МЕНЬШЕ = выше):
+ *                                 Audio Player = 10, LVGL = 15 - обмен данными
+ *                                 не должен обгонять звук.
+ * VECTOR_TASKS_*_STACK        стеки в БАЙТАХ (в FreeRTOS xTaskCreate считает
+ *                                 слова: 512 слов там = 2048 байт здесь).
+ * VECTOR_TASKS_RECEIVER_DELAY_MS  пауза потока приёма между проходами. Тик
+ *                                 RTOS = 10 мс, поэтому меньше тика не
+ *                                 получится (в Avis было vTaskDelay(2) при
+ *                                 тике 1 мс). Байты при этом не теряются: их
+ *                                 копит ISR в кольце.
+ * VECTOR_TASKS_MEASURE_DELAY_MS   пауза потока измерений между проходами.
+ * VECTOR_TASKS_MEASURE_PERIOD_MS  период Vector_Run_Measure() (в Avis -
+ *                                 timer.flag_1s, то есть 1 с).
+ *
+ * Модули внутри заглушек закрыты своими CONFIG_* из config_device.h
+ * (CONFIG_UART, CONFIG_LORA, CONFIG_BLE, CONFIG_G4/CONFIG_G2 для LTE) - как в
+ * Avis_main.c: конфигурация выключена -> тело пустое, вызов остаётся.        */
+#ifndef VECTOR_TASKS_ENABLE
+#define VECTOR_TASKS_ENABLE              1
 #endif
 
-#ifndef VECTOR_RF_LINK_LORA
-#define VECTOR_RF_LINK_LORA         1
+#ifndef VECTOR_TASKS_RECEIVER_PRIORITY
+#define VECTOR_TASKS_RECEIVER_PRIORITY   12u
 #endif
 
-#ifndef VECTOR_RF_LINK_BLE
-#define VECTOR_RF_LINK_BLE          1
+#ifndef VECTOR_TASKS_RECEIVER_STACK
+#define VECTOR_TASKS_RECEIVER_STACK      2048u
 #endif
 
-#ifndef VECTOR_RF_LINK_LTE
-#define VECTOR_RF_LINK_LTE          1
+#ifndef VECTOR_TASKS_RECEIVER_DELAY_MS
+#define VECTOR_TASKS_RECEIVER_DELAY_MS   10u
 #endif
 
-#ifndef VECTOR_RF_PRIORITY
-#define VECTOR_RF_PRIORITY          12u
+#ifndef VECTOR_TASKS_MEASURE_PRIORITY
+#define VECTOR_TASKS_MEASURE_PRIORITY    13u
 #endif
 
-#ifndef VECTOR_RF_STACK_SIZE
-#define VECTOR_RF_STACK_SIZE        4096u
+#ifndef VECTOR_TASKS_MEASURE_STACK
+#define VECTOR_TASKS_MEASURE_STACK       4096u
 #endif
 
-#ifndef VECTOR_RF_WAKE_TIMEOUT_MS
-#define VECTOR_RF_WAKE_TIMEOUT_MS   50u
+#ifndef VECTOR_TASKS_MEASURE_DELAY_MS
+#define VECTOR_TASKS_MEASURE_DELAY_MS    50u
 #endif
 
-#ifndef VECTOR_RF_FRAME_GAP_MS
-#define VECTOR_RF_FRAME_GAP_MS      20u
-#endif
-
-#ifndef VECTOR_RF_LINE_LEN
-#define VECTOR_RF_LINE_LEN          256u
-#endif
-
-#ifndef VECTOR_RF_BYTES_PER_CYCLE
-#define VECTOR_RF_BYTES_PER_CYCLE   128u
+#ifndef VECTOR_TASKS_MEASURE_PERIOD_MS
+#define VECTOR_TASKS_MEASURE_PERIOD_MS   1000u
 #endif
 
 /* --- РАБОЧЕЕ: время в проекте берётся ТОЛЬКО от тика RTOS (Azure/ThreadX) --

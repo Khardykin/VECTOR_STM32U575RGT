@@ -31,6 +31,6 @@
 
 #include "audio_demo.h"
 #include "audio_player.h"
-#include "rf_thread.h"
+#include "vector_tasks.h"
 
 #endif /* VECTORLIB_INC_VECTOR_MAIN_H_ */

@@ -75,7 +75,7 @@ extern "C" {
 #define VLOG_M_SYS     0x00000001u  /* старт, инициализация                    */
 #define VLOG_M_FLASH   0x00000002u  /* spiflash/extstore: чтение/запись/стирание */
 #define VLOG_M_AUDIO   0x00000004u  /* плеер: старт/стоп/ошибки звука          */
-#define VLOG_M_RF      0x00000008u  /* поток RF: LoRa/BLE/LTE (rf_thread.c)    */
+#define VLOG_M_TASKS   0x00000008u  /* потоки прибора: приём/измерения     */
 #define VLOG_M_ALL     0xFFFFFFFFu
 
 #if VECTOR_LOG_ENABLE
