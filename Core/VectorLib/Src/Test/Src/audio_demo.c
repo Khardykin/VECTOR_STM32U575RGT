@@ -84,13 +84,19 @@ volatile uint32_t demo_dbg_level0  = 0;   /* отброшено: пин в не�
 volatile uint32_t demo_dbg_debounce= 0;   /* отброшено антидребезгом         */
 volatile uint32_t demo_dbg_last_pin= 0;   /* последний обработанный пин      */
 
-volatile uint8_t audio_play_now_flag = 0;
+/* BUTTON2 - play/stop. Своё состояние НЕ храним: плеер и так знает, играет
+   ли он (audio_dbg_cur_idx: >=0 - звук из образа, -1 - тишина, -2 - аварийный
+   писк). Отдельный флаг разъезжается всякий раз, когда звук заканчивается сам,
+   и кнопка после этого требует двух нажатий вместо одного. demo_dbg_playing -
+   только зеркало для Expressions/Live Watch.                                 */
+volatile uint8_t demo_dbg_playing = 0;
 /* Обработчик события кнопки. КОНТЕКСТ: ISR EXTI.
  * Логика: фронт уже случился - читаем ТЕКУЩИЙ уровень пина и событием считаем
  * только тот фронт, на котором пин в активном состоянии (то есть нажатие, а не
  * отбой). Плюс защита от дребезга по интервалу DEMO_DEBOUNCE_MS.
  * Кнопки: BUTTON1 - перебор всех звуков образа по кругу (прерывая текущий),
- *         BUTTON2 - стоп, BUTTON3 - тест громкости.                         */
+ *         BUTTON2 - play/stop (играет -> стоп, тишина -> перезапуск),
+ *         BUTTON3 - тест громкости.                                          */
 void audio_demo_key_handler(uint16_t GPIO_Pin)
 {
   uint32_t now = VTICK_MS();
@@ -158,19 +164,39 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
       }
       (void)audio_play_now(demo_snd_idx);
       demo_dbg_sound = demo_snd_idx;
-      audio_play_now_flag = 0;
+      demo_dbg_playing = 1;
     }
   }
   else if (GPIO_Pin == BUTTON_2_Pin)
   {
-	  if(audio_play_now_flag == 1){
-		  audio_play_now(demo_snd_idx);
-		  audio_play_now_flag = 0;
-	  }
-	  else{
-		  audio_stop();
-		  audio_play_now_flag = 1;
-	  }
+    /* BUTTON2: play/stop. Играет -> стоп (audio_stop() заодно чистит очередь
+       и снимает повтор). Тишина -> (пере)запуск того звука, который листала
+       BUTTON1; если её ещё не нажимали (demo_snd_idx == 0xFFFF), берём #0 -
+       иначе audio_play_now() вернул бы AUDIO_ERR_BAD_INDEX и кнопка молчала
+       бы вообще, попутно накручивая audio_dbg_errors.
+       Состояние читаем ИЗ ПЛЕЕРА, поэтому кнопка не промахивается после того,
+       как звук закончился сам, и первое нажатие после старта не уходит впустую. */
+    if (audio_dbg_cur_idx >= 0)
+    {
+      demo_dbg_playing = 0;
+      audio_stop();
+    }
+    else
+    {
+      uint16_t n = audio_count();
+      if (n > 0u)
+      {
+        if (demo_snd_idx >= n)
+        {
+          demo_snd_idx = 0u;
+        }
+        if (audio_play_now(demo_snd_idx) == AUDIO_OK)
+        {
+          demo_dbg_playing = 1;
+          demo_dbg_sound   = demo_snd_idx;
+        }
+      }
+    }
   }
   else if (GPIO_Pin == BUTTON_3_Pin)
   {
