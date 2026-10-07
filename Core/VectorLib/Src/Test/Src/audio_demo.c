@@ -19,7 +19,7 @@
   *          (GPIO_MODE_IT_RISING_FALLING) + GPIO_PULLUP. Активный уровень
   *          должен соответствовать подтяжке: VECTOR_KEY_PRESSED_LEVEL.
   *
-  *          ЕСЛИ ЗВУКА НЕТ И поток плеера спит: смотрите demo_dbg_* - по ним
+  *          ЕСЛИ ЗВУКА НЕТ И поток плеера спит: смотрите demo_status - по ним
   *          видно, на каком звене обрывается цепочка (см. docs/archive/FIX_REPORT.md).
   ******************************************************************************
   */
@@ -51,15 +51,13 @@ static uint32_t demo_last_ms[DEMO_KEYS] = { 0, 0, 0 };
    (0 .. audio_count()-1). Старт с 0xFFFF, чтобы первое нажатие дало звук #0. */
 static uint16_t demo_snd_idx = 0xFFFFu;
 
-/* ТЕСТ громкости (BUTTON3): значения по кругу. demo_dbg_volume видно в Live
-   Watch / Expressions - из ISR лог не печатается (vlog такие вызовы
-   отбрасывает в vlog_dbg_isr_skipped), а подтверждение, что громкость реально
-   применена к звучащим данным, печатает сам плеер из потока: строка
-   строка "volume NN% (q15=...)" из apply_volume().                                */
+/* ТЕСТ громкости (BUTTON3): значения по кругу. Текущее значение видно в Live
+   Watch / Expressions как demo_status.volume_percent - из ISR лог не печатается
+   (vlog отбрасывает такие вызовы в vlog_dbg_isr_skipped), а подтверждение, что
+   громкость реально применена к звучащим данным, печатает сам плеер из потока:
+   строка "volume NN% (q15=...)" из apply_volume().                        */
 static const uint8_t demo_vol_tbl[] = { 100u, 75u, 50u, 25u, 0u };
 static uint8_t       demo_vol_idx   = 0;
-volatile uint8_t     demo_dbg_volume = 100u;   /* текущая громкость, %      */
-volatile uint16_t    demo_dbg_sound  = 0xFFFFu;/* BUTTON1: индекс звука      */
 
 /* Номер кнопки (0..2) по пину; 0xFF - не наша. */
 static uint8_t demo_key_index(uint16_t pin)
@@ -70,26 +68,22 @@ static uint8_t demo_key_index(uint16_t pin)
   return 0xFFu;
 }
 
-/* ---------------------------------------------------------------- отладка --
- * Счётчики для быстрой диагностики "кнопки не работают":
- *   edges == 0            -> EXTI не приходит вовсе (пины/NVIC/схема)
- *   edges > 0, press == 0  -> EXTI есть, но VECTOR_KEY_PRESSED_LEVEL не
- *                             совпадает с подтяжкой из gpio.c (или всё
- *                             съедает антидребезг - смотрите debounce)
- *   press > 0              -> события доходят, причину молчания ищем уже в
- *                             audio_dbg_* (audio_player.c)                  */
-volatile uint32_t demo_dbg_edges   = 0;   /* сколько EXTI вообще прилетело   */
-volatile uint32_t demo_dbg_press   = 0;   /* из них признано нажатием        */
-volatile uint32_t demo_dbg_level0  = 0;   /* отброшено: пин в неактивном ур. */
-volatile uint32_t demo_dbg_debounce= 0;   /* отброшено антидребезгом         */
-volatile uint32_t demo_dbg_last_pin= 0;   /* последний обработанный пин      */
+/* ---------------------------------------------------------------- состояние --
+ * Все счётчики демо-модуля - в ОДНОЙ структуре (расшифровка полей и порядок
+ * диагностики - audio_demo.h). Начальные значения: sound_index = 0xFFFF
+ * ("BUTTON1 ещё не нажимали"), volume_percent = 100.                       */
+volatile audio_demo_status_t demo_status =
+{
+  .sound_index    = 0xFFFFu,
+  .volume_percent = 100u
+};
 
-/* BUTTON2 - play/stop. Своё состояние НЕ храним: плеер и так знает, играет
-   ли он (audio_dbg_cur_idx: >=0 - звук из образа, -1 - тишина, -2 - аварийный
-   писк). Отдельный флаг разъезжается всякий раз, когда звук заканчивается сам,
-   и кнопка после этого требует двух нажатий вместо одного. demo_dbg_playing -
-   только зеркало для Expressions/Live Watch.                                 */
-volatile uint8_t demo_dbg_playing = 0;
+/* BUTTON2 - play/stop. Своё состояние НЕ храним: плеер и так знает, играет ли
+   он (audio_is_playing(): 1 - звучит звук образа, 0 - тишина или аварийный
+   писк; подробнее - audio_status.output в audio_player.h). Отдельный флаг
+   разъезжается всякий раз, когда звук заканчивается сам, и кнопка после этого
+   требует двух нажатий вместо одного. demo_status.playing - только зеркало
+   для Expressions/Live Watch.                                              */
 /* Обработчик события кнопки. КОНТЕКСТ: ISR EXTI.
  * Логика: фронт уже случился - читаем ТЕКУЩИЙ уровень пина и событием считаем
  * только тот фронт, на котором пин в активном состоянии (то есть нажатие, а не
@@ -103,8 +97,8 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
   GPIO_PinState lv;
   uint8_t level, pressed, key;
 
-  demo_dbg_edges++;
-  demo_dbg_last_pin = GPIO_Pin;
+  demo_status.cnt_edges++;
+  demo_status.last_pin = GPIO_Pin;
 
   key = demo_key_index(GPIO_Pin);
   if (key == 0xFFu)
@@ -118,7 +112,7 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
      этого достаточно.                                                      */
   if ((now - demo_last_ms[key]) < DEMO_DEBOUNCE_MS)
   {
-    demo_dbg_debounce++;
+    demo_status.cnt_debounced++;
     return;
   }
 
@@ -128,11 +122,11 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
   pressed = (level == DEMO_PRESSED_LEVEL);
   if (!pressed)
   {
-    demo_dbg_level0++;
+    demo_status.cnt_inactive_level++;
     return;            /* этот фронт - отбой, событие не считаем */
   }
   demo_last_ms[key] = now;
-  demo_dbg_press++;
+  demo_status.cnt_pressed++;
 
   if (GPIO_Pin == BUTTON_1_Pin)
   {
@@ -163,8 +157,8 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
         demo_snd_idx = (uint16_t)((demo_snd_idx + 1u) % n);
       }
       (void)audio_play_now(demo_snd_idx);
-      demo_dbg_sound = demo_snd_idx;
-      demo_dbg_playing = 1;
+      demo_status.sound_index = demo_snd_idx;
+      demo_status.playing = 1;
     }
   }
   else if (GPIO_Pin == BUTTON_2_Pin)
@@ -173,12 +167,12 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
        и снимает повтор). Тишина -> (пере)запуск того звука, который листала
        BUTTON1; если её ещё не нажимали (demo_snd_idx == 0xFFFF), берём #0 -
        иначе audio_play_now() вернул бы AUDIO_ERR_BAD_INDEX и кнопка молчала
-       бы вообще, попутно накручивая audio_dbg_errors.
+       бы вообще, попутно накручивая audio_status.cnt_errors.
        Состояние читаем ИЗ ПЛЕЕРА, поэтому кнопка не промахивается после того,
        как звук закончился сам, и первое нажатие после старта не уходит впустую. */
-    if (audio_dbg_cur_idx >= 0)
+    if (audio_is_playing() != 0)
     {
-      demo_dbg_playing = 0;
+      demo_status.playing = 0;
       audio_stop();
     }
     else
@@ -192,8 +186,8 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
         }
         if (audio_play_now(demo_snd_idx) == AUDIO_OK)
         {
-          demo_dbg_playing = 1;
-          demo_dbg_sound   = demo_snd_idx;
+          demo_status.playing = 1;
+          demo_status.sound_index = demo_snd_idx;
         }
       }
     }
@@ -208,7 +202,7 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
        звучания. Как только тест не нужен - верните строку audio_stop().    */
     demo_vol_idx = (uint8_t)((demo_vol_idx + 1u) % (uint8_t)sizeof demo_vol_tbl);
     audio_set_volume(demo_vol_tbl[demo_vol_idx]);
-    demo_dbg_volume = demo_vol_tbl[demo_vol_idx];
+    demo_status.volume_percent = demo_vol_tbl[demo_vol_idx];
     /* audio_stop(); */
   }
 }

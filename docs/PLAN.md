@@ -32,6 +32,7 @@
 | Внешняя flash | `Src/Audio/Src/spiflash.c`, `extstore.c` | работает: DMA/опрос, ретраи, области SOUNDS/CONFIG/LOG (`sfmap.h`) |
 | Лог | `Src/Common/Src/vector_log.c` | работает: ITM/SWO и/или UART4, уровни и маски, выключатели |
 | Кольцевые буферы UART | `Src/buffer.c`, `Inc/buffer.h` | каркас: приём по байту из ISR, передача polling/DMA |
+| Поток RF (LoRa/BLE/LTE) | `Src/Rf/rf_thread.c`, `Inc/rf_thread.h` | каркас готов (v14): поток `RF` (приоритет 12), приём из колец `TYPE_LORA/BLE/LTE`, сбор кадра по паузе, `rf_send()`; парсеры модулей пустые — наполнение за разработчиком |
 | Кнопки | `stm32u5xx_it.c` (EXTI), `Src/Test/Src/audio_demo.c` | два слоя: продуктовые флаги `button1/2/3/button_sos` и тестовое демо плеера |
 | LoRa S7678S | `Src/Lora_S7678S.c` (2094 строки) | реализация автора: AT-обмен, классы A/C, регионы, GPS-трек, `SNS_CFG` |
 | Конфигурация прибора | `Inc/config_device.h`, `Inc/shared_types.h` | флаги сборки `CONFIG_*`, структура `SNS_CFG`, биты статусов `ST_COMMON` |
@@ -44,10 +45,19 @@ UART-роли (как задумано):
 | `USART_COM` / `USART_DEBUG` | UART4 (PC10/PC11) | терминал + лог (`VECTOR_LOG_UART 4`) |
 | `USART_BLE` | USART3 (PC4/PC5?) | BLE-модуль |
 | `USART_RF` | USART2 (PA2/PA3) | LoRa S7678S (`USART2_*_LTE` в `.ioc`) |
+| (линк `RF_LINK_LTE`) | не назначен | LTE-модем: кольцо `TYPE_LTE` (buffer.h), порт определится при подключении модуля |
 
 Макросы `USART_BLE` и `USART_RF` в `main.h` пока **не определены** — они
 понадобятся сразу, как только включатся `CONFIG_BLE` / `CONFIG_LORA`
 (`transmit_buffer()` в `buffer.c` ссылается именно на них).
+
+Маппинг «линк → UART» в потоке RF жёстко не зашит: линк определяется типом кольца
+(`TYPE_LORA` / `TYPE_BLE` / `TYPE_LTE` в `buffer.h`), а порт передачи выбирает
+`transmit_buffer()` по тому же типу. Поэтому вопрос «какой USART какому линку»
+можно решить позже, не переписывая поток: в `.ioc` USART2 (PA2/PA3) подписан
+`_LTE` и к нему относятся пины `LTE_EN/RESET/STATUS/LED`, тогда как
+`USART2_IRQHandler` кладёт байты в `InputBuffer[TYPE_LORA]`; USART1 (PB6/PB7)
+инициализирован, но не используется и IRQ у него в NVIC не включён.
 
 ---
 
@@ -75,18 +85,25 @@ UART-роли (как задумано):
 ## 4. Сквозной сценарий (целевая логика)
 
 ```
-BLE (USART3) --байты--> ISR --> InputBuffer[TYPE_BLE]
-        --> поток-парсер BLE: кадр --> (а) статусы --> звук/индикация
-                                              --> (б) данные --> очередь на LoRa
-LoRa (USART2, S7678S) <-- transmit_buffer / AT-машина <-- очередь
-LoRa --> InputBuffer[TYPE_LORA] --> парсер LoRa --> команды прибору / ответы в BLE
+BLE  (USART3) --байты--> ISR --> InputBuffer[TYPE_BLE]  ---\
+LoRa (S7678S) --байты--> ISR --> InputBuffer[TYPE_LORA] ----+--> поток RF
+LTE  (модем)  --байты--> ISR --> InputBuffer[TYPE_LTE]  ---/   (rf_thread.c)
+
+поток RF: rf_<link>_rx_byte(байт) -> накопитель -> rf_<link>_frame(кадр)
+          кадр --> (а) статусы --> звук/индикация: audio_play_now(idx)
+                 (б) данные   --> другой линк: rf_send() -> transmit_buffer()
+LoRa <-- AT-машина S7678S (Lora_Receive/Lora_Init) <-- rf_lora_poll() [наполнить]
 ```
 
 Правила, которые стоит зафиксировать сразу:
 
 1. Из ISR — **только** положить байт в кольцо и (при необходимости)
    `tx_semaphore_put`; парсинг и AT-машина — в потоках.
-2. Один владелец на UART: у каждого порта ровно один поток-читатель.
+2. Один владелец на UART: у каждого порта ровно один поток-читатель. Сейчас это
+   поток `RF` — единственный потребитель колец `InputBuffer[TYPE_LORA/TYPE_BLE/
+   TYPE_LTE]` (правило SPSC из `buffer.h`); существующий `Lora_Receive()` читает
+   то же кольцо, поэтому вызывать его надо из `rf_lora_poll()`, а не из другого
+   потока или таймера.
 3. Лог и рабочий порт не смешивать: сейчас `USART_DEBUG == USART_COM == huart4`,
    а прямой write в `TDR` в обработчиках идёт мимо блокировки лога
    (`vlog_bus_lock`) — байты эха вклиниваются в строки лога.
@@ -112,16 +129,16 @@ LoRa --> InputBuffer[TYPE_LORA] --> парсер LoRa --> команды при�
 * [ ] приём USART3 → `InputBuffer[TYPE_BLE]` (сейчас вызов вырезан флагом)
 * [ ] детект конца кадра: IDLE-линия (`UART_IT_IDLE` + `__HAL_UART_CLEAR_IDLEFLAG`)
       или таймаут межбайтового интервала
-* [ ] поток-парсер BLE: кольцо → кадр → обработчик
-* [ ] счётчик потерь при переполнении кольца (сейчас байты теряются молча)
+* [ ] поток-парсер BLE: кольцо → кадр → обработчик — каркас готов (v14): `rf_ble_rx_byte()`/`rf_ble_frame()`
+* [ ] счётчик потерь при переполнении кольца (сейчас байты теряются молча) — место под счётчик заложено: `rf_status.link[].cnt_rx_overruns`
 
 **Этап 2. Транспорт LoRa**
 * [ ] `CONFIG_LORA 1`, определить `USART_RF` в `main.h`
 * [ ] `FIRMWARE_VERSION` — дефолт для всех `DEVICE_NUMBER` (иначе LoRa не соберётся)
-* [ ] приём USART2 → `InputBuffer[TYPE_LORA]`, AT-машина состояний S7678S
+* [ ] приём USART2 → `InputBuffer[TYPE_LORA]`, AT-машина состояний S7678S — поток и кольцо готовы (v14): `rf_lora_poll()`/`rf_lora_frame()`
 * [ ] `SNS_CFG` в CONFIG-странице внешней flash: загрузка при старте,
       сохранение по изменению, контроль `CRC_CONFIG`
-* [ ] передача: очередь пакетов + `transmit_buffer(..., TYPE_RF)`
+* [ ] передача: очередь пакетов + `transmit_buffer(..., TYPE_RF)` — обёртка `rf_send()` со счётчиками готова (v14)
 
 **Этап 3. Мост и статусы**
 * [ ] таблица «статус → индекс звука» и «статус → LED»
@@ -172,6 +189,8 @@ LoRa --> InputBuffer[TYPE_LORA] --> парсер LoRa --> команды при�
 | Скрипты Windows | `*.bat` хранятся побайтово (`-text` в `.gitattributes`), переводы строк CRLF |
 | Инклуды | каждый `.c` включает то, что использует сам; `Vector_main.h` остаётся тонким агрегатором конфигурации и модулей приложения, без CubeMX-заголовков периферии |
 | Патчи | правки передаются как `git apply --binary <file>.diff` (не `git am`: он срезает CRLF у `.bat`); коммиты делает автор проекта |
+| Состояние плеера | ОДНА volatile-структура `audio_status` (вместо 14 переменных `audio_dbg_*`): состояние — enum'ы `audio_output_t` (`AUDIO_OUT_SILENT/_SOUND/_ALARM_BEEP`), `audio_boot_t`, `audio_cmd_t`, `audio_err_t`; счётчики — `cnt_*`. Дубли состояния убраны: `ap_playing_idx`, `ap_loop_*`, `ap_img_ok` удалены. То же для кнопок — `demo_status` |
+| Поток RF | ОДИН поток `RF` (приоритет 12, стек 4 КБ) на LoRa + BLE + LTE: владелец колец приёма, кадр собирается по паузе `VECTOR_RF_FRAME_GAP_MS`, места под наполнение — `rf_<link>_poll()/_rx_byte()/_frame()`. Выключатели: `VECTOR_RF_THREAD`, `VECTOR_RF_LINK_LORA/BLE/LTE` |
 
 ---
 
@@ -262,6 +281,11 @@ LoRa --> InputBuffer[TYPE_LORA] --> парсер LoRa --> команды при�
     `sf_selftest()` (двойное чтение, `VECTOR_SPI_SELFTEST`, счётчик
     `sf_dbg_selftest_bad`); (б) остановки ядра отладчиком (Live Watch) —
     SAI-DMA во время halt продолжает играть, дозагрузки нет → underrun
-    (счётчик `audio_dbg_underrun`); (в) аналог: питание MAX98357A/GAIN/
+    (счётчик `audio_status.cnt_underruns`); (в) аналог: питание MAX98357A/GAIN/
     динамик (проверяется писком `VECTOR_AUDIO_SELFTEST 1` — он идёт мимо
     внешней flash). План тестов — в сообщении к v11.
+24. Маппинг «линк → UART» не закреплён (см. раздел 2): `.ioc` отдаёт USART2 LTE-модулю
+    (пины `USART2_*_LTE`, `LTE_EN/RESET/STATUS/LED`), а `USART2_IRQHandler` и PLAN.md —
+    LoRa; USART1 (PB6/PB7) свободен, но `USART1_IRQn` в NVIC не включён, поэтому приём
+    по нему сейчас невозможен без правки куба. Поток RF от этого не зависит (линк —
+    это тип кольца), но до включения `CONFIG_LORA`/`CONFIG_BLE` решение принять нужно.

@@ -156,7 +156,7 @@ PA8 (SCK) = 1 411 200 Гц (= 32 × FS, кадр I2S 16 бит × 2 слота).
   `ext_read` куском 8 КБ (~3 мс по DMA), громкость, хвост добивается тишиной.
 * Запас на дозагрузку = `CHUNK / 44100` = **93 мс** при стоимости чтения
   ~3 мс, то есть в ~30 раз. Не успел — DMA повторит предыдущий кусок (слышно
-  как заикание) и вырастет `audio_dbg_underrun`.
+  как заикание) и вырастет `audio_status.cnt_underruns`.
 * `VECTOR_AUDIO_STREAM_SMALLBUF` теперь **1 по умолчанию**: буфер плеера =
   2 куска (16 КБ RAM). Circular-режим задан в `.ioc`
   (GPDMA1.CIRCULARMODE_GPDMACH11=ENABLE), поэтому запасной путь «одной
@@ -271,9 +271,9 @@ ISR): это неблокирующие `tx_queue_send` + `tx_semaphore_put`, г
 
 | Кнопка | Действие |
 |---|---|
-| BUTTON1 (PB1) | перебор **всех** звуков образа по кругу: `audio_play_now(idx)` — прерывает текущий и сразу играет следующий (kolokol_1 → kolokol_2 → phone_1 → phone_2 → zvonok_1 → снова #0). Индекс по модулю `audio_count()`, поэтому состав образа может быть любым; текущий индекс — в `demo_dbg_sound` |
-| BUTTON2 (PB2) | play/stop: если плеер играет (`audio_dbg_cur_idx >= 0`) — `audio_stop()` (стоп сейчас + очистка очереди и текущего повтора), если тишина — `audio_play_now()` звука, на котором остановилась BUTTON1 (после старта, когда BUTTON1 ещё не нажимали, — звук #0). Состояние берётся из плеера, а не из своего флага, поэтому кнопка не «промахивается» после того, как звук закончился сам; зеркало для отладчика — `demo_dbg_playing` |
-| BUTTON3 (PB3) | тест громкости: цикл 100 → 75 → 50 → 25 → 0 → 100 %, текущее значение в `demo_dbg_volume`, применение видно в логе строкой `volume NN% (q15=...)` |
+| BUTTON1 (PB1) | перебор **всех** звуков образа по кругу: `audio_play_now(idx)` — прерывает текущий и сразу играет следующий (kolokol_1 → kolokol_2 → phone_1 → phone_2 → zvonok_1 → снова #0). Индекс по модулю `audio_count()`, поэтому состав образа может быть любым; текущий индекс — в `demo_status.sound_index` |
+| BUTTON2 (PB2) | play/stop: если плеер играет (`audio_is_playing()`) — `audio_stop()` (стоп сейчас + очистка очереди и текущего повтора), если тишина — `audio_play_now()` звука, на котором остановилась BUTTON1 (после старта, когда BUTTON1 ещё не нажимали, — звук #0). Состояние берётся из плеера, а не из своего флага, поэтому кнопка не «промахивается» после того, как звук закончился сам; зеркало для отладчика — `demo_status.playing` |
+| BUTTON3 (PB3) | тест громкости: цикл 100 → 75 → 50 → 25 → 0 → 100 %, текущее значение в `demo_status.volume_percent`, применение видно в логе строкой `volume NN% (q15=...)` |
 
 Для серии поставьте `VECTOR_AUDIO_DEMO_KEYS 0` — кнопки отдадутся вашему
 обработчику, плеер управляется только API.
@@ -365,25 +365,46 @@ play #2 'd_myvoice' stream 358306 samples @44100 Hz (chunk 4096)
 * Нет строки `stream` в `play #...` → SAI DMA не в circular-режиме
   (раздел 3, «Что нужно в CubeMX»).
 * `start #N failed, err=4 (io)` → чтение flash/DMA; смотрите
-  `audio_dbg_last_err`, `sf_dbg_*`, строки `ext_read: recovered` (редкие
+  `audio_status.last_error`, `sf_dbg_*`, строки `ext_read: recovered` (редкие
   транзиенты под отладчиком — норма, они теперь ретраятся).
 * `watchdog: stuck sound killed` → не пришёл колбэк завершения DMA: NVIC
   GPDMA1_Channel11, ошибки SAI (`HAL_SAI_ErrorCallback`).
-* Звук «заикается» → растёт `audio_dbg_underrun`: кто-то долго держит мьютекс
+* Звук «заикается» → растёт `audio_status.cnt_underruns`: кто-то долго держит мьютекс
   шины (журнал/конфиг) или поднимите `VECTOR_AUDIO_STREAM_CHUNK` до 8192.
 
 ### 7.3 Счётчики (Expressions)
 
 | Переменная | Смысл |
 |---|---|
-| `audio_dbg_boot_stage` | 0 = init, 1 = образ ок, 2 = образа нет/невалиден, 3 = рабочий цикл |
-| `audio_dbg_keys / started / played` | команд принято / DMA стартовала / звук доигран |
-| `audio_dbg_last_err / errors` | код ошибки (`audio_err_t`) / их число |
-| `audio_dbg_underrun / stuck / dropped / loops` | заикания стрима / убитые watchdog / вытесненные play / повторы цикла |
+| `audio_status.output` | что звучит: `AUDIO_OUT_SILENT` / `_SOUND` / `_ALARM_BEEP` (прежнее `-1 / >=0 / -2`) |
+| `audio_status.sound_index` | индекс звука в образе; `-1`, если сейчас не звук образа |
+| `audio_status.boot_stage` | `AUDIO_BOOT_INIT` / `_IMAGE_OK` / `_IMAGE_BAD` / `_RUNNING` |
+| `audio_status.cnt_commands / cnt_started / cnt_played` | команд принято / DMA стартовала / звук доигран |
+| `audio_status.last_error / sai_error_code / cnt_errors` | код `audio_err_t` / сырой `SAI.ErrorCode` / число ошибок |
+| `audio_status.cnt_underruns / cnt_watchdog / cnt_dropped / cnt_loops` | заикания стрима / убитые watchdog / вытесненные play / повторы цикла |
+| `audio_status.loop_enabled / loop_index / loop_next_at_ms` | повтор: включён / какой звук / когда следующий |
 | `sf_probe_rc, sf_jedec[3]` | жива ли внешняя flash (`C2 28 17`, `rc=0`) |
 | `ext_dbg_*` | состояние журнала/конфига во внешней flash |
-| `demo_dbg_*` | доходят ли нажатия кнопок (EXTI/уровень/антидребезг) |
+| `demo_status` | доходят ли нажатия кнопок (EXTI/уровень/антидребезг) |
 | `ub_*` | счётчики моста UART4↔USART2 (мост больше ничего не логирует) |
+
+Старые имена (до v14) → новые: все 14 переменных `audio_dbg_*` и внутренние
+дубли (`ap_playing_idx`, `ap_loop_*`, `ap_img_ok`) заменены ОДНОЙ структурой
+`audio_status`. Сохранённые Expressions нужно поправить так:
+
+| Было | Стало |
+|---|---|
+| `audio_dbg_cur_idx` (`-1` тишина, `-2` писк, `>=0` звук) | `audio_status.output` (`AUDIO_OUT_SILENT` / `AUDIO_OUT_ALARM_BEEP` / `AUDIO_OUT_SOUND`) + `audio_status.sound_index` |
+| `audio_dbg_boot_stage` (0..3) | `audio_status.boot_stage` (`AUDIO_BOOT_INIT` / `_IMAGE_OK` / `_IMAGE_BAD` / `_RUNNING`) |
+| `audio_dbg_keys` / `_last_cmd` | `audio_status.cnt_commands` / `last_command` (`AUDIO_CMD_*`) |
+| `audio_dbg_started` / `_played` / `_errors` | `audio_status.cnt_started` / `cnt_played` / `cnt_errors` |
+| `audio_dbg_last_err` (в т.ч. `0x1000|ErrorCode`) | `audio_status.last_error` + `audio_status.sai_error_code` |
+| `audio_dbg_underrun` / `_stuck` / `_dropped` / `_loops` | `audio_status.cnt_underruns` / `cnt_watchdog` / `cnt_dropped` / `cnt_loops` |
+| `audio_dbg_wakes` / `_timeouts` | `audio_status.cnt_wakes` / `cnt_wake_timeouts` |
+| `demo_dbg_*` | `demo_status.*` (`cnt_edges`, `cnt_pressed`, `cnt_inactive_level`, `cnt_debounced`, `last_pin`, `sound_index`, `volume_percent`, `playing`) |
+
+В коде вместо сравнений с `-1/-2` — `audio_is_playing()` (звучит звук образа),
+`audio_is_busy()` (звучит что-либо), `audio_get_output()`.
 
 ---
 

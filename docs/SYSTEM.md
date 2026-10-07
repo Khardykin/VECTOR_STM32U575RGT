@@ -26,9 +26,11 @@ Audio/Inc, Audio/Src
   extstore.[ch]            мьютекс шины + конфиг (1 страница) + кольцевой журнал + ретраи чтения
   audio_player.[ch]        ПЛЕЕР: поток, очередь команд, повтор звука, громкость, стриминг в SAI-DMA
   audio_beep.[ch]          аварийный писк (const PCM 44.1 кГц во внутренней flash)
+Rf/rf_thread.c             ПОТОК RF: приём LoRa/BLE/LTE из колец UART, парсеры модулей (каркас)
 Common/Src/vector_log.c    консольный лог: ITM/SWO и/или UART (выключается макросом)
 Common/Src/vector_board.c  всё, что делается в main() до RTOS (усилитель, проба, selftest)
 Inc/vector_tick.h          ЕДИНСТВЕННЫЙ источник времени приложения - тик ThreadX
+Inc/rf_thread.h            API потока RF: rf_init/rf_notify/rf_send, структура rf_status
 Test/  audio_demo.[ch]     ТЕСТ: кнопки PB1/PB2/PB3 как пульт плеера
 ```
 
@@ -66,6 +68,8 @@ main()
       ├─ ext_init()         мьютекс шины, sf_dma_init(), сканирование журнала
       ├─ audio_init()       семафор ap_wake, очередь ap_queue, поток "Audio Player",
       │                     load_image()  <-- чтение таблицы образа из внешней flash
+      ├─ rf_init()          кольца приёма TYPE_LORA/BLE/LTE, семафор rf_wake,
+      │                     поток "RF" (LoRa/BLE/LTE, rf_thread.c)
       └─ tx_thread_create(lvgl_thread)     заглушка под будущую графику
 ```
 
@@ -79,10 +83,14 @@ main()
 | Поток | Приоритет | Стек | Что делает |
 |---|---|---|---|
 | `Audio Player` (`ap_thread_entry`) | 10 | 4096 | **единственный владелец** SAI/DMA и `ap_buf[]`: ждёт `ap_wake` (heartbeat или будильник паузы повтора), разбирает команды, дозагружает половины стрим-буфера, запускает DMA, повторяет последний звук по кругу |
+| `RF` (`rf_thread_entry`) | 12 | 4096 | **единственный потребитель** колец `InputBuffer[TYPE_LORA/TYPE_BLE/TYPE_LTE]`: забирает байты (не больше `VECTOR_RF_BYTES_PER_CYCLE` за проход), отдаёт их парсерам `rf_lora_*`/`rf_ble_*`/`rf_lte_*`, собирает кадр по паузе `VECTOR_RF_FRAME_GAP_MS`. Парсеры пока пустые — наполнение за разработчиком |
 | `LVGL Task` | 15 | 4096 | заглушка: спит по 1 с |
 
 Мёртвый поток `Audio Task` и семафор `audio_done_sem` удалены: звуком владеет
-только `Audio Player`.
+только `Audio Player`. Поток `RF` создан `rf_init()` (модуль
+`Core/VectorLib/Src/Rf/rf_thread.c`, выключатель `VECTOR_RF_THREAD`):
+он владеет приёмом всех радио-линков сразу, отдельные потоки на LoRa/BLE/LTE
+не нужны.
 
 ### 2.3 Прерывания
 
@@ -145,6 +153,8 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | SPI1 + внешняя flash | `extstore` | `ext_mtx` (мьютекс на всю операцию, включая стирание) |
 | SAI1_A + GPDMA ch11 + `ap_buf[]` (2 × 4096 сэмплов = 16 КБ) | поток `Audio Player` | один владелец: ISR ставит только флаги «половина освободилась» и счётчик, дозагружает всегда поток |
 | USART1/UART4 (лог) | `vector_log.c` (`VECTOR_LOG_ENABLE`) | только инициализация/поток, из ISR вызов отбрасывается; UART4 занят только логом |
+| Кольца приёма `InputBuffer[TYPE_LORA/TYPE_BLE/TYPE_LTE]` | поток `RF` | SPSC: производитель — ISR UART (`add_to_buffer`), потребитель — **только** `rf_link_service()`; чужой `Lora_Receive()` звать из этого же потока (`rf_lora_poll`) |
+| Состояние плеера `audio_status` | `audio_player.c` | volatile-структура целиком; пишут поток и ISR SAI-DMA, порядок записи `sound_index`→`output` фиксирован |
 
 Внешняя flash поделена без пересечений (`sfmap.h`): `SOUNDS 0..4 МБ` (пишет
 программатор), `CONFIG 0x400000 (4 КБ)`, `LOG 0x401000..8 МБ` (пишет прошивка).
@@ -156,15 +166,18 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | Переменная | О чём говорит |
 |---|---|
 | `sf_jedec[3]`, `sf_probe_rc` | жива ли внешняя flash (`C2 28 17`, `rc == 0`) |
-| `audio_dbg_boot_stage` | 0 = init, 1 = образ найден, 2 = образа нет/невалиден, 3 = рабочий цикл |
-| `demo_dbg_edges` / `_press` | доходят ли кнопки: 0 / 0 — EXTI молчит, >0 / 0 — не та полярность или подтяжка |
-| `audio_dbg_keys` / `_last_cmd` | доходят ли команды до плеера (1 play, 2 stop, 3 state, 4 beep) |
-| `audio_dbg_started` / `_played` | стартовала ли DMA / доиграла ли |
-| `audio_dbg_underrun` | заикания стрима (поток не успел дозагрузить половину за 93 мс) |
-| `audio_dbg_stuck` | звук добит watchdog'ом: колбэк завершения DMA не пришёл |
-| `audio_dbg_wakes` / `_timeouts` | поток жив: `timeouts` растёт = heartbeat, событий просто нет |
-| `audio_dbg_loops` | сколько повторов цикла сыграно |
-| `audio_dbg_errors` / `_last_err` | код `audio_err_t` или `0x1000|SAI.ErrorCode` |
+| `audio_status.boot_stage` | этап плеера: `AUDIO_BOOT_INIT` / `_IMAGE_OK` / `_IMAGE_BAD` / `_RUNNING` |
+| `demo_status.cnt_edges` / `cnt_pressed` | доходят ли кнопки: 0 / 0 — EXTI молчит, >0 / 0 — не та полярность или подтяжка |
+| `audio_status.output` | что звучит: `AUDIO_OUT_SILENT` / `_SOUND` / `_ALARM_BEEP` |
+| `audio_status.cnt_commands` / `last_command` | доходят ли команды до плеера (`AUDIO_CMD_PLAY`, `_STOP`, `_BEEP`, `_LOOP`, `_PLAY_NOW`) |
+| `audio_status.cnt_started` / `cnt_played` | стартовала ли DMA / доиграла ли |
+| `audio_status.cnt_underruns` | заикания стрима (поток не успел дозагрузить половину за 93 мс) |
+| `audio_status.cnt_watchdog` | звук добит watchdog'ом: колбэк завершения DMA не пришёл |
+| `audio_status.cnt_wakes` / `cnt_wake_timeouts` | поток жив: `cnt_wake_timeouts` растёт = heartbeat, событий просто нет |
+| `audio_status.cnt_loops` | сколько повторов цикла сыграно |
+| `audio_status.last_error` / `sai_error_code` | код `audio_err_t` и сырой `SAI.ErrorCode` (больше не смешаны в одном числе) |
+| `audio_status.loop_enabled` / `loop_index` / `loop_next_at_ms` | повтор: включён ли, какой звук, когда следующий |
+| `rf_status` | поток RF: `boot_stage`, по линкам `link[0..2]` (lora/ble/lte) — `enabled`, `state`, `cnt_rx_bytes`, `cnt_rx_frames`, `cnt_tx_frames` |
 | `sf_dbg_dma_chunks` / `_fallback` / `_tmo` | работает ли SPI-DMA и сколько раз откатились на опрос |
 | `vlog_dbg_lines` | сколько строк ушло в лог |
 
@@ -190,7 +203,8 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 
 Уровни: `VLOG_DEBUG`(1) → `VLOG_INFO`(2, по умолчанию) → `VLOG_WARN`(3) →
 `VLOG_ERROR`(4). Маски модулей: `VLOG_M_SYS` (S), `VLOG_M_FLASH` (F),
-`VLOG_M_AUDIO` (A). Модуль BRIDGE удалён: мост не логирует ничего.
+`VLOG_M_AUDIO` (A), `VLOG_M_RF` (R — поток RF). Модуль BRIDGE удалён: мост не
+логирует ничего.
 
 Метка времени `[сек.мс]` — **тик ThreadX** (разрешение 10 мс). До планировщика
 тик не идёт, поэтому стартовые строки печатаются с `[0.000]` — это нормально.
@@ -203,6 +217,8 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 [0.000] 2/S: level=2 mask=ffffffff
 [0.010] 2/A: audio init
 [0.060] 2/A: image ok=1 sounds=5
+[0.065] 2/R: rf init: thread created, prio=12 stack=4096
+[0.070] 2/R: rf thread: lora=1 ble=1 lte=1 (gap=20 ms, poll=50 ms)
 [12.340] 2/A: play #2 'd_myvoice' stream 358306 samples @44100 Hz (chunk 4096)
 ```
 
@@ -214,6 +230,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | `spiflash.c` | чтение ≥ 1 КБ (адрес, объём, миллисекунды) — только при `VECTOR_SPI_LOG_READS 1`, иначе уровень DEBUG; каждая запись и стирание сектора, откат с DMA на опрос |
 | `extstore.c` | ретраи чтения (`ext_read: recovered after N retry`), конфиг/журнал (DEBUG) |
 | `audio_player.c` | старт, состояние образа, команды, запуск и ошибки звука, «звук доигран», watchdog |
+| `rf_thread.c` | старт потока RF (`rf thread: lora=1 ble=1 lte=1 ...`), создание потока в `rf_init()`, переключение линков (`link ble -> 1`) |
 
 Правила модуля (важно при доработке):
 
@@ -222,7 +239,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
   кракозябрами. Держите строки латиницей;
 * из **ISR лог не печатается** — вызов отбрасывается и плюсит
   `vlog_dbg_isr_skipped`. События из ISR показываются из потока: например,
-  «звук доигран» поток печатает, заметив изменение `audio_dbg_played`;
+  «звук доигран» поток печатает, заметив изменение `audio_status.cnt_played`;
 * строка собирается в один статический буфер 160 Б под мьютексом, поэтому
   два потока не перемешают вывод;
 * формат только `%s %d %u %x %X %c %%`, числа 32-битные: своя печать, чтобы не
@@ -427,7 +444,7 @@ BUTTON3 с PB3, оставьте `SYS_JTDO-SWV` и включите SWV в Run C
 `AZURE_RTOS/App/app_azure_rtos.c`, `tx_application_define`:
 
 ```c
-  vlog_init();  ext_init();  audio_init();
+  vlog_init();  ext_init();  audio_init();  rf_init();
   /* + создание потока LVGL-заглушки */
 ```
 

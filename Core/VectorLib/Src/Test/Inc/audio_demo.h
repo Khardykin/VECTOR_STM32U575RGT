@@ -30,19 +30,33 @@ extern "C" {
     Сам читает уровень пина и решает, было ли нажатие. Контекст: ISR. */
 void audio_demo_key_handler(uint16_t GPIO_Pin);
 
-/* --- счётчики диагностики (Expressions в отладчике) ----------------------
- * edges == 0            -> EXTI не прилетает вовсе (пины/NVIC/схема кнопки)
- * edges > 0, press == 0  -> EXTI есть, но уровень пина не совпал с
- *                           VECTOR_KEY_PRESSED_LEVEL (не та полярность/подтяжка)
- *                           либо всё съедает антидребезг (debounce)
- * press > 0              -> события доходят; причину молчания ищем в audio_dbg_* */
-extern volatile uint32_t demo_dbg_edges;
-extern volatile uint32_t demo_dbg_press;
-extern volatile uint32_t demo_dbg_level0;
-extern volatile uint32_t demo_dbg_debounce;
-extern volatile uint32_t demo_dbg_last_pin;
-extern volatile uint8_t  demo_dbg_volume;  /* ТЕСТ: текущая громкость, % */
-extern volatile uint16_t demo_dbg_sound;   /* ТЕСТ: индекс звука BUTTON1 */
+/* --- состояние демо-модуля: ОДНА структура demo_status -------------------
+ * Тот же приём, что и в audio_player.h для audio_status: вместо россыпи
+ * demo_dbg_* - одна структура, в Expressions/Live Watch добавляете строку
+ * `demo_status` и раскрываете её.
+ *
+ * Порядок диагностики "кнопки не работают":
+ *   cnt_edges == 0                  -> EXTI не прилетает вовсе
+ *                                      (пины/NVIC/схема кнопки)
+ *   cnt_edges > 0, cnt_pressed == 0 -> EXTI есть, но уровень пина не совпал с
+ *                                      VECTOR_KEY_PRESSED_LEVEL (не та
+ *                                      полярность/подтяжка) либо всё съедает
+ *                                      антидребезг (cnt_debounced)
+ *   cnt_pressed > 0                 -> события доходят; причину молчания
+ *                                      ищем в audio_status (audio_player.h) */
+typedef struct
+{
+  volatile uint32_t cnt_edges;           /* сколько EXTI вообще прилетело   */
+  volatile uint32_t cnt_pressed;         /* из них признано нажатием        */
+  volatile uint32_t cnt_inactive_level;  /* отброшено: пин в неактивном ур. */
+  volatile uint32_t cnt_debounced;       /* отброшено антидребезгом         */
+  volatile uint32_t last_pin;            /* последний обработанный пин      */
+  volatile uint16_t sound_index;         /* BUTTON1: индекс звука           */
+  volatile uint8_t  volume_percent;      /* BUTTON3: громкость, %           */
+  volatile uint8_t  playing;             /* BUTTON2: зеркало audio_is_playing() */
+} audio_demo_status_t;
+
+extern volatile audio_demo_status_t demo_status;
 
 #endif /* VECTOR_AUDIO_DEMO_KEYS */
 

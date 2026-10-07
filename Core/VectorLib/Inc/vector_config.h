@@ -121,7 +121,7 @@
 /* --- ОТЛАДКА: поток плеера не спит вечно ---------------------------------
  * >0 = tx_semaphore_get(&ap_wake) ждёт НЕ вечно, а указанное число мс, и по
  *      таймауту поток делает холостой проход (перепроверяет очередь, плюсит
- *      audio_dbg_timeouts). Цена - одно пробуждение в секунду, польза -
+ *      audio_status.cnt_wake_timeouts). Цена - одно пробуждение в секунду, польза -
  *      пропажа события (не прилетел колбэк DMA, не сработала кнопка) больше
  *      НЕ выглядит как вечное зависание, и её видно по счётчикам.
  * 0    = честное TX_WAIT_FOREVER (как было).                                */
@@ -163,7 +163,7 @@
  *   started but NOT finished (GPDMA1_Channel11_IRQn?)" (возврат 2) ->
  *       circular DMA прокручивает писк по кругу, но прерывание завершения
  *       блока не приходит: в NVIC не включён GPDMA1_Channel11_IRQn.
- *   Возврат дублируется в audio_dbg_errors / audio_dbg_last_err.
+ *   Возврат дублируется в audio_status.cnt_errors / audio_status.last_error.
  *
  * Побочный бонус: пауза между писками отсчитывается циклами ядра
  * (board_delay_cycles(12000000)), поэтому при заниженном SYSCLK она
@@ -230,6 +230,84 @@
 /* Пауза между повторами цикла, мс. Меняется в рантайме: audio_set_loop_pause(). */
 #ifndef VECTOR_AUDIO_LOOP_PAUSE_MS
 #define VECTOR_AUDIO_LOOP_PAUSE_MS 500u
+#endif
+
+/* --- РАБОЧЕЕ: поток RF (LoRa + BLE + LTE) ----------------------------------
+ * Один поток "RF" (rf_thread.c) владеет приёмом всех радио-линков: забирает
+ * байты из колец InputBuffer[TYPE_LORA/TYPE_BLE/TYPE_LTE], которые наполняют
+ * ISR приёма UART, и отдаёт их парсерам модулей (rf_lora_xxx / rf_ble_xxx / rf_lte_xxx).
+ * Каркас готов, парсеры пустые - наполнение за вами (PLAN.md этапы 1-3).
+ *
+ * ПРАВИЛО ВЛАДЕЛЬЦА КОЛЬЦА: у каждого UART ровно ОДИН потребитель - поток RF
+ * (SPSC, см. buffer.h). Существующий драйвер LoRa (Lora_Receive()) читает то
+ * же кольцо TYPE_LORA, поэтому при CONFIG_LORA 1 вызывать его нужно из
+ * rf_lora_poll(), а не из другого потока или таймера.
+ *
+ * VECTOR_RF_THREAD          1 = модуль собирается, rf_init() создаёт поток
+ *                               (вызов из tx_application_define());
+ *                           0 = модуль исчезает из сборки целиком, вызовы
+ *                               вырождаются в пустые макросы.
+ * VECTOR_RF_LINK_LORA/BLE/LTE  объявлен ли линк в потоке. Сейчас все три
+ *                           включены, чтобы каркас был виден в отладчике
+ *                           сразу (rf_status). Когда модули начнут включаться
+ *                           конфигурацией прибора, свяжите флаги с ней одной
+ *                           строкой, например:
+ *                             #define VECTOR_RF_LINK_LORA  (CONFIG_LORA)
+ *                             #define VECTOR_RF_LINK_BLE   (CONFIG_BLE)
+ *                           (config_device.h; для LTE своего CONFIG_* пока
+ *                           нет). Дополнительно есть рантайм-выключатель
+ *                           rf_link_enable() - под статусы ST_COMMON.
+ * VECTOR_RF_PRIORITY        приоритет потока: Audio Player = 10, LVGL = 15,
+ *                           обмен данными не должен обгонять звук.
+ * VECTOR_RF_STACK_SIZE      стек потока, байт.
+ * VECTOR_RF_WAKE_TIMEOUT_MS heartbeat: как часто поток просыпается без
+ *                           событий (досмотреть таймауты кадров и линков).
+ *                           rf_notify() из ISR будит его сразу, не дожидаясь
+ *                           таймаута. 0 = ждать вечно.
+ * VECTOR_RF_FRAME_GAP_MS    пауза в линии, после которой накопленные байты
+ *                           считаются кадром и уходят в парсер модуля.
+ * VECTOR_RF_LINE_LEN        накопитель кадра на один линк, байт (3 x RAM).
+ * VECTOR_RF_BYTES_PER_CYCLE сколько байт максимум разобрать за один проход:
+ *                           длинный приём не занимает поток целиком, остальное
+ *                           забирает следующий проход.                      */
+#ifndef VECTOR_RF_THREAD
+#define VECTOR_RF_THREAD            1
+#endif
+
+#ifndef VECTOR_RF_LINK_LORA
+#define VECTOR_RF_LINK_LORA         1
+#endif
+
+#ifndef VECTOR_RF_LINK_BLE
+#define VECTOR_RF_LINK_BLE          1
+#endif
+
+#ifndef VECTOR_RF_LINK_LTE
+#define VECTOR_RF_LINK_LTE          1
+#endif
+
+#ifndef VECTOR_RF_PRIORITY
+#define VECTOR_RF_PRIORITY          12u
+#endif
+
+#ifndef VECTOR_RF_STACK_SIZE
+#define VECTOR_RF_STACK_SIZE        4096u
+#endif
+
+#ifndef VECTOR_RF_WAKE_TIMEOUT_MS
+#define VECTOR_RF_WAKE_TIMEOUT_MS   50u
+#endif
+
+#ifndef VECTOR_RF_FRAME_GAP_MS
+#define VECTOR_RF_FRAME_GAP_MS      20u
+#endif
+
+#ifndef VECTOR_RF_LINE_LEN
+#define VECTOR_RF_LINE_LEN          256u
+#endif
+
+#ifndef VECTOR_RF_BYTES_PER_CYCLE
+#define VECTOR_RF_BYTES_PER_CYCLE   128u
 #endif
 
 /* --- РАБОЧЕЕ: время в проекте берётся ТОЛЬКО от тика RTOS (Azure/ThreadX) --

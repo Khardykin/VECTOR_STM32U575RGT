@@ -5,7 +5,7 @@
   *
   *          ЗАЧЕМ: без него не видно, что реально происходит с внешней flash
   *          (когда прочиталось/записалось/стёрлось), с мостом UART и с
-  *          плеером. Счётчики audio_dbg_* и sf_dbg_* дают то же самое, но только
+  *          плеером. Счётчики audio_status.* и sf_dbg_* дают то же самое, но только
   *          в отладчике, а лог виден сразу в терминале.
   *
   *          ДВА ВЫКЛЮЧАТЕЛЯ:
@@ -75,6 +75,7 @@ extern "C" {
 #define VLOG_M_SYS     0x00000001u  /* старт, инициализация                    */
 #define VLOG_M_FLASH   0x00000002u  /* spiflash/extstore: чтение/запись/стирание */
 #define VLOG_M_AUDIO   0x00000004u  /* плеер: старт/стоп/ошибки звука          */
+#define VLOG_M_RF      0x00000008u  /* поток RF: LoRa/BLE/LTE (rf_thread.c)    */
 #define VLOG_M_ALL     0xFFFFFFFFu
 
 #if VECTOR_LOG_ENABLE
