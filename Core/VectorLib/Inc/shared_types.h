@@ -34,6 +34,10 @@ enum{
 	TIMER_RTC_SOFT_RESET_PROGRAM, 					// Сброс программы
 	TIMER_RTC_TURN_ON_BAT, 							// Таймер на выключение при низком заряде батареи
 	TIMER_RTC_OFF_BAT_CRITICAL_LOW, 				// Таймер на включение индикации разряженной батареи при попытке включения(22)
+	TIMER_RTC_BLE_DATA_INIT,                        // таймер инициализации BLE
+	TIMER_RTC_BLE_DATA_SET,                         // таймер передачи данных BLE
+	TIMER_RTC_GPS_DATA_INIT,                        // таймер инициализации GPS
+	TIMER_RTC_LORA_DATA_SET_ALARM,                  // таймер аварийного пакета LoRa
 	TIMER_RTC_COUNT_PRESS_SOS,                      // Таймер сброса помощи(23)
 	TIMER_RTC_END,
 };
@@ -134,6 +138,32 @@ typedef struct
   uint32_t	        TimerIsEnd;		              // Тест на конец таймера (побитно)
 } DOWN_TIMER_RTC;
 //--------------------------------------------------------------------------------------------------------------
+typedef struct
+{
+	uint32_t 	count_1ms;
+	uint32_t 	count_10ms;
+	uint32_t 	count_100ms;
+	uint32_t 	count_1s;
+	uint8_t	 	flag_1ms;
+	uint8_t		flag_10ms;
+	uint8_t		flag_100ms;
+	uint8_t 	flag_1s;
+	uint8_t    	flag_start_work;			// флаг старта работы
+	uint8_t 	flag_start_work_bat_sys;
+}Timer_variables;
+
+extern volatile Timer_variables 	timer;
+extern volatile DOWN_TIMER 			countdown_time;		 /* миллисекундные (TIM3 1 кГц)     */
+extern volatile DOWN_TIMER_RTC 		countdown_time_rtc;	 /* секундные (RTC wakeup 1 с)      */
+//--------------------------------------------------------------------------------------------------------------
+/* Длительности секундных таймеров, с: START_TIMER_RTC(TIMER_RTC_x, TIME_RTC_x).
+   Значения стартовые - подберите под свои модули.                                  */
+#define TIME_RTC_BLE_DATA_INIT		(2u)
+#define TIME_RTC_BLE_DATA_SET			(60u)
+#define TIME_RTC_BLE_DATA_SLEEP		(30u)
+#define TIME_RTC_LORA_DATA_INIT		(3u)
+#define TIME_RTC_LORA_DATA_SLEEP	(60u)
+//--------------------------------------------------------------------------------------------------------------
 typedef struct//
 {   
   uint32_t              State;                                                  // Состояние системы(Общий)
@@ -150,7 +180,7 @@ typedef struct//
   uint16_t				battery_charge_volt_lim_1;
   uint16_t				battery_charge_volt_lim_2;
   
-  volatile  uint32_t    working_hours;                                          // Одна единица равна 937.5us, мото часы
+  volatile  uint32_t    working_hours;
   uint32_t              working_hours_offset;
   
   float                 Temperature;                                            // Температура
@@ -167,6 +197,21 @@ typedef struct//
   uint16_t				Lora_Config_Flags;
   uint32_t				Lora_freq_rx2;
   uint16_t				Lora_dr_rx2;
+  /* --- данные датчиков: ЕДИНСТВЕННОЕ место для измеренных значений --------
+     BME280   -> Temperature / Humidity / Pressure (выше),
+     MAX17048 -> battery_charge_percent / battery_charge_volt,
+     LIS3DH   -> Accel_x/y/z, Orientation, Screen_rotation.
+     Дублей в sensors_status больше нет: там остались только счётчики
+     диагностики шины. Поля добавлены ДО Reserve[], поэтому sizeof(SNS_CFG)
+     вырос - учтите при разметке CONFIG-страницы внешней flash и CRC.            */
+  float                 Accel_x;                                                // LIS3DH, g (шкала +-4g, HR 12 бит)
+  float                 Accel_y;
+  float                 Accel_z;
+  uint8_t               Orientation;                                            // lis3dh_orientation_t
+  uint8_t               Screen_rotation;                                        // 0 или 2 -> TFT_Rotation()
+  uint8_t               Sensors_ok;                                             // биты: 1=BME280 2=LIS3DH 4=MAX17048
+  uint8_t               Sensors_reserve;
+
   uint16_t              Reserve[10];
 }SNS_CFG_Type_common; //Общая струкрутра для сенсоров
 

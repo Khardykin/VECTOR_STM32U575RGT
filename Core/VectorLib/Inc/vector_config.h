@@ -151,7 +151,7 @@
  * участвуют. Проверяется только выходной тракт SAI -> DMA -> усилитель ->
  * динамик. Длительность одного писка 240 мс (10584 сэмпла на 44.1 кГц).
  *
- * КАК ЧИТАТЬ РЕЗУЛЬТАТ (цикл в vector_board.c обрывается на первом же сбое):
+ * КАК ЧИТАТЬ РЕЗУЛЬТАТ (цикл в Vector_Run_Board_Init() обрывается на первом же сбое):
  *   слышны ВСЕ заказанные писки, в логе столько же строк
  *   "selftest: done, guard=..." -> цифровая часть работает. Если звука при
  *       этом нет - проблема аналоговая: SD_MODE (PC9), питание усилителя,
@@ -238,7 +238,7 @@
  *                     Lora_Receive() (LoRa), Ble_Receive(), Lte_Receive(),
  *                     Uart_Channel_Receive() (сенсоры) + Vector_Options_System();
  *   "Measure Task"  - периодика прибора: Vector_Run_Pre_Init() один раз, затем
- *                     каждые VECTOR_TASKS_MEASURE_PERIOD_MS вызов
+ *                     по флагу timer.flag_1s вызов
  *                     Vector_Run_Measure() (внутри Ble_Run/Lora_Run/Lte_Run)
  *                     и Vector_RunFlashMemory().
  *
@@ -260,8 +260,8 @@
  *                                 тике 1 мс). Байты при этом не теряются: их
  *                                 копит ISR в кольце.
  * VECTOR_TASKS_MEASURE_DELAY_MS   пауза потока измерений между проходами.
- * VECTOR_TASKS_MEASURE_PERIOD_MS  период Vector_Run_Measure() (в Avis -
- *                                 timer.flag_1s, то есть 1 с).
+ * VECTOR_TASKS_MEASURE_TICK       период Vector_Run_Measure() = флаг timer.flag_1s
+ *                                 (такт 1 с даёт Timer_Tick_1ms() от TIM3).
  *
  * Модули внутри заглушек закрыты своими CONFIG_* из config_device.h
  * (CONFIG_UART, CONFIG_LORA, CONFIG_BLE, CONFIG_G4/CONFIG_G2 для LTE) - как в
@@ -294,9 +294,6 @@
 #define VECTOR_TASKS_MEASURE_DELAY_MS    50u
 #endif
 
-#ifndef VECTOR_TASKS_MEASURE_PERIOD_MS
-#define VECTOR_TASKS_MEASURE_PERIOD_MS   1000u
-#endif
 
 /* --- РАБОЧЕЕ: экран TFT (ST7789P3 172x320, SPI2 + GPDMA1 Channel8) ---------
  * Драйвер - Core/VectorLib/Src/TFT/LCD_platform.c (v17 переведён с AT32 на HAL,
@@ -349,14 +346,13 @@
  *
  * VECTOR_SCREEN_ROTATION   1 = при смене 6D-ориентации LIS3DH (прерывание
  *                          ACCEL_INT, PC11) Measure Task вызывает
- *                          TFT_Rotation(sensors_status.screen_rotation).
+ *                          TFT_Rotation(Config_common.Screen_rotation).
  *                          0 = ориентация считается, экран не крутится.
  * VECTOR_BME_CALIBRATION   1 = калибровка температуры BME280 с записью поправки
  *                          во flash (Calib_bme280_Temp из Avis). Сейчас 0:
  *                          механизма калибровки и страницы под неё в проекте
  *                          нет, код вырезан из сборки.
- * VECTOR_GPS_NAV_PERIOD_MS период обновления навигационных систем GNSS
- *                          (Gps_Init_Nav_Sys) после инициализации модуля.     */
+ *                          нет, код вырезан из сборки.     */
 #ifndef VECTOR_SCREEN_ROTATION
 #define VECTOR_SCREEN_ROTATION         1
 #endif
@@ -388,7 +384,7 @@
  *     Отсюда "антидребезг 50 мс длится секунды" и "пауза цикла 40 с".
  * 0 = обычное поведение (таймер крутится и под отладчиком).
  * На боевой прошивке ни на что не влияет - ядро там не останавливается.
- * Строка стоит в vector_board_init() (до RTOS).                              */
+ * Строка стоит в Vector_Run_Board_Init() (до RTOS, Vector_main.c).                              */
 #ifndef VECTOR_DBG_FREEZE_TICK
 #define VECTOR_DBG_FREEZE_TICK    1
 #endif

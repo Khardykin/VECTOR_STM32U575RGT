@@ -46,7 +46,6 @@
 									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Device/ST/STM32U5xx/Include"/>
 									<listOptionValue builtIn="false" value="../Middlewares/ST/threadx/ports/cortex_m33/gnu/inc"/>
 									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Include"/>
-
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Src/TFT"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Src/BME280"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Src/Lis3dh_reg"/>
@@ -80,7 +79,6 @@
 									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Include"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Src/Audio/Inc"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Src/Test/Inc"/>
-
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Src/TFT"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Src/BME280"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Src/Lis3dh_reg"/>
@@ -167,7 +165,6 @@
 									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Device/ST/STM32U5xx/Include"/>
 									<listOptionValue builtIn="false" value="../Middlewares/ST/threadx/ports/cortex_m33/gnu/inc"/>
 									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Include"/>
-
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Src/TFT"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Src/BME280"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Src/Lis3dh_reg"/>
@@ -200,7 +197,6 @@
 									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Device/ST/STM32U5xx/Include"/>
 									<listOptionValue builtIn="false" value="../Middlewares/ST/threadx/ports/cortex_m33/gnu/inc"/>
 									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Include"/>
-
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Src/TFT"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Src/BME280"/>
 									<listOptionValue builtIn="false" value="../Core/VectorLib/Src/Lis3dh_reg"/>

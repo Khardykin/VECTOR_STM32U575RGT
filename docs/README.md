@@ -101,7 +101,6 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 | `VECTOR_TASKS_RECEIVER_DELAY_MS` | `10` | пауза между проходами потока приёма (тик RTOS = 10 мс) |
 | `VECTOR_TASKS_MEASURE_PRIORITY` / `_STACK` | `13` / `4096` | поток периодики прибора |
 | `VECTOR_TASKS_MEASURE_DELAY_MS` | `50` | пауза между проходами потока измерений |
-| `VECTOR_TASKS_MEASURE_PERIOD_MS` | `1000` | период `Vector_Run_Measure()` (в `Avis_main.c` — `timer.flag_1s`) |
 
 ### Экран TFT (ST7789P3 172×320, SPI2 + DMA) и датчики
 
@@ -112,7 +111,6 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 | `VECTOR_LCD_SPI_TIMEOUT_MS` | `200` | таймаут передачи и ожидания свободного порта экрана |
 | `VECTOR_SCREEN_ROTATION` | `1` | крутить экран по 6D-ориентации LIS3DH (`ACCEL_INT`, PC11) |
 | `VECTOR_BME_CALIBRATION` | `0` | калибровка температуры BME280 с записью во flash (пока выключена) |
-| `VECTOR_GPS_NAV_PERIOD_MS` | `60000` | как часто обновлять навигационные системы GNSS |
 | `CONFIG_TYPE_LCD_TFT` / `CONFIG_MODEL_LCD` | `1` / `0` | в `config_device.h`: TFT включён; 0 = ST7789P3 172×320 |
 | `CONFIG_BME` / `CONFIG_LIS3DH` / `CONFIG_MAX17048` / `CONFIG_GPS` | `1` | в `config_device.h`: микросхема компилируется и опрашивается |
 
@@ -123,6 +121,8 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 
 ## Время и таймеры
 
+Три источника времени, каждый для своего (подробно — `SYSTEM.md`, раздел 7):
+
 | Чем | Разрешение | Когда |
 |---|---|---|
 | `VTICK_MS()` / `VTICK_ELAPSED_MS()` | 10 мс | **единственный** способ читать время в приложении (тик ThreadX = SysTick, 100 Гц) |
@@ -130,7 +130,16 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 | `VTICK_MS2TICKS()` | — | мс → тики для `tx_semaphore_get` |
 | число проходов цикла | — | ограничение времени **до планировщика**, где тика RTOS нет (`wait_busy`, `audio_selftest`) |
 | `HAL_GetTick()` | 1 мс | **в нашем коде не используется вовсе**; остался только внутри HAL-драйверов (тайм-база TIM6) |
-| RTC | 1 с | wake-up/календарь, к системному времени приложения отношения не имеет |
+| `timer.flag_1ms/10ms/100ms/1s` | 1 мс / 1 с | **такты прибора**: поток читает флаг и сам его сбрасывает — `if (timer.flag_1s) { timer.flag_1s = 0; ... }` (ставит `Timer_Tick_1ms()`, TIM3 1 кГц) |
+| `START_TIMER` / `TEST_TIMER` / `RESET_TIMER` | 1 мс | миллисекундные таймеры прибора (`countdown_time[]`, ID — `TIMER_*` в `shared_types.h`) |
+| `START_TIMER_RTC` / `TEST_TIMER_RTC` / `RESET_TIMER_RTC` | 1 с | то, что должно идти и во сне: период передачи LoRa/BLE, мото-часы (`countdown_time_rtc[]`, ID — `TIMER_RTC_*`, длительности — `TIME_RTC_*`) |
+| `RTC wakeup` | 1 с | источник секундного такта: `HAL_RTCEx_WakeUpTimerEventCallback` → `Timer_Tick_1s()` |
+
+Обслуживание таймеров целиком в `Vector_main.c`: `Timer_Tick_1ms()` зовётся из
+`main.c` (`HAL_TIM_PeriodElapsedCallback`, ветка TIM3), `Timer_Tick_1s()` — из
+`stm32u5xx_it.c` (колбэк RTC); в CubeMX-файлах по одной строке. Экземпляры
+`timer`, `countdown_time`, `countdown_time_rtc` — `volatile`, объявления в
+`shared_types.h`.
 
 Подробно — `SYSTEM.md`, раздел 7.
 

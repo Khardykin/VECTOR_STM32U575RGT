@@ -32,7 +32,6 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "Vector_main.h"    /* CONFIG_*, Uart_Gps/Lora_Receive_Timer_Inc */
-#include "vector_board.h"   /* вся бортовая инициализация до RTOS - один вызов */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -115,10 +114,10 @@ int main(void)
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
 
-  /* Вся бортовая инициализация до RTOS: усилитель (SD_MODE), проба внешней
-     flash и selftest звука. Что именно делает и что из этого надо перенести
-     в CubeMX - см. vector_board.h и docs/SYSTEM.md (раздел 9).              */
-  vector_board_init();
+  /* Бортовая инициализация до RTOS одним вызовом (такт SRAM4, заморозка TIM6
+     под отладчиком, SD_MODE усилителя, sf_probe, audio_selftest) - живет в
+     Vector_main.c, см. Vector_Run_Board_Init().                            */
+  Vector_Run_Board_Init();
   /* USER CODE END 2 */
 
   MX_ThreadX_Init();
@@ -230,37 +229,10 @@ void PeriphCommonClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 //===========================================================================================================================
-// Обработчик прерываний таймера 2
-// Обработчик таймера интервал вызова (1mS)
-void Countdown_Timer_Chan(void)
-{
-	uint8_t i = 0;
-	for(uint8_t chan = 0; chan < COUNT_CHAN; chan++){
-		for(i=0; i < COUNT_TIMERS_CHAN; i++)
-		{
-			if(countdown_time_chan[chan].Timers[i])
-			{
-				countdown_time_chan[chan].Timers[i] --;
-				if(!countdown_time_chan[chan].Timers[i])
-					END_TIMER_CH(i, chan);
-			}
-		}
-	}
-}
-
-void Countdown_Timer(void)
-{
-	uint8_t i = 0;
-	for(i=0; i < COUNT_TIMERS; i++)
-	{
-		if(countdown_time.Timers[i])
-		{
-			countdown_time.Timers[i] --;
-			if(!countdown_time.Timers[i])
-				END_TIMER(i);
-		}
-	}
-}
+/* Обслуживание таймеров прибора (Countdown_Timer, Countdown_Timer_Rtc,
+   Clear_Timer_Rtc, Timer_Tick_1ms/1s) - в Vector_main.c: там же экземпляры
+   timer / countdown_time / countdown_time_rtc. Здесь остаются только вызовы
+   из прерываний.                                                           */
 /* USER CODE END 4 */
 
 /**
@@ -285,48 +257,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   }
   /* USER CODE BEGIN Callback 1 */
   else if(htim->Instance == TIM3){
-	  Countdown_Timer();
-	  Countdown_Timer_Chan();
-	  timer.flag_1ms = 1;
-	  timer.count_1ms++;
-	  if(timer.count_1ms >= 10){
-		  timer.count_1ms = 0;
-		  timer.flag_10ms = 1;
-		  timer.count_10ms++;
-		  if((timer.count_10ms%10) == 0){
-			  timer.flag_100ms = 1;
-			  timer.count_100ms++;
-			  if(timer.count_100ms >= 10){
-				  timer.count_10ms = 0;
-				  timer.count_100ms = 0;
-				  timer.flag_1s = 1;
-				  timer.count_1s++;
-			  }
-		  }
-	  }
-	  if(button.button_flag){
-		  button.button_count++;
-	  }
-	  if(button2.button_flag){
-		  button2.button_count++;
-	  }
-	  if(button3.button_flag){
-		  button3.button_count++;
-	  }
-	  //--------------------------------------------------------------------------
-#if CONFIG_UART
-	  Uart_Command_Receive_Timer_Inc();
-#endif
-#if CONFIG_GPS
-	  Uart_Gps_Receive_Timer_Inc();    /* таймаут кадра NMEA (TIME_OUT_GPS)  */
-#endif
-#if CONFIG_LORA
-	  Uart_Lora_Receive_Timer_Inc();   /* таймаут AT-ответа LoRa             */
-#endif
-//	  SET_TGL(STATE_LED);
+	  /* TIM3 = 1 кГц: такт таймеров прибора. Всё (декремент countdown_time[],
+	     флаги timer.flag_1ms/10ms/100ms/1s, счётчики кнопок, таймауты кадров
+	     COM/GPS/LoRa) делает Timer_Tick_1ms() из Vector_main.c.              */
+	  Timer_Tick_1ms();
   }
-  /* пусто: время приложения считается только от тика ThreadX (vector_tick.h),
-     TIM6 обслуживает исключительно внутреннюю тайм-базу HAL.               */
+  /* TIM6 - только тайм-база HAL (uwTick). Время потоков - тик ThreadX
+     (vector_tick.h), таймеры прибора - TIM3/RTC (Timer_Tick_1ms/1s).       */
   /* USER CODE END Callback 1 */
 }
 

@@ -35,23 +35,9 @@ extern "C" {
 extern uint8_t 				flag_end_data_exchange;
 extern uint32_t         	timer_end_data_exchange;
 
-extern DOWN_TIMER			countdown_time;
-extern DOWN_TIMER_RTC   	countdown_time_rtc;
+/* timer / countdown_time / countdown_time_rtc и тип Timer_variables
+   объявлены в shared_types.h (v19): там же макросы-типы DOWN_TIMER. */
 
-typedef struct
-{
-	uint32_t 	count_1ms;
-	uint32_t 	count_10ms;
-	uint32_t 	count_100ms;
-	uint32_t 	count_1s;
-	uint8_t	 	flag_1ms;
-	uint8_t		flag_10ms;
-	uint8_t		flag_100ms;
-	uint8_t 	flag_1s;
-	uint8_t    	flag_start_work;			// флаг старта работы
-	uint8_t 	flag_start_work_bat_sys;
-}Timer_variables;
-extern Timer_variables timer;
 
 typedef struct
 {
@@ -83,6 +69,7 @@ void MemManage_Handler(void);
 void BusFault_Handler(void);
 void UsageFault_Handler(void);
 void DebugMon_Handler(void);
+void RTC_IRQHandler(void);
 void EXTI1_IRQHandler(void);
 void EXTI2_IRQHandler(void);
 void EXTI3_IRQHandler(void);

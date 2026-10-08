@@ -7,7 +7,7 @@
 #endif
 T_Buffer InputBuffer[TYPE_USART_COUNT] = {0}; //Буфер приема по usart
 /* Секция .sram4 объявлена в STM32U575RGTX_FLASH.ld / _RAM.ld (>SRAM4, 16 КБ
-   @0x28000000). Такт SRAM4 включает vector_board_init(): __HAL_RCC_SRAM4_CLK_ENABLE().
+   @0x28000000). Такт SRAM4 включает Vector_Run_Board_Init(): __HAL_RCC_SRAM4_CLK_ENABLE().
    Пока DMA_USART == 0 массив не используется (передача опросом).             */
 __attribute__((section(".sram4")))  uint8_t buffer_transmit[TYPE_USART_COUNT][300];
 //======================================================================================================================================

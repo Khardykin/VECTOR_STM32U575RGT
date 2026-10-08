@@ -10,7 +10,7 @@
   *                                       ПО КАЖДОМУ UART (COM, LoRa, BLE, LTE, GPS,
   *                                       сенсоры) + Vector_Options_System()
   *            measure_task_function()    ПОТОК "Measure Task": периодика
-  *                                       VECTOR_TASKS_MEASURE_PERIOD_MS (1 с)
+  *                                       такту timer.flag_1s (1 с от TIM3)
   *            Vector_Run_Pre_Init()      однократно при старте (аналог
   *                                       Avis_Run_Pre_Init)
   *            Vector_Run_Measure()       измерения прибора + вызов модулей
@@ -41,16 +41,211 @@
                                    buffer.h, Lora_S7678S.h (при CONFIG_LORA)  */
 #include "vector_tasks.h"
 
-#if VECTOR_TASKS_ENABLE
-
 #include "tx_api.h"
 #include "vector_log.h"
 #include "vector_tick.h"
 #include "vector_macros.h"
+#include "stm32u5xx_it.h"   /* button1/button2/button3, timer_end_data_exchange */
+#include "spiflash.h"       /* sf_probe()/sf_jedec: борд-инит */
+#include <stdlib.h>         /* rand(): джиттер периода передачи LoRa */
 
 #if (CONFIG_TYPE_LCD_TFT && VECTOR_SCREEN_ROTATION)
-#include "TFT.h"          /* TFT_Rotation(): поворот экрана по акселерометру */
+#include "TFT.h"            /* TFT_Rotation(): поворот экрана по акселерометру */
 #endif
+
+/* ============================================================================
+ *  ТАКТЫ ПРИБОРА И БОРД-ИНИЦИАЛИЗАЦИЯ
+ *  Вне #if VECTOR_TASKS_ENABLE: их зовут прерывания (TIM3, RTC wakeup) и
+ *  main() - они обязаны существовать всегда.
+ *
+ *  ТРИ ИСТОЧНИКА ВРЕМЕНИ В ПРОЕКТЕ (каждый для своего):
+ *    тик ThreadX (10 мс, vector_tick.h) - VTICK_MS/VTICK_SLEEP_MS: сны потоков,
+ *        таймауты модулей (SPI-DMA, экран, watchdog звука);
+ *    TIM3 1 кГц  - countdown_time[] (мс) и флаги timer.flag_1ms/10ms/100ms/1s:
+ *        логика прибора и таймауты кадров UART;
+ *    RTC wakeup 1 с - countdown_time_rtc[] (с): то, что должно жить и во сне
+ *        (периоды передачи LoRa/BLE, мото-часы working_hours).
+ *  Макросы START/TEST/RESET/END_TIMER[_RTC] - в shared_macros.h.
+ * ============================================================================ */
+volatile Timer_variables timer = {0};
+volatile DOWN_TIMER      countdown_time = {0};
+volatile DOWN_TIMER_RTC  countdown_time_rtc = {0};
+
+/* Декремент миллисекундных таймеров. КОНТЕКСТ: прерывание TIM3. */
+static void Countdown_Timer(void)
+{
+	uint8_t i = 0;
+	for(i = 0; i < COUNT_TIMERS; i++)
+	{
+		if(countdown_time.Timers[i])
+		{
+			countdown_time.Timers[i] --;
+			if(!countdown_time.Timers[i])
+				END_TIMER(i);
+		}
+	}
+}
+
+/* Декремент секундных таймеров. КОНТЕКСТ: прерывание RTC wakeup. */
+static void Countdown_Timer_Rtc(void)
+{
+	uint8_t i = 0;
+	for(i = 0; i < COUNT_TIMERS_RTC; i++)
+	{
+		if(countdown_time_rtc.Timers[i])
+		{
+			countdown_time_rtc.Timers[i] --;
+			if(!countdown_time_rtc.Timers[i])
+				END_TIMER_RTC(i);
+		}
+	}
+}
+
+/* Сбросить все секундные таймеры (например, при пробуждении из сна). */
+void Clear_Timer_Rtc(void)
+{
+	uint8_t i = 0;
+	for(i = 0; i < COUNT_TIMERS_RTC; i++)
+	{
+		if(countdown_time_rtc.Timers[i])
+		{
+			countdown_time_rtc.Timers[i] = 0;
+			END_TIMER_RTC(i);
+		}
+	}
+}
+
+/* Такт 1 мс: таймеры, флаги 1/10/100/1000 мс, счётчики кнопок, таймауты
+   кадров UART. Звать из HAL_TIM_PeriodElapsedCallback(TIM3) - одна строка.
+   КОНТЕКСТ: прерывание, только счёт и флаги.                                */
+void Timer_Tick_1ms(void)
+{
+	Countdown_Timer();
+
+	timer.flag_1ms = 1;
+	timer.count_1ms++;
+	if(timer.count_1ms >= 10){
+		timer.count_1ms = 0;
+		timer.flag_10ms = 1;
+		timer.count_10ms++;
+		if((timer.count_10ms % 10) == 0){
+			timer.flag_100ms = 1;
+			timer.count_100ms++;
+			if(timer.count_100ms >= 10){
+				timer.count_10ms = 0;
+				timer.count_100ms = 0;
+				timer.flag_1s = 1;
+				timer.count_1s++;
+			}
+		}
+	}
+
+	/* длинное нажатие: счётчик растёт, пока кнопка удерживается */
+	if(button1.button_flag){
+		button1.button_count++;
+	}
+	if(button2.button_flag){
+		button2.button_count++;
+	}
+	if(button3.button_flag){
+		button3.button_count++;
+	}
+
+	/* таймауты кадров периферийных UART */
+#if CONFIG_UART
+	Uart_Command_Receive_Timer_Inc();
+#endif
+#if CONFIG_GPS
+	Uart_Gps_Receive_Timer_Inc();
+#endif
+#if CONFIG_LORA
+	Uart_Lora_Receive_Timer_Inc();
+#endif
+}
+
+/* Такт 1 с: секундные таймеры, мото-часы, флаг старта, таймер окончания
+   режима обмена данными. Звать из HAL_RTCEx_WakeUpTimerEventCallback() - одна
+   строка. ВАЖНО: куб включает WakeUp БЕЗ прерывания, поэтому в rtc.c
+   (USER CODE RTC_Init 2) таймер перезапущен с _IT и разрешён RTC_IRQn.
+   КОНТЕКСТ: прерывание.                                                     */
+void Timer_Tick_1s(void)
+{
+	timer.flag_start_work = 1;
+	timer.flag_start_work_bat_sys = 1;
+
+	Sns_Cfg_struct.Config_common.working_hours += 1;
+
+	Countdown_Timer_Rtc();
+
+#if CONFIG_UART
+	if(timer_end_data_exchange){
+		timer_end_data_exchange --;
+		if(!timer_end_data_exchange){
+			flag_end_data_exchange = 1;
+		}
+	}
+#endif
+}
+
+/* Таймаут кадра COM-порта. Weak-заглушка: реализация появится вместе с
+   command_message() (её счётчик - в buffer_uart_command или подобном).       */
+__attribute__((weak)) void Uart_Command_Receive_Timer_Inc(void)
+{
+}
+
+/* ============================================================================
+ *  БОРДОВАЯ ИНИЦИАЛИЗАЦИЯ ДО RTOS  (бывший vector_board.c)
+ *  Звать из main() (USER CODE BEGIN 2) ОДНИМ вызовом - до MX_ThreadX_Init().
+ *  КОНТЕКСТ: стек MSP, планировщика нет - спать нельзя, паузы только
+ *  DelayInt() (цикл ядра), лог работает (vlog_init ещё не вызван - печатает
+ *  без мьютекса).
+ * ============================================================================ */
+void Vector_Run_Board_Init(void)
+{
+#if VECTOR_AUDIO_SELFTEST
+  uint32_t i;
+#endif
+
+  /* 0. Такт SRAM4 (16 КБ @0x28000000) по умолчанию ВЫКЛЮЧЕН (RCC_AHB3ENR.31):
+        без него обращение к секции .sram4 (buffer_transmit[] из buffer.c) -
+        это bus fault. Включаем до первого использования. Для сна потом не
+        забыть биты SRAM4PD/SRAM4PDS.                                        */
+  __HAL_RCC_SRAM4_CLK_ENABLE();
+
+#if VECTOR_DBG_FREEZE_TICK
+  /* Остановка тайм-базы HAL (TIM6), пока ядро стоит на брейкпоинте: иначе
+     внутренние таймауты HAL "сгорают" за один останов. На боевой прошивке
+     (без отладчика) ни на что не влияет.                                     */
+  DBGMCU->APB1FZR1 |= DBGMCU_APB1FZR1_DBG_TIM6_STOP;
+#endif
+
+  /* 1. Оконечный усилитель: SD_MODE (PC9) в low = shutdown, звука не будет.
+        Правильное место - CubeMX (PC9 -> GPIO output level = High), тогда шаг
+        убирается; до тех пор страховка здесь.                               */
+  GPIO_WritePin(SD_MODE_GPIO_Port, SD_MODE_Pin, PIN_SET);
+  DelayInt(5);
+
+  /* 2. Проба внешней SPI flash: sf_jedec = { C2 28 17 } (MX25R6435F),
+        sf_probe_rc = 0. Чистый опрос, RTOS не нужен.                        */
+  (void)sf_probe();
+  LOG_I(VLOG_M_SYS, "probe rc=%d jedec=%x %x %x", (int32_t)sf_probe_rc,
+        (uint32_t)sf_jedec[0], (uint32_t)sf_jedec[1], (uint32_t)sf_jedec[2]);
+
+#if VECTOR_AUDIO_SELFTEST
+  /* 3. Прямая проверка звукового тракта (const-PCM -> SAI DMA -> усилитель),
+        без очереди/потока/внешней flash. 0 = тракт работает.                */
+  for (i = 0; i < (uint32_t)VECTOR_AUDIO_SELFTEST; i++)
+  {
+    if (audio_selftest() != 0)
+    {
+      break;
+    }
+    DelayInt(300);
+  }
+#endif
+}
+
+#if VECTOR_TASKS_ENABLE
 
 /* --------------------------------------------------------------- потоки ----
  * Приоритеты (в ThreadX МЕНЬШЕ = выше): Audio Player = 10, Receiver = 12,
@@ -88,17 +283,6 @@ static uint8_t   measure_task_stack[VECTOR_TASKS_MEASURE_STACK]   __attribute__(
 
 static void receiver_task_function(ULONG thread_input);
 static void measure_task_function(ULONG thread_input);
-
-/* ------------------------------------------------------------- состояние ---
- * ВСЁ состояние потоков и счётчики модулей - в ОДНОЙ структуре tasks_status
- * (в отладчике достаточно одной строки `tasks_status`). Начальные значения
- * задаются здесь, дальше поля правят потоки и заглушки модулей.              */
-volatile tasks_status_t tasks_status =
-{
-  .receiver_running   = 0u,
-  .measure_running    = 0u,
-  .cnt_pre_init       = 0u
-};
 
 /* Отметить вызов приёма/обмена модуля: счётчик + метка времени (тик RTOS).
    КОНТЕКСТ: потоки прибора.                                                   */
@@ -196,12 +380,10 @@ static void receiver_task_function(ULONG thread_input)
 /* ============================================================================
  * ПОТОК ИЗМЕРЕНИЙ/ПЕРИОДИКИ: аналог measure_task_function() в Avis_main.c.
  * Один раз делает Vector_Run_Pre_Init(), затем каждые
- * VECTOR_TASKS_MEASURE_PERIOD_MS (1 с) вызывает Vector_Run_Measure() и
+ * такту timer.flag_1s (1 с от TIM3) вызывает Vector_Run_Measure() и
  * Vector_RunFlashMemory().                                                    */
 static void measure_task_function(ULONG thread_input)
 {
-  uint32_t next_measure_ms;
-
   (void)thread_input;
 
   /* Однократная инициализация прибора (в Avis - по флагу
@@ -210,23 +392,21 @@ static void measure_task_function(ULONG thread_input)
   tasks_status.cnt_pre_init++;
 
   tasks_status.measure_running = 1u;
-  next_measure_ms              = VTICK_MS();
-  LOG_I(VLOG_M_TASKS, "measure task: period %u ms, delay %u ms",
-        (uint32_t)VECTOR_TASKS_MEASURE_PERIOD_MS, (uint32_t)VECTOR_TASKS_MEASURE_DELAY_MS);
+  LOG_I(VLOG_M_TASKS, "measure task: 1 s tick, delay %u ms",
+        (uint32_t)VECTOR_TASKS_MEASURE_DELAY_MS);
 
   while (1)
   {
     tasks_status.cnt_measure_passes++;
 
-    /* В Avis здесь timer.flag_1s (флаги ставит таймер прибора). Тут время -
-       тик RTOS: сравниваем, сколько прошло с предыдущего запуска. Когда
-       перенесёте таймеры прибора (TIMER_RTC_*), флаг можно оставить как есть. */
-    if (VTICK_ELAPSED_MS(next_measure_ms) >= (uint32_t)VECTOR_TASKS_MEASURE_PERIOD_MS)
+    /* Такт 1 с ставит Timer_Tick_1ms() (TIM3); флаг сбрасываем сами - как в
+       measure_task_function на других приборах.                            */
+    if (timer.flag_1s)
     {
-      next_measure_ms = VTICK_MS();
+      timer.flag_1s = 0;
 
       tasks_status.cnt_measure_runs++;
-      tasks_status.last_measure_ms = next_measure_ms;
+      tasks_status.last_measure_ms = VTICK_MS();
 
       Vector_Run_Measure();
       Vector_RunFlashMemory();
@@ -300,7 +480,7 @@ void Vector_Run_Measure(void)
 #if (CONFIG_TYPE_LCD_TFT && VECTOR_SCREEN_ROTATION)
   if (sensors_rotation_changed() != 0u)
   {
-    TFT_Rotation(sensors_status.screen_rotation);
+    TFT_Rotation(Sns_Cfg_struct.Config_common.Screen_rotation);
   }
 #endif
 
@@ -440,61 +620,62 @@ __attribute__((weak)) void Ble_Run(void)
 #endif
 }
 
-/* LoRa: инициализация, передача пакетов, сон. Аналог Lora_Run() в Avis_main.c.
-   Драйвер уже есть (Lora_S7678S.c): Lora_Init/Lora_DataSet/Lora_DeInit/
-   Lora_IsTxBusy/Lora_SystemSleep/get_state_*_lora.                          */
+/* LoRa S7678S: инициализация, периодическая передача, аварийный пакет, сон.
+   Перенос Lora_Run() из Avis_main.c под драйвер этого проекта (Lora_S7678S.c:
+   Lora_Init/Lora_DataSet/Lora_DeInit/Lora_IsTxBusy/get_state_*_lora).
+   Ритм - секундные таймеры TIMER_RTC_LORA_DATA_*, период берётся из конфига
+   (PeriodTimeLora: младший байт - обычный период, старший - аварийный, х10 с).
+   Приём - Lora_Receive() в потоке receiver_task, НЕ здесь.
+   КОНТЕКСТ: поток Measure Task.                                            */
 __attribute__((weak)) void Lora_Run(void)
 {
 #if CONFIG_LORA
-	if((device_turn != DEVICE_TURNED_OFF) || (Lora_g_turnoff_system_read() == 1)){
-		if((get_state_init_flag_lora_g() == 1)){
-			return;
-		}
+	if((device_turn != DEVICE_TURNED_OFF) || (Lora_system_msg_read() == 1))
+	{
+		/* В Avis здесь была проверка READ_PIN_OUT(WRLS_ON) - общего пина питания
+		   радио на этой плате нет, поэтому её нет.                             */
+		uint16_t time_data_set   = (uint16_t)((Sns_Cfg_struct.Config_common.PeriodTimeLora & 0xFF) * 10);
+		uint16_t time_data_set_a = (uint16_t)(((Sns_Cfg_struct.Config_common.PeriodTimeLora >> 8) & 0xFF) * 10);
+
 		if(TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_LORA)){
-			if((get_state_init_flag_lora_g() == 0) && (!TEST_TIMER_RUN_RTC(TIMER_RTC_LORA_DATA_INIT)) && (!TEST_TIMER_RTC(TIMER_RTC_LORA_DATA_INIT))){
-				START_TIMER_RTC(TIMER_RTC_LORA_DATA_INIT, TIME_RTC_BLE_DATA_INIT);
+			if((get_state_init_flag_lora() == 0) && (!TEST_TIMER_RUN_RTC(TIMER_RTC_LORA_DATA_INIT)) && (!TEST_TIMER_RTC(TIMER_RTC_LORA_DATA_INIT))){
+				START_TIMER_RTC(TIMER_RTC_LORA_DATA_INIT, TIME_RTC_LORA_DATA_INIT);
 			}
 			if(TEST_TIMER_RTC(TIMER_RTC_LORA_DATA_INIT)){
 				RESET_TIMER_RTC(TIMER_RTC_LORA_DATA_INIT);
-				Lora_g_Init(&Sns_Cfg_struct);
-//				START_TIMER_RTC(TIMER_RTC_LORA_DATA_SLEEP, TIME_RTC_LORA_DATA_SLEEP);
-				START_TIMER_RTC(TIMER_RTC_LORA_DATA_SET, Sns_Cfg_struct.Config_common.PeriodTimeLora&0xFF);
-				END_TIMER_RTC(TIMER_RTC_LORA_DATA_SET_ALARM);
+				Lora_Init(&Sns_Cfg_struct);
+				START_TIMER_RTC(TIMER_RTC_LORA_DATA_SET, time_data_set);
 			}
-			if(TEST_TIMER_RTC(TIMER_RTC_LORA_DATA_SET)){
-				Lora_g_flag_period_msg_set();
+			/* аварийный статус - передать сразу, не дожидаясь периода */
+			if(test_state_alarm_flag_lora(&Sns_Cfg_struct)){
+				END_TIMER_RTC(TIMER_RTC_LORA_DATA_SET);
 			}
-
-			if(get_state_init_flag_lora_g() == 1){
-				uint8_t state_alarm = check_state_alarm_flag_lora_g(&Sns_Cfg_struct);
-				if(((state_alarm == 2) && TEST_TIMER_RTC(TIMER_RTC_LORA_DATA_SET_ALARM)) ||
-						(state_alarm == 1)){
-					RESET_TIMER_RTC(TIMER_RTC_LORA_DATA_SET_ALARM);
-					Lora_g_DataSetAlarm(&Sns_Cfg_struct);
-					START_TIMER_RTC(TIMER_RTC_LORA_DATA_SET_ALARM, (Sns_Cfg_struct.Config_common.PeriodTimeLora>>8)&0xFF);
+			if(TEST_TIMER_RTC(TIMER_RTC_LORA_DATA_SET) && (!Lora_IsTxBusy())){
+				RESET_TIMER_RTC(TIMER_RTC_LORA_DATA_SET);
+				Lora_DataSet(&Sns_Cfg_struct);
+				START_TIMER_RTC(TIMER_RTC_LORA_DATA_SLEEP, TIME_RTC_LORA_DATA_SLEEP);
+				if(Lora_system_msg_read() == 1){
+					START_TIMER_RTC(TIMER_RTC_LORA_DATA_SET, 10);   /* пакет выключения - быстрее */
 				}
-				else if(Lora_g_flag_period_msg_read()){
-					if(Lora_g_DataSet(&Sns_Cfg_struct)){
-						Lora_g_flag_period_msg_clr();
-						if(Lora_g_turnoff_system_read() == 1){
-							START_TIMER_RTC(TIMER_RTC_LORA_DATA_SET, 10);// Период для отправки пакета выключения0
-						}
-						else{
-							int random = ((rand()%10) - 5);
-							START_TIMER_RTC(TIMER_RTC_LORA_DATA_SET, (Sns_Cfg_struct.Config_common.PeriodTimeLora&0xFF) + random);
-						}
-					}
+				else if(get_state_alarm_flag_lora() || get_state_repeat_flag_lora()){
+					/* джиттер +-5 с, чтобы приборы в сети не сталкивались пакетами */
+					int random = ((rand() % 10) - 5);
+					START_TIMER_RTC(TIMER_RTC_LORA_DATA_SET, (uint16_t)(time_data_set_a + random));
+				}
+				else{
+					START_TIMER_RTC(TIMER_RTC_LORA_DATA_SET, time_data_set);
 				}
 			}
 			if(TEST_TIMER_RTC(TIMER_RTC_LORA_DATA_SLEEP)){
 				RESET_TIMER_RTC(TIMER_RTC_LORA_DATA_SLEEP);
-//				Lora_SystemSleep();
+//				Lora_SystemSleep(time_data_set);   /* сон модуля между передачами - включить, когда понадобится */
 			}
 		}
 		else{
-			Lora_g_DeInit(0);
+			Lora_DeInit(0);
 		}
-		if(get_state_err_lora_g()){
+
+		if(get_state_err_lora()){
 			SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_ERR_LORA);
 		}
 		else{
@@ -514,44 +695,45 @@ __attribute__((weak)) void Lte_Run(void)
 #endif
 }
 
-/* GPS/GNSS: инициализация модуля, периодическое обновление навигационных
-   систем, контроль ошибки приёма. Аналог Gps_Run() в Avis_main.c, но вместо
-   RTC-таймеров прибора (TIMER_RTC_GPS_DATA_INIT) - тик RTOS: таймеров прибора
-   в этом проекте пока нет (PLAN.md раздел 5, этап 2).
+/* GPS/GNSS: инициализация модуля, обновление навигационных систем, контроль
+   ошибки приёма. Перенос Gps_Run() из Avis_main.c (секундные таймеры прибора).
    Приём NMEA - Gps_Receive() в потоке receiver_task, НЕ здесь.
-   КОНТЕКСТ: поток Measure Task (внутри блокирующий обмен по UART и Delay()). */
+   КОНТЕКСТ: поток Measure Task (внутри блокирующий обмен по UART).          */
 __attribute__((weak)) void Gps_Run(void)
 {
 #if CONFIG_GPS
-  static uint32_t nav_last_ms = 0;
-
-  if (!VECTOR_DEVICE_IS_ON())
-  {
-    Gps_DeInit(0);
-    return;
-  }
-
-	if(TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GPS)){
-		if((get_state_init_flag_gps() == 0) && (!TEST_TIMER_RUN_RTC(TIMER_RTC_GPS_DATA_INIT)) && (!TEST_TIMER_RTC(TIMER_RTC_GPS_DATA_INIT))){
-			START_TIMER_RTC(TIMER_RTC_GPS_DATA_INIT, TIME_RTC_BLE_DATA_INIT);
-		}
-		if(TEST_TIMER_RTC(TIMER_RTC_GPS_DATA_INIT)){
-			if(Gps_Init(&Sns_Cfg_struct) == 1){
-				RESET_TIMER_RTC(TIMER_RTC_GPS_DATA_INIT);
+	if(VECTOR_DEVICE_IS_ON()){
+		if(TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GPS)){
+			/* Питание/сброс GNSS: пины GNSS_MODE (PB4) и GNSS_RST (PB5) в кубе
+			   есть, но полярность и длительность импульса по схеме не
+			   подтверждены - пока не дёргаем. Как подтвердите, добавьте перед
+			   Gps_Init(): SET_ON(GNSS_RST); DelayInt(10); SET_OFF(GNSS_RST);  */
+			if((get_state_init_flag_gps() == 0) && (!TEST_TIMER_RUN_RTC(TIMER_RTC_GPS_DATA_INIT)) && (!TEST_TIMER_RTC(TIMER_RTC_GPS_DATA_INIT))){
+				START_TIMER_RTC(TIMER_RTC_GPS_DATA_INIT, TIME_RTC_BLE_DATA_INIT);
+			}
+			if(TEST_TIMER_RTC(TIMER_RTC_GPS_DATA_INIT)){
+				if(Gps_Init(&Sns_Cfg_struct) == 1){
+					RESET_TIMER_RTC(TIMER_RTC_GPS_DATA_INIT);
+				}
+			}
+			if(get_state_init_flag_gps() == 1){
+				Gps_Init_Nav_Sys(&Sns_Cfg_struct);
 			}
 		}
-		if(get_state_init_flag_gps() == 1){
-			Gps_Init_Nav_Sys(&Sns_Cfg_struct);
+		else{
+			Gps_DeInit(0);
+		}
+
+		/* нет валидных кадров NMEA дольше 20 с - считает сам Gps.c */
+		if(get_state_err_gps()){
+			SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_ERR_GPS);
+		}
+		else{
+			CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_ERR_GPS);
 		}
 	}
 	else{
 		Gps_DeInit(0);
-	}
-	if(get_state_err_gps()){
-		SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_ERR_GPS);
-	}
-	else{
-		CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_ERR_GPS);
 	}
 #endif
 }
@@ -563,95 +745,83 @@ __attribute__((weak)) void Gps_Run(void)
  * ориентацию -> Vector_Run_Measure() зовёт TFT_Rotation(). I2C из ISR не
  * читается никогда.
  * ============================================================================ */
-volatile sensors_status_t sensors_status =
-{
-  .cnt_init_ok  = 0u,
-  .last_read_ms = 0u
-};
+volatile sensors_status_t sensors_status = {0};
 
-/* Флаг "ориентация изменилась, поворот не применён". Ставится в sensors_read(),
-   снимается в sensors_rotation_changed() - то есть событие не теряется, даже
-   если экран решено повернуть позже.                                         */
+/* Флаг "ориентация изменилась, поворот не применён": ставится в sensors_read(),
+   снимается в sensors_rotation_changed().                                    */
 static volatile uint8_t rotation_pending = 0u;
 
-/* ------------------------------------------------------------------ инициализация */
-/* Поднять все включённые конфигурацией датчики. Возврата нет: результат по
-   каждой микросхеме - в sensors_status.*_ok и в логе.                        */
+/* Поднять все включённые конфигурацией датчики. Результат - биты
+   Config_common.Sensors_ok, счётчик sensors_status.cnt_init_ok и лог.
+   КОНТЕКСТ: поток Measure Task (из Vector_Run_Pre_Init).                     */
 void sensors_init(void)
 {
+  Sns_Cfg_struct.Config_common.Sensors_ok = 0u;
   sensors_status.cnt_init_ok = 0u;
 
 #if CONFIG_BME
-  /* BME280: I2C-адрес 0x76, normal mode, osr_t x8, фильтр 2 (настраивает
-     bme280_init_com()). rslt == 0 - микросхема ответила.                     */
+  /* BME280: адрес 0x76, normal mode, osr_t x8, фильтр 2 (bme280_init_com). */
   if (bme280_init_com() == 0)
   {
-    sensors_status.bme_ok = 1u;
+    Sns_Cfg_struct.Config_common.Sensors_ok |= SENSORS_OK_BME;
     sensors_status.cnt_init_ok++;
     LOG_I(VLOG_M_SYS, "sensors: BME280 ok (I2C1 0x76)");
   }
   else
   {
-    sensors_status.bme_ok = 0u;
     SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_ERR_STS4);
-    LOG_E(VLOG_M_SYS, "sensors: BME280 FAIL (I2C1 0x76) - check PB8/PB9, addr");
+    LOG_E(VLOG_M_SYS, "sensors: BME280 FAIL (I2C1 0x76) - PB8/PB9, address");
   }
 #endif
 
 #if CONFIG_LIS3DH
   /* LIS3DH: WHO_AM_I, HR 12 бит, 100 Гц, +-4g, 6D-ориентация на INT1
-     (lis3dh_init() сам настраивает прерывание - см. LIS3DH_ENABLE_6D_INIT).  */
+     (lis3dh_init сам настраивает прерывание - LIS3DH_ENABLE_6D_INIT).        */
   if (lis3dh_init() == 0)
   {
-    sensors_status.lis3dh_ok = 1u;
+    Sns_Cfg_struct.Config_common.Sensors_ok |= SENSORS_OK_LIS3DH;
     sensors_status.cnt_init_ok++;
-    LOG_I(VLOG_M_SYS, "sensors: LIS3DH ok (I2C1 0x19), 6D int=%u deg",
+    LOG_I(VLOG_M_SYS, "sensors: LIS3DH ok (I2C1 0x19), 6D th=%u deg",
           (uint32_t)LIS3DH_6D_THRESHOLD_DEG);
   }
   else
   {
-    sensors_status.lis3dh_ok = 0u;
     LOG_E(VLOG_M_SYS, "sensors: LIS3DH FAIL (I2C1 0x19, WHO_AM_I != 0x33)");
   }
 #endif
 
 #if CONFIG_MAX17048
-  /* MAX17048: топливный счётчик, проверка VERSION (не 0x0000/0xFFFF). */
   if (max17048_init())
   {
-    sensors_status.max17048_ok = 1u;
+    Sns_Cfg_struct.Config_common.Sensors_ok |= SENSORS_OK_MAX17048;
     sensors_status.cnt_init_ok++;
     LOG_I(VLOG_M_SYS, "sensors: MAX17048 ok (I2C1 0x36)");
   }
   else
   {
-    sensors_status.max17048_ok = 0u;
     LOG_E(VLOG_M_SYS, "sensors: MAX17048 FAIL (I2C1 0x36)");
   }
 #endif
 
-  LOG_I(VLOG_M_SYS, "sensors: init done, %u of 3 modules alive",
-        sensors_status.cnt_init_ok);
+  LOG_I(VLOG_M_SYS, "sensors: init done, alive mask=%u (%u of 3)",
+        (uint32_t)Sns_Cfg_struct.Config_common.Sensors_ok, sensors_status.cnt_init_ok);
 }
 
-/* -------------------------------------------------------------------- чтение */
-/* Прочитать всё, что включено. Звать периодически из Vector_Run_Measure().
-   BME280 в normal mode меряет сам, поэтому здесь только забираем результат,
-   если MEAS_DONE (иначе счётчик ошибок растёт внутри bme280_measure).        */
+/* Прочитать всё, что включено. Значения кладём ТОЛЬКО в
+   Sns_Cfg_struct.Config_common - единственное место данных прибора; в
+   sensors_status остаются счётчики диагностики шины.
+   КОНТЕКСТ: поток Measure Task (раз в секунду).                              */
 void sensors_read(void)
 {
   uint32_t t0 = VTICK_MS();
 
 #if CONFIG_BME
-  if (sensors_status.bme_ok != 0u)
+  if ((Sns_Cfg_struct.Config_common.Sensors_ok & SENSORS_OK_BME) != 0u)
   {
-    /* 0 = данные обновлены, 1 = измерение ещё не готово, <0 = ошибка шины.
-       Значения модуль кладёт прямо в Sns_Cfg_struct.Config_common.           */
+    /* 0 = данные обновлены (модуль сам пишет Temperature/Humidity/Pressure в
+       Config_common), 1 = измерение не готово, <0 = ошибка шины.             */
     if (bme280_measure(&Sns_Cfg_struct) == 0)
     {
-      sensors_status.temperature_c = Sns_Cfg_struct.Config_common.Temperature;
-      sensors_status.humidity_pct  = Sns_Cfg_struct.Config_common.Humidity;
-      sensors_status.pressure_hpa  = Sns_Cfg_struct.Config_common.Pressure;
       sensors_status.cnt_bme_reads++;
       CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_ERR_STS4);
     }
@@ -659,47 +829,47 @@ void sensors_read(void)
 #endif
 
 #if CONFIG_LIS3DH
-  if (sensors_status.lis3dh_ok != 0u)
+  if ((Sns_Cfg_struct.Config_common.Sensors_ok & SENSORS_OK_LIS3DH) != 0u)
   {
     float x = 0.0f, y = 0.0f, z = 0.0f;
 
     /* один вызов = чтение акселерометра (если готов) + разбор события 6D,
-       которое прилетело в ACCEL_INT (INT1_SRC читается только здесь)          */
+       пришедшего в ACCEL_INT (INT1_SRC читается только здесь)                */
     (void)lis3dh_update_all();
 
     if (lis3dh_get_cached_accel_g(&x, &y, &z))
     {
-      sensors_status.accel_x_g = x;
-      sensors_status.accel_y_g = y;
-      sensors_status.accel_z_g = z;
+      Sns_Cfg_struct.Config_common.Accel_x = x;
+      Sns_Cfg_struct.Config_common.Accel_y = y;
+      Sns_Cfg_struct.Config_common.Accel_z = z;
       sensors_status.cnt_accel_reads++;
     }
 
-    sensors_status.orientation = (uint8_t)lis3dh_get_orientation();
+    Sns_Cfg_struct.Config_common.Orientation = (uint8_t)lis3dh_get_orientation();
 
-    /* Смена ориентации -> новый поворот экрана (0 или 2). Сам экран этот
-       модуль не трогает: решение принимает Vector_Run_Measure().             */
+    /* Смена ориентации -> новый поворот экрана (0 или 2). Сам экран модуль не
+       трогает: TFT_Rotation() зовёт Vector_Run_Measure().                    */
     if (lis3dh_orientation_changed())
     {
       uint8_t st = lis3dh_get_rotation_state();
 
-      if (st != sensors_status.screen_rotation)
+      if (st != Sns_Cfg_struct.Config_common.Screen_rotation)
       {
-        sensors_status.screen_rotation = st;
+        Sns_Cfg_struct.Config_common.Screen_rotation = st;
         sensors_status.cnt_rotation_events++;
         rotation_pending = 1u;
         LOG_I(VLOG_M_SYS, "sensors: orientation=%u -> rotation=%u",
-              (uint32_t)sensors_status.orientation, (uint32_t)st);
+              (uint32_t)Sns_Cfg_struct.Config_common.Orientation, (uint32_t)st);
       }
     }
   }
 #endif
 
 #if CONFIG_MAX17048
-  if (sensors_status.max17048_ok != 0u)
+  if ((Sns_Cfg_struct.Config_common.Sensors_ok & SENSORS_OK_MAX17048) != 0u)
   {
-    sensors_status.battery_percent_x10 = (uint16_t)(max17048_cellPercent() * 10.0f);
-    sensors_status.battery_voltage_mv  = (uint16_t)(max17048_cellVoltage() * 1000.0f);
+    Sns_Cfg_struct.Config_common.battery_charge_percent = (uint16_t)max17048_cellPercent();
+    Sns_Cfg_struct.Config_common.battery_charge_volt    = (uint16_t)(max17048_cellVoltage());
     sensors_status.cnt_battery_reads++;
   }
 #endif
@@ -709,7 +879,7 @@ void sensors_read(void)
 }
 
 /* Событие смены ориентации: 1 = надо применить новый поворот
-   (sensors_status.screen_rotation), флаг сбрасывается. КОНТЕКСТ: поток.      */
+   (Config_common.Screen_rotation), флаг сбрасывается. КОНТЕКСТ: поток.       */
 uint8_t sensors_rotation_changed(void)
 {
   if (rotation_pending == 0u)

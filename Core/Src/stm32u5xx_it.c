@@ -63,6 +63,7 @@ Button_variables 	button_sos = {0};
 
 /* External variables --------------------------------------------------------*/
 extern I2C_HandleTypeDef hi2c1;
+extern RTC_HandleTypeDef hrtc;
 extern DMA_NodeTypeDef Node_GPDMA1_Channel11;
 extern DMA_QListTypeDef List_GPDMA1_Channel11;
 extern DMA_HandleTypeDef handle_GPDMA1_Channel11;
@@ -80,56 +81,14 @@ extern TIM_HandleTypeDef htim6;
 
 /* USER CODE BEGIN EV */
 //===========================================================================================================================
-Timer_variables 	timer = {0};
-DOWN_TIMER			countdown_time = {0};
-DOWN_TIMER_RTC 		countdown_time_rtc = {0};
+/* Такты прибора (timer, countdown_time, countdown_time_rtc) и их обслуживание
+   (Countdown_Timer, Countdown_Timer_Rtc, Clear_Timer_Rtc, Timer_Tick_1ms/1s)
+   живут в Vector_main.c - здесь только вызов из колбэка RTC.                    */
 //===========================================================================================================================
-// Обработчик прерываний от RTC1
-// Обработчик прерываний таймера
-// Обработчик таймера интервал вызова (1000.mS)
-void Countdown_Timer_Rtc(void)
-{
-	uint8_t i = 0;
-	for(i=0; i < COUNT_TIMERS_RTC; i++)
-	{
-		if(countdown_time_rtc.Timers[i])
-		{
-			countdown_time_rtc.Timers[i] --;
-			if(!countdown_time_rtc.Timers[i])
-				END_TIMER_RTC(i);
-		}
-	}
-}
-
-void Clear_Timer_Rtc(void)
-{
-	uint8_t i = 0;
-	for(i=0; i < COUNT_TIMERS_RTC; i++)
-	{
-		if(countdown_time_rtc.Timers[i])
-		{
-			countdown_time_rtc.Timers[i] = 0;
-			END_TIMER_RTC(i);
-		}
-	}
-}
-
-//===========================================================================================================================
-// Обработчик прерываний RTC
+// Callback RTC (wakeup, 1 с)
 void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc)
 {
-	timer.flag_start_work = 1;
-	timer.flag_start_work_bat_sys = 1;
-	Sns_Cfg_struct.Config_common.working_hours += 1;
-	Countdown_Timer_Rtc();
-#if CONFIG_UART
-	if(timer_end_data_exchange){
-		timer_end_data_exchange --;
-		if(!timer_end_data_exchange){
-			flag_end_data_exchange = 1;
-		}
-	}
-#endif
+	Timer_Tick_1s();
 }
 
 // Обработчик прерываний TIM
@@ -346,6 +305,20 @@ void DebugMon_Handler(void)
 /* For the available peripheral interrupt handler names,                      */
 /* please refer to the startup file (startup_stm32u5xx.s).                    */
 /******************************************************************************/
+
+/**
+  * @brief This function handles RTC non-secure interrupt.
+  */
+void RTC_IRQHandler(void)
+{
+  /* USER CODE BEGIN RTC_IRQn 0 */
+
+  /* USER CODE END RTC_IRQn 0 */
+  HAL_RTCEx_WakeUpTimerIRQHandler(&hrtc);
+  /* USER CODE BEGIN RTC_IRQn 1 */
+
+  /* USER CODE END RTC_IRQn 1 */
+}
 
 /**
   * @brief This function handles EXTI Line1 interrupt.

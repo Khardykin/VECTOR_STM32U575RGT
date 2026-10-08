@@ -345,7 +345,7 @@ python tools/gen_beep.py --rate 44100
 Дополнительно:
 
 1. `SD_MODE` (PC9) = High? (CubeMX: GPIO output level = High; в коде страховка
-   в `vector_board_init()`.)
+   в `Vector_Run_Board_Init()`.)
 2. Куб: SAI1 Mode = Master, I2S standard, 16-bit, 2 слота, Mono,
    Audio Frequency = 44.1 kHz; пины PA8=SCK, PA9=FS, PA10=SD.
 3. Пауза между писками отсчитывается циклами ядра (`board_delay_cycles`),

@@ -41,8 +41,12 @@ Inc/vector_macros.h        макросы и хелперы проекта: TIME
                            VECTOR_DEVICE_IS_ON (статусы - в shared_macros.h)
 Inc/shared_macros.h        агрегатор макросов для перенесённого кода (main.h + статусы + время)
 Common/Src/vector_log.c    консольный лог: ITM/SWO и/или UART (выключается макросом)
-Common/Src/vector_board.c  всё, что делается в main() до RTOS (усилитель, проба, selftest)
-Inc/vector_tick.h          ЕДИНСТВЕННЫЙ источник времени приложения - тик ThreadX
+Inc/vector_tick.h          время ПОТОКОВ (сон, таймауты модулей) - тик ThreadX
+Src/Vector_main.c          ТАКТЫ ПРИБОРА: timer/countdown_time/countdown_time_rtc,
+                           Timer_Tick_1ms() (TIM3) и Timer_Tick_1s() (RTC wakeup),
+                           а также Vector_Run_Board_Init() (всё, что делается в
+                           main() до RTOS: SRAM4, заморозка TIM6, усилитель,
+                           проба flash, selftest) - бывшие vector_board.[ch]
 Inc/vector_tasks.h         API потоков: vector_tasks_init, Vector_Run_*, структура tasks_status
 Inc/Gps.h                  API GPS-модуля + что нужно донести при CONFIG_GPS 1
 Test/  audio_demo.[ch]     ТЕСТ: кнопки PB1/PB2/PB3 как пульт плеера
@@ -72,7 +76,7 @@ main()
  ├─ MX_SAI1_Init()          SAI1_Block_A: I2S, 44.1 кГц, моно, 16 бит, master TX
  ├─ MX_SPI1_Init()          SPI1 master 20 МГц + привязка GPDMA ch9/ch10 (USER CODE: 8 бит, /8)
  ├─ MX_ICACHE_Init()        ICache (DCache на U5 нет — когерентность DMA не нужна)
- ├─ vector_board_init():
+ ├─ Vector_Run_Board_Init():
  │    ├─ DBG_TIM6_STOP      (VECTOR_DBG_FREEZE_TICK) тайм-база HAL стоит под halt'ом отладчика
  │    ├─ SD_MODE = 1, 5 мс  включить оконечный усилитель (страховка до настройки в кубе)
  │    ├─ sf_probe()         JEDEC ID + статус внешней flash -> sf_jedec / sf_probe_rc
@@ -98,7 +102,7 @@ main()
 |---|---|---|---|
 | `Audio Player` (`ap_thread_entry`) | 10 | 4096 | **единственный владелец** SAI/DMA и `ap_buf[]`: ждёт `ap_wake` (heartbeat или будильник паузы повтора), разбирает команды, дозагружает половины стрим-буфера, запускает DMA, повторяет последний звук по кругу |
 | `Receiver Task` (`receiver_task_function`) | 12 | 2048 | **единственный потребитель** колец приёма `InputBuffer[TYPE_USART/TYPE_LORA/TYPE_BLE/TYPE_LTE/TYPE_GPS/TYPE_SENSOR]`: `command_message()`, `Lora_Receive()`, `Ble_Receive()`, `Lte_Receive()`, `Gps_Receive()`, `Uart_Channel_Receive()`, затем `Vector_Options_System()`; пауза `VECTOR_TASKS_RECEIVER_DELAY_MS` |
-| `Measure Task` (`measure_task_function`) | 13 | 4096 | `Vector_Run_Pre_Init()` один раз (`sensors_init()`, биты включения модулей), затем каждые `VECTOR_TASKS_MEASURE_PERIOD_MS` (1 с): `Vector_Run_Measure()` → `sensors_read()` (BME280/LIS3DH/MAX17048), поворот экрана по 6D-ориентации, `Ble_Run/Lora_Run/Lte_Run/Gps_Run`; и `Vector_RunFlashMemory()` |
+| `Measure Task` (`measure_task_function`) | 13 | 4096 | `Vector_Run_Pre_Init()` один раз (`sensors_init()`, биты включения модулей), затем по флагу `timer.flag_1s` (такт 1 с от TIM3): `Vector_Run_Measure()` → `sensors_read()` (BME280/LIS3DH/MAX17048), поворот экрана по 6D-ориентации, `Ble_Run/Lora_Run/Lte_Run/Gps_Run`; и `Vector_RunFlashMemory()` |
 | `LVGL Task` | 15 | 4096 | заглушка: спит по 1 с |
 
 Мёртвый поток `Audio Task` и семафор `audio_done_sem` удалены: звуком владеет
@@ -251,7 +255,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 
 | Модуль | События |
 |---|---|
-| `vector_board.c` | результат `sf_probe()` (JEDEC ID) — ещё до RTOS |
+| `Vector_main.c` (`Vector_Run_Board_Init`) | результат `sf_probe()` (JEDEC ID) — ещё до RTOS |
 | `spiflash.c` | чтение ≥ 1 КБ (адрес, объём, миллисекунды) — только при `VECTOR_SPI_LOG_READS 1`, иначе уровень DEBUG; каждая запись и стирание сектора, откат с DMA на опрос |
 | `extstore.c` | ретраи чтения (`ext_read: recovered after N retry`), конфиг/журнал (DEBUG) |
 | `audio_player.c` | старт, состояние образа, команды, запуск и ошибки звука, «звук доигран», watchdog |
@@ -274,13 +278,48 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 
 ---
 
-## 7. Время: один источник — тик ThreadX
+## 7. Время: три источника — и кто за что отвечает
 
 | Источник | Частота | Кто настроил | Для чего |
 |---|---|---|---|
 | **SysTick** (приоритет 4) | **100 Гц = 10 мс** | `Core/Src/tx_initialize_low_level.S` (порт ThreadX, `SYSTEM_CLOCK = 160000000`) | **всё время приложения**: тик ядра ThreadX, `VTICK_*`, метки лога |
 | **TIM6** (`TIM6_IRQn`, приоритет 15) | 1 кГц | куб (`NVIC.TimeBase = TIM6_IRQn`), `stm32u5xx_hal_timebase_tim.c` | **только внутренняя тайм-база HAL**: `HAL_GetTick()` для таймаутов внутри драйверов HAL (`HAL_SPI_Transmit(..., 250)` и т.п.) |
-| **RTC WakeUp** | 1 Гц | `rtc.c` | счётчик wake-up (секунды), к системному времени отношения не имеет |
+| **TIM3** (`TIM3_IRQn`, приоритет 3) | **1 кГц = 1 мс** | куб (`tim.c`) | **таймеры прибора**: `countdown_time[]` (мс), флаги `timer.flag_1ms/10ms/100ms/1s`, счётчики кнопок, таймауты кадров COM/GPS/LoRa. Обслуживает `Timer_Tick_1ms()` в `Vector_main.c` |
+| **RTC WakeUp** (`RTC_IRQn`, приоритет 3) | **1 Гц = 1 с** | `rtc.c` (USER CODE: запущен с `_IT`) | **секундные таймеры прибора**: `countdown_time_rtc[]`, мото-часы `working_hours`, `timer.flag_start_work`. Обслуживает `Timer_Tick_1s()` в `Vector_main.c` |
+
+Приложение `HAL_GetTick()`/`HAL_Delay()` **не использует вообще** — ни в
+VectorLib, ни в логе.
+
+### 7.1 Таймеры прибора (как в Avis)
+
+```c
+/* секундный таймер: запуск, опрос, сброс - макросы из shared_macros.h */
+START_TIMER_RTC(TIMER_RTC_LORA_DATA_SET, time_data_set);  /* запустить    */
+if (TEST_TIMER_RTC(TIMER_RTC_LORA_DATA_SET)) {            /* время вышло? */
+  RESET_TIMER_RTC(TIMER_RTC_LORA_DATA_SET);               /* снять флаг   */
+}
+if (!TEST_TIMER_RUN_RTC(TIMER_RTC_X)) { ... }             /* ещё идёт?    */
+START_TIMER(TIMER_SHUTDOWN, TIME_DEL_10);                 /* то же в мс   */
+
+/* такты: поток читает флаг и сам его сбрасывает */
+if (timer.flag_1s) { timer.flag_1s = 0; Vector_Run_Measure(); }
+```
+
+ID таймеров — `enum` в `shared_types.h` (`TIMER_*` для мс, `TIMER_RTC_*` для
+секунд), длительности — `TIME_RTC_*` там же. Экземпляры `timer`,
+`countdown_time`, `countdown_time_rtc` объявлены `volatile` (пишет
+прерывание, читают потоки) и живут в `Vector_main.c`.
+
+Что где использовать: **сон потока и таймауты модулей** — `VTICK_*` (тик
+ThreadX); **логика прибора** — `timer.flag_*` и `START_TIMER*`; **то, что
+должно идти и во сне** (период передачи LoRa/BLE, мото-часы) — `*_RTC`.
+
+> ⚠ `START_TIMER*` — это запись счётчика и `CLRBIT` в общем слове `TimerIsEnd`,
+> а прерывание в это же время декрементирует счётчик и ставит биты. Окно
+> гонки мало (один проход ISR), но оно есть. Если когда-нибудь таймер «потеряет»
+> запуск, оберните макро-операцию в `NVIC_DisableIRQ(TIM3_IRQn)` /
+> `NVIC_EnableIRQ(TIM3_IRQn)` (для секундных — `RTC_IRQn`). На других приборах
+> схема работает без этого.
 
 Приложение `HAL_GetTick()`/`HAL_Delay()` **не использует вообще** — ни в
 VectorLib, ни в логе. Раньше здесь жил модуль `vector_sys` с приборами,
@@ -310,7 +349,7 @@ if (VTICK_IN_THREAD()) { ... }       /* можно ли спать/брать м
 |---|---|
 | `wait_busy()` в `spiflash.c` | 20000 опросов RDSR (~1 с); в потоке дополнительно спит по 2 мс и ограничен 1000 мс по тику RTOS |
 | `audio_selftest()` | 40 000 000 проходов ожидания флага DMA (~1 с) |
-| задержка на пробуждение усилителя | цикл ~5 мс в `vector_board_init()` (исчезнет, когда PC9 = High сделает куб — раздел 9) |
+| задержка на пробуждение усилителя | цикл ~5 мс в `Vector_Run_Board_Init()` (исчезнет, когда PC9 = High сделает куб — раздел 9) |
 
 ### Отладчик и время
 
@@ -319,7 +358,7 @@ ThreadX отстаёт от настенных часов, метки лога �
 прошивки: ядро действительно не работало. Два следствия, которые закрыты:
 
 * `VECTOR_DBG_FREEZE_TICK 1` (по умолчанию): `DBGMCU->APB1FZR1 |=
-  DBG_TIM6_STOP` в `vector_board_init()` — тайм-база HAL тоже стоит под
+  DBG_TIM6_STOP` в `Vector_Run_Board_Init()` — тайм-база HAL тоже стоит под
   halt'ом, внутренние таймауты HAL не «сгорают» за одну остановку;
 * `VECTOR_SF_READ_RETRY 3`: одиночный SPI-обмен, попавший на halt,
   возвращается по таймауту HAL — чтения повторяются, звук не рвётся
@@ -403,7 +442,7 @@ Multimedia → SAI1 → SAI_A_Master → (вкладка DMA Settings) → GPDMA
 System Core → GPIO → PC9 → GPIO_Output → **GPIO output level = High**,
 Maximum output speed = Low. Усилитель сидит в shutdown, пока SD_MODE низкий:
 без этого звука не будет вообще. До настройки в кубе код поднимает пин сам
-(`vector_board_init()`, шаг можно будет удалить).
+(`Vector_Run_Board_Init()`, шаг можно будет удалить).
 
 ### 9.3. SPI1: 8 бит, 20 МГц, быстрые пины (`spi.c`, `USER CODE SPI1_Init 2`)
 
@@ -478,7 +517,7 @@ BUTTON3 с PB3, оставьте `SYS_JTDO-SWV` и включите SWV в Run C
 `main.c`, `USER CODE BEGIN 2`:
 
 ```c
-  vector_board_init();   /* freeze TIM6 под отладчиком, SD_MODE, sf_probe, selftest */
+  Vector_Run_Board_Init();   /* freeze TIM6 под отладчиком, SD_MODE, sf_probe, selftest */
 ```
 
 `main.c`, `USER CODE BEGIN Callback 1` — пусто (TIM6 обслуживает только

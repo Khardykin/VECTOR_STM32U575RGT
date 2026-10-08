@@ -61,23 +61,13 @@
  * мьютекс не нужен. Микросхемы выключаются CONFIG_BME / CONFIG_LIS3DH /
  * CONFIG_MAX17048 (тело драйверов закрыто этими флагами).
  * Всё состояние - ОДНА структура sensors_status (как audio_status).          */
+/* ДАННЫЕ датчиков здесь НЕ храним: всё в одном месте -
+   Sns_Cfg_struct.Config_common (Temperature/Humidity/Pressure,
+   battery_charge_percent/volt, Accel_x/y/z, Orientation, Screen_rotation,
+   Sensors_ok). В этой структуре - только диагностика шины I2C1 для
+   отладчика: сколько чтений прошло и сколько времени заняло.              */
 typedef struct
 {
-  volatile uint8_t  bme_ok;             /* 1 = BME280 ответил и настроен     */
-  volatile uint8_t  lis3dh_ok;          /* 1 = LIS3DH ответил (WHO_AM_I)     */
-  volatile uint8_t  max17048_ok;        /* 1 = MAX17048 ответил (VERSION)    */
-
-  volatile float    temperature_c;      /* BME280, C                         */
-  volatile float    humidity_pct;       /* BME280, %                         */
-  volatile float    pressure_hpa;       /* BME280, мм рт.ст. (Па/133.3)      */
-  volatile float    accel_x_g;          /* LIS3DH, g (шкала +-4g, HR 12 бит) */
-  volatile float    accel_y_g;
-  volatile float    accel_z_g;
-  volatile uint8_t  orientation;        /* lis3dh_orientation_t              */
-  volatile uint8_t  screen_rotation;    /* 0 или 2 - аргумент TFT_Rotation() */
-  volatile uint16_t battery_percent_x10;/* MAX17048 SOC, % * 10              */
-  volatile uint16_t battery_voltage_mv; /* MAX17048 VCELL, мВ                */
-
   volatile uint32_t cnt_init_ok;        /* сколько модулей поднялось         */
   volatile uint32_t cnt_bme_reads;      /* успешных чтений BME280            */
   volatile uint32_t cnt_accel_reads;    /* обновлений кэша акселерометра     */
@@ -89,8 +79,37 @@ typedef struct
 
 extern volatile sensors_status_t sensors_status;
 
+/* Биты Sns_Cfg_struct.Config_common.Sensors_ok - какие микросхемы ответили
+   при инициализации (выставляет sensors_init()).                          */
+#define SENSORS_OK_BME        (1u)
+#define SENSORS_OK_LIS3DH     (2u)
+#define SENSORS_OK_MAX17048   (4u)
+
 void    sensors_init(void);             /* из Vector_Run_Pre_Init (один раз) */
 void    sensors_read(void);             /* из Vector_Run_Measure (1 с)       */
-uint8_t sensors_rotation_changed(void); /* 1 = экран надо повернуть (сброс)  */
+uint8_t sensors_rotation_changed(void);
+
+/* --- такты прибора --------------------------------------------------------
+ * Timer_Tick_1ms() - из TIM3 (1 кГц, HAL_TIM_PeriodElapsedCallback в main.c):
+ *   декремент countdown_time[], флаги timer.flag_1ms/10ms/100ms/1s, счётчики
+ *   кнопок, таймауты кадров UART (COM/GPS/LoRa).
+ * Timer_Tick_1s()  - из RTC wakeup (1 с, HAL_RTCEx_WakeUpTimerEventCallback в
+ *   stm32u5xx_it.c): декремент countdown_time_rtc[], working_hours,
+ *   flag_start_work, таймер окончания режима обмена.
+ * Обе - КОНТЕКСТ ПРЕРЫВАНИЯ: только декремент и флаги, никакого I2C/лога.
+ * Переменные (timer, countdown_time, countdown_time_rtc) - volatile, объявлены
+ * в shared_types.h; макросы START/TEST/RESET/END_TIMER - в shared_macros.h.  */
+void Timer_Tick_1ms(void);
+void Timer_Tick_1s(void);
+void Clear_Timer_Rtc(void);           /* сбросить все секундные таймеры      */
+
+/* Бортовая инициализация ДО старта RTOS (бывший vector_board_init): такт
+   SRAM4, заморозка TIM6 под отладчиком, SD_MODE (усилитель), sf_probe(),
+   audio_selftest(). Звать из main() (USER CODE 2).                         */
+void Vector_Run_Board_Init(void);
+
+/* Таймаут кадра COM-порта (1 мс): weak-заглушка, реализация появится вместе
+   с command_message(). Зовётся из Timer_Tick_1ms().                        */
+void Uart_Command_Receive_Timer_Inc(void); /* 1 = экран надо повернуть (сброс)  */
 
 #endif /* VECTORLIB_INC_VECTOR_MAIN_H_ */

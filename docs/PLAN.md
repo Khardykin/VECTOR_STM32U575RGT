@@ -160,7 +160,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 * [x] `Uart_Gps_Set_Baudrate()`: AT32 `usart_init()` → `HAL_UART_Init()` + возврат прерываний RXNE/ERR
 * [x] общие хелперы `Delay()` / `DelayInt()` / `GetTick()` / `Search_text()` — `vector_macros.c` (время только тик RTOS, до планировщика busy-wait); они же нужны LoRa-драйверу
 * [x] `Uart_Gps_Receive_Timer_Inc()` вызывается из `HAL_TIM_PeriodElapsedCallback(TIM3)` (1 кГц) в `main.c`
-* [x] `Gps_Run()` в `Vector_main.c` (weak): `Gps_Init()` → `Gps_Init_Nav_Sys()` раз в `VECTOR_GPS_NAV_PERIOD_MS`, `Gps_DeInit()` при снятом статусе, ошибка приёма → `ST_COMMON_BIT_ERR_GPS`
+* [x] `Gps_Run()` в `Vector_main.c` (weak): `Gps_Init()` → `Gps_Init_Nav_Sys()` по секундному таймеру прибора (`TIMER_RTC_GPS_DATA_INIT`), `Gps_DeInit()` при снятом статусе, ошибка приёма → `ST_COMMON_BIT_ERR_GPS`
 * [ ] подтвердить по схеме полярность и длительность сброса `GNSS_RST` (PB5), режим `GNSS_MODE` (PB4) — пока пины не дёргаем
 * [ ] проверить приём NMEA на живом модуле: `tasks_status.mod[TASK_MOD_GPS]`, `Latitude/Longitude`, `Gps_flag_err`
 
@@ -224,12 +224,15 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 | Инклуды | каждый `.c` включает то, что использует сам; `Vector_main.h` остаётся тонким агрегатором конфигурации и модулей приложения, без CubeMX-заголовков периферии |
 | Патчи | правки передаются как `git apply --binary <file>.diff` (не `git am`: он срезает CRLF у `.bat`); коммиты делает автор проекта |
 | Состояние плеера | ОДНА volatile-структура `audio_status` (вместо 14 переменных `audio_dbg_*`): состояние — enum'ы `audio_output_t` (`AUDIO_OUT_SILENT/_SOUND/_ALARM_BEEP`), `audio_boot_t`, `audio_cmd_t`, `audio_err_t`; счётчики — `cnt_*`. Дубли состояния убраны: `ap_playing_idx`, `ap_loop_*`, `ap_img_ok` удалены. То же для кнопок — `demo_status` |
-| Потоки прибора | Два потока по образцу `Avis_main.c`: `Receiver Task` (приоритет 12, стек 2 КБ) — приём и парсинг по каждому UART (`command_message`, `Lora_Receive`, `Ble_Receive`, `Lte_Receive`, `Gps_Receive`, `Uart_Channel_Receive`); `Measure Task` (13 / 4 КБ) — `Vector_Run_Pre_Init()` один раз и `Vector_Run_Measure()` + `Vector_RunFlashMemory()` каждые `VECTOR_TASKS_MEASURE_PERIOD_MS` (внутри `Ble_Run/Lora_Run/Lte_Run/Gps_Run`). Модули закрыты `CONFIG_*` из `config_device.h`, заглушки — `__attribute__((weak))`. Выключатель всего: `VECTOR_TASKS_ENABLE` |
+| Потоки прибора | Два потока по образцу `Avis_main.c`: `Receiver Task` (приоритет 12, стек 2 КБ) — приём и парсинг по каждому UART (`command_message`, `Lora_Receive`, `Ble_Receive`, `Lte_Receive`, `Gps_Receive`, `Uart_Channel_Receive`); `Measure Task` (13 / 4 КБ) — `Vector_Run_Pre_Init()` один раз и `Vector_Run_Measure()` + `Vector_RunFlashMemory()` по флагу `timer.flag_1s` (такт 1 с от TIM3) (внутри `Ble_Run/Lora_Run/Lte_Run/Gps_Run`). Модули закрыты `CONFIG_*` из `config_device.h`, заглушки — `__attribute__((weak))`. Выключатель всего: `VECTOR_TASKS_ENABLE` |
 | Перенос с AT32 | **HAL внутри библиотек не используем** (v18): весь HAL спрятан в макросы `main.h` (USER CODE EM) — `I2C_Master_Transmit/Receive/Mem_*`, `I2C_OK`, `i2c_status_type`, `I2C_IsBusy/I2C_ReConfig`, `SPI_Transmit[_DMA]/SPI_Abort/SPI_OK`, `GPIO_WritePin/PIN_SET/PIN_RESET`, `usart_init → Uart_SetBaudrate`. Поэтому `lis3dh.c`, `bme280_com.c`, `MAX17048.c`, `Gps.c` остались вашими (отличаются только строкой include); HAL виден лишь в `vector_macros.c`, в колбэках (`HAL_SPI_TxCpltCallback` в `LCD_platform.c`) и в сгенерированном кубом коде. `EXINT->polcfg1/2` → `LL_EXTI_*Trig_0_31` |
 | Экран | ST7789P3 **172×320** (`CONFIG_MODEL_LCD 0`), SPI2 8 бит + GPDMA1 Ch8 (Normal), кадр уходит `LCD_writeBulk()` → колбэк DMA → `lv_display_flush_ready`. Байты RGB565 меняются местами (`VECTOR_LCD_SWAP_RGB565`). `HAL_SPI_ErrorCallback` не занимаем (он уже у `spiflash.c`) — залипание порта лечим таймаутом ожидания, всё видно в `lcd_status` |
-| Датчики | I2C1: BME280 (0x76), LIS3DH (0x19), MAX17048 (0x36). Владелец шины — `Measure Task` (`Vector_main.c`), чтение раз в `VECTOR_TASKS_MEASURE_PERIOD_MS`. Значения → `Sns_Cfg_struct.Config_common` и `sensors_status`. Поворот экрана: `ACCEL_INT` (PC11) → только флаг → `lis3dh_update_all()` в потоке → `TFT_Rotation()` |
+| Датчики | I2C1: BME280 (0x76), LIS3DH (0x19), MAX17048 (0x36). Владелец шины — `Measure Task` (`Vector_main.c`), чтение раз в секунду (`timer.flag_1s`). Значения → только `Sns_Cfg_struct.Config_common` (в `sensors_status` — счётчики диагностики). Поворот экрана: `ACCEL_INT` (PC11) → только флаг → `lis3dh_update_all()` в потоке → `TFT_Rotation()` |
 | Данные прибора | Экземпляры `Sns_Cfg_struct`, `Cfg_structdef_read`, `tempsensor_calib`, `device_turn` определены в `Vector_main.c` (как в Avis_main.c). Калибровка температуры выключена (`VECTOR_BME_CALIBRATION 0`): `flash_write_calibration_safe()` в проекте нет |
 | i18n | Переводы в `Core/translations/*.yml` (ru-RU, en-GB), генерация `Core/update_lang.bat` → `Core/ui/lv_i18n/*`; в UI текст через `_("ключ")`. Описание — `docs/LVGL.md` |
+| Таймеры прибора | Схема автора из Avis оставлена — она рабочая и одинаковая на всех приборах, переводить на `tx_timer` смысла нет: TIM3 1 кГц → `Timer_Tick_1ms()` (декремент `countdown_time[]`, флаги `timer.flag_1ms/10ms/100ms/1s`, счётчики кнопок, таймауты кадров UART), RTC wakeup 1 с → `Timer_Tick_1s()` (декремент `countdown_time_rtc[]`, `working_hours`). Всё обслуживание переехало из `main.c`/`stm32u5xx_it.c` в `Vector_main.c` — в CubeMX-файлах осталось по одной строке вызова. Экземпляры `volatile` (пишет ISR, читают потоки). Макросы `START/TEST/RESET/END_TIMER[_RTC]` прежние, из `shared_macros.h` |
+| Борд-инит | `vector_board.[ch]` удалён: тело (`SRAM4`, заморозка `TIM6` под отладчиком, `SD_MODE`, `sf_probe`, `audio_selftest`) переехало в `Vector_Run_Board_Init()` в `Vector_main.c` — вне `#if VECTOR_TASKS_ENABLE`, чтобы работало всегда |
+| Данные датчиков | Одно место: `Sns_Cfg_struct.Config_common` (T/H/P, батарея, `Accel_x/y/z`, `Orientation`, `Screen_rotation`, маска `Sensors_ok`). Дубли из `sensors_status` убраны — там остались только счётчики диагностики шины I2C1. `sizeof(SNS_CFG)` вырос: учесть при разметке CONFIG-страницы и CRC |
 | Заголовки | Один `vector_macros.h` на все макросы/хелперы проекта вместо `vector_status.h` + `vector_compat.h`; API и состояние датчиков (`sensors_status`) живут в `Vector_main.h`, реализация — в `Vector_main.c` (как `Ble_Run`/`Lora_Run` в `Avis_main.c`). Биты статусов — в `shared_macros.h` автора. Новых `vector_*.h` без нужды не заводим |
 | Порядок работ (решение автора, v16) | Сначала **база**: модули прикладываем к проекту (`Gps.c`, потоки, кольца `TYPE_*`, флаги `CONFIG_* = 0`), периферию не трогаем. UART/куб/NVIC (`USART1_IRQn`, `USART_GPS`, `USART_BLE`/`USART_RF` в `main.h`) и значения `CONFIG_*` **пока не настраиваем и не включаем** — вернёмся к этому отдельным этапом |
 
@@ -266,7 +269,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
    (ld предупреждает и размещает её на своё усмотрение, не в SRAM4).
    — **исправлено (v11)**: секция `.sram4 (NOLOAD) >SRAM4` добавлена в оба
    линкер-скрипта; ВАЖНО — такт SRAM4 по умолчанию выключен, его включает
-   `vector_board_init()` (`__HAL_RCC_SRAM4_CLK_ENABLE()`), иначе обращение
+   `Vector_Run_Board_Init()` (`__HAL_RCC_SRAM4_CLK_ENABLE()`), иначе обращение
    к SRAM4 = bus fault. Для сна (этап 5) не забыть биты SRAM4PD/SRAM4PDS.
 8. `GetTick()` в DMA-ветке нигде не определён (сейчас ветка не компилируется,
    `DMA_USART 0`); по правилам проекта время — `VTICK_MS()`.
@@ -309,9 +312,15 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     комментариев.
 
 **Прочее**
-21. RTC Wakeup: `HAL_RTCEx_SetWakeUpTimer(&hrtc, 0, CK_SPRE)` = каждую секунду,
-    прерывание RTC в NVIC не включено (в `startup` только weak →
-    `Default_Handler`) — для сна доделать (этап 5).
+21. **[исправлено в v19]** RTC Wakeup: куб запускал `HAL_RTCEx_SetWakeUpTimer()`
+    БЕЗ прерывания, `RTC_IRQn` в NVIC не был разрешён, `RTC_IRQHandler` в
+    `startup` только weak (`Default_Handler`) → колбэк
+    `HAL_RTCEx_WakeUpTimerEventCallback` не приходил никогда, то есть секундные
+    таймеры прибора (`countdown_time_rtc`, все `TIMER_RTC_*`) не шли. Теперь в
+    `rtc.c` (USER CODE `RTC_Init 2`) таймер перезапущен через
+    `HAL_RTCEx_SetWakeUpTimer_IT`, `RTC_IRQn` разрешён, в `stm32u5xx_it.c`
+    добавлен `RTC_IRQHandler`. В кубе то же самое: `RTC → Wakeup Interrupt` +
+    `NVIC Settings → RTC global interrupt` (тогда USER CODE-блок можно убрать).
 22. `tools/Документ Microsoft Word.odt` и тестовые образы `build/*.bin` — в
     репозитории, но не используются.
 23. «Хрип» при воспроизведении (слышен даже на чистом `tone_1k.wav` при 50%
@@ -374,6 +383,22 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     каталог): нужно `/Debug/*` + `!/Debug/ui_Vector/`, либо держать UI в `Drivers/` и зафиксировать версии в README.
 31. `LVGL Task`: стек 4096 байт для LVGL 9 мал (нужно 8–16 КБ), тело потока — заглушка (спит 1 с), порт дисплея и
     `lv_tick` не настроены. Шаблон — `docs/LVGL.md` раздел 4.
-32. `flash_write_calibration_safe()`, `Avis_Run_Temp()`, `TIMER_RTC_*` и `COUNT_CHAN` в проекте не определены:
-    калибровка температуры выключена (`VECTOR_BME_CALIBRATION 0`), `Vector_Search_Temp_Start()` — weak-заглушка
-    (переименована с `Avis_Search_Temp_Start`), таймеры прибора не перенесены (в `Gps_Run` вместо них тик RTOS).
+32. `flash_write_calibration_safe()` и `Avis_Run_Temp()` в проекте не определены: калибровка температуры
+    выключена (`VECTOR_BME_CALIBRATION 0`), `Vector_Search_Temp_Start()` — weak-заглушка (переименована с
+    `Avis_Search_Temp_Start`). `TIMER_RTC_*` и `COUNT_CHAN` **[исправлено в v19]**: таймеры прибора перенесены
+    (см. п.33), `COUNT_CHAN` определён как 1.
+33. **Ошибки в пуше с таймерами (исправлены в v19)**
+
+    | Что | Почему ломалось | Как исправлено |
+    |---|---|---|
+    | `Countdown_Timer_Chan()` в `main.c` | обращалась к `COUNT_CHAN`, `COUNT_TIMERS_CHAN`, `countdown_time_chan[]`, `END_TIMER_CH` — их автор удалил из `shared_types.h` вместе с каналами | функция удалена: каналов измерения на этом приборе нет |
+    | `button.button_flag` | экземпляр называется `button1` (`stm32u5xx_it.c`) | `button1` в `Timer_Tick_1ms()` |
+    | `Uart_Command_Receive_Timer_Inc()` | реализации нет (модуль `command_message` ещё не перенесён) | `__attribute__((weak))` заглушка в `Vector_main.c` |
+    | `timer`, `countdown_time`, `countdown_time_rtc` без `volatile` | пишет прерывание, читают потоки: на `-O2` флаги кэшируются в регистрах и такты теряются | `volatile` в объявлениях и определениях |
+    | `Timer_variables` объявлен в `stm32u5xx_it.h` | тип жил в заголовке прерываний, экземпляры и обслуживание — в двух разных файлах | тип и `extern` — в `shared_types.h`, экземпляры и `Timer_Tick_*` — в `Vector_main.c` |
+    | `TIMER_RTC_GPS_DATA_INIT`, `TIMER_RTC_LORA_DATA_SET_ALARM`, `TIME_RTC_*` | используются в `Gps_Run`/`Lora_Run`, но нигде не определены | добавлены в `shared_types.h` (длительности стартовые — подобрать под модули) |
+    | `Lora_Run()` вставлен вариантом `Lora_g_*` | драйвер `Lora_g` (`CONFIG_LORA_G`) в этом проекте отсутствует | переписан под имеющийся `Lora_S7678S.c` (`Lora_Init/Lora_DataSet/Lora_DeInit/Lora_IsTxBusy/get_state_*_lora`) по образцу `Lora_Run()` из `Avis_main.c`; джиттер периода через `rand()` |
+    | `COUNT_CHAN` не определён | `Lora_S7678S.h`: `#define COUNT_CHAN_LORA (COUNT_CHAN)` → с `CONFIG_LORA 1` не собиралось | `#define COUNT_CHAN (1)` в `shared_types.h` (газовых каналов нет) |
+    | `VECTOR_GPS_NAV_PERIOD_MS` | автор удалил макрос, а `Gps_Run()` на нём строился | `Gps_Run()` переведён на секундные таймеры прибора |
+    | `VECTOR_TASKS_MEASURE_PERIOD_MS` | период задавал поток, хотя такт 1 с уже даёт TIM3 | макрос удалён, `Measure Task` работает по `timer.flag_1s` |
+    | `working_hours += 1` в колбэке RTC | единица поля — 937.5 мкс (см. `shared_types.h`), а такт — 1 с: мото-часы занижались в ~1067 раз | `+= 1067`; в Avis значение брали из `RTC_ReadTime()` — как перенесёте, читать лучше оттуда |
