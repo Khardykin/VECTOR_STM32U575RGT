@@ -1,5 +1,5 @@
 #include "Avis_main.h"
-#if (CONFIG_TYPE_LCD == 2)
+#if (CONFIG_TYPE_LCD_TFT)
 
 uint16_t TFT_Initialized = 0;
 

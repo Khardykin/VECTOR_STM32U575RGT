@@ -8,9 +8,9 @@
 #ifndef USER_AVIS_LIB_INC_BME280_COM_H_
 #define USER_AVIS_LIB_INC_BME280_COM_H_
 
-#if(DEVICE_NUMBER == Device2_1)
-	#define PERIPH_I2C_BME280		(&hi2c1)
-#endif
+
+#define PERIPH_I2C_BME280		(&hi2c1)
+
 
 #define BME280_TIME_ERR_I2C		(10)
 #define BME280_I2C_ADDR    		UINT8_C(0x76)

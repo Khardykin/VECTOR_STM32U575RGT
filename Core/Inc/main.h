@@ -70,6 +70,7 @@ extern "C" {
 #define BUTTON_1_EXTI_LINE 	LL_EXTI_LINE_1
 #define BUTTON_2_EXTI_LINE 	LL_EXTI_LINE_2
 #define BUTTON_3_EXTI_LINE 	LL_EXTI_LINE_3
+#define ACCEL_INT_EXINT_LINE LL_EXTI_LINE_11
 #define error_status 		ErrorStatus
 #define I2C_OK				HAL_OK
 /* USER CODE END EM */
@@ -128,6 +129,8 @@ void Error_Handler(void);
 #define ALARM_LED_2_GPIO_Port GPIOA
 #define VIBRO_Pin GPIO_PIN_15
 #define VIBRO_GPIO_Port GPIOA
+#define ACCEL_INT_Pin GPIO_PIN_11
+#define ACCEL_INT_GPIO_Port GPIOC
 #define BLE_RESET_Pin GPIO_PIN_12
 #define BLE_RESET_GPIO_Port GPIOC
 #define BUTTON_3_Pin GPIO_PIN_3

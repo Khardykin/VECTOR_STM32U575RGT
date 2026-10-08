@@ -68,9 +68,12 @@ extern DMA_QListTypeDef List_GPDMA1_Channel11;
 extern DMA_HandleTypeDef handle_GPDMA1_Channel11;
 extern DMA_HandleTypeDef handle_GPDMA1_Channel10;
 extern DMA_HandleTypeDef handle_GPDMA1_Channel9;
+extern DMA_HandleTypeDef handle_GPDMA1_Channel8;
 extern SPI_HandleTypeDef hspi1;
+extern SPI_HandleTypeDef hspi2;
 extern TIM_HandleTypeDef htim3;
 extern UART_HandleTypeDef huart4;
+extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
 extern UART_HandleTypeDef huart3;
 extern TIM_HandleTypeDef htim6;
@@ -122,6 +125,15 @@ void HAL_GPIO_EXTI_Rising_Callback(uint16_t GPIO_Pin)
 			LL_EXTI_EnableFallingTrig_0_31(BUTTON_3_EXTI_LINE);
 		}
 	}
+#if (CONFIG_LIS3DH)
+	else if(GPIO_Pin == ACCEL_INT_Pin){
+		if((READ_PIN_IN(ACCEL_INT))){
+			lis3dh_irq_handler();
+			EXINT->polcfg1 &= ~ACCEL_INT_EXINT_LINE;//DisableRising
+			EXINT->polcfg2 |= ACCEL_INT_EXINT_LINE;//EnableFalling
+		}
+	}
+#endif
 }
 
 void HAL_GPIO_EXTI_Falling_Callback(uint16_t GPIO_Pin)
@@ -161,6 +173,14 @@ void HAL_GPIO_EXTI_Falling_Callback(uint16_t GPIO_Pin)
 			LL_EXTI_DisableFallingTrig_0_31(BUTTON_3_EXTI_LINE);
 		}
 	}
+#if (CONFIG_LIS3DH)
+	else if(GPIO_Pin == ACCEL_INT_Pin){
+		if((!READ_PIN_IN(ACCEL_INT))){
+			EXINT->polcfg1 |= ACCEL_INT_EXINT_LINE;//EnableRising
+			EXINT->polcfg2 &= ~ACCEL_INT_EXINT_LINE;//DisableFalling
+		}
+	}
+#endif
 #if VECTOR_AUDIO_DEMO_KEYS
 	audio_demo_key_handler(GPIO_Pin);
 #endif
@@ -380,6 +400,34 @@ void SPI1_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles SPI2 global interrupt.
+  */
+void SPI2_IRQHandler(void)
+{
+  /* USER CODE BEGIN SPI2_IRQn 0 */
+
+  /* USER CODE END SPI2_IRQn 0 */
+  HAL_SPI_IRQHandler(&hspi2);
+  /* USER CODE BEGIN SPI2_IRQn 1 */
+
+  /* USER CODE END SPI2_IRQn 1 */
+}
+
+/**
+  * @brief This function handles USART1 global interrupt.
+  */
+void USART1_IRQHandler(void)
+{
+  /* USER CODE BEGIN USART1_IRQn 0 */
+
+  /* USER CODE END USART1_IRQn 0 */
+  HAL_UART_IRQHandler(&huart1);
+  /* USER CODE BEGIN USART1_IRQn 1 */
+
+  /* USER CODE END USART1_IRQn 1 */
+}
+
+/**
   * @brief This function handles USART2 global interrupt.
   */
 void USART2_IRQHandler(void)
@@ -453,6 +501,20 @@ void UART4_IRQHandler(void)
   /* USER CODE BEGIN UART4_IRQn 1 */
 	}
   /* USER CODE END UART4_IRQn 1 */
+}
+
+/**
+  * @brief This function handles GPDMA1 Channel 8 global interrupt.
+  */
+void GPDMA1_Channel8_IRQHandler(void)
+{
+  /* USER CODE BEGIN GPDMA1_Channel8_IRQn 0 */
+
+  /* USER CODE END GPDMA1_Channel8_IRQn 0 */
+  HAL_DMA_IRQHandler(&handle_GPDMA1_Channel8);
+  /* USER CODE BEGIN GPDMA1_Channel8_IRQn 1 */
+
+  /* USER CODE END GPDMA1_Channel8_IRQn 1 */
 }
 
 /**

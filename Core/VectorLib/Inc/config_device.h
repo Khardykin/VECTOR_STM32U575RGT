@@ -35,12 +35,17 @@
 #define CONFIG_BLE						0				// Конфигурация включающая BLE
 #define CONFIG_LORA						0				// Конфигурация включающая LORA
 #define CONFIG_G4						0				// Конфигурация включающая G4
-#define CONFIG_G2						0				// Конфигурация включающая G2
-#define CONFIG_GPS						0				// Конфигурация включающая GPS
+#define CONFIG_GPS						1				// Конфигурация включающая GPS
 #define CONFIG_SLEEP                    1               // Включение конфигурации со сном
 #define CONFIG_SAVE_PARAM_LOG           1               // Включение конфигурации с использованием микросхемы памяти
 #define CONFIG_DISPLAY                  1               // Включение конфигурации с использованием управления дисплеем
-#define CONFIG_INDICATION               0               // Выбор между индикациями
+#define CONFIG_TYPE_LCD_TFT				1
+#define CONFIG_MODEL_LCD
+
+#define CONFIG_LIS3DH					1
+#define CONFIG_BME						1
+#define CONFIG_MAX17048					1
+
 #define CONFIG_HW						0				// 0 -
 #if (CONFIG_HW == 0)
 

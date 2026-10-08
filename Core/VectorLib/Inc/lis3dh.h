@@ -4,7 +4,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
+#if (CONFIG_LIS3DH)
 #include "lis3dh_reg.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -52,5 +52,5 @@ bool    lis3dh_is_accel_cached(void);                              // Флаг: 
 #ifdef __cplusplus
 }
 #endif
-
+#endif
 #endif // LIS3DH_H
