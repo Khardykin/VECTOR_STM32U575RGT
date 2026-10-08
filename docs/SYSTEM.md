@@ -26,7 +26,8 @@ Audio/Inc, Audio/Src
   extstore.[ch]            мьютекс шины + конфиг (1 страница) + кольцевой журнал + ретраи чтения
   audio_player.[ch]        ПЛЕЕР: поток, очередь команд, повтор звука, громкость, стриминг в SAI-DMA
   audio_beep.[ch]          аварийный писк (const PCM 44.1 кГц во внутренней flash)
-Src/Vector_main.c          ПОТОКИ ПРИБОРА: receiver_task (приём/парсинг UART) + measure_task
+Src/Vector_main.c          ПОТОКИ ПРИБОРА: receiver_task (приём/парсинг UART), measure_task,
+                           Vector_Run_Measure/Pre_Init, датчики I2C1 (sensors_init/read), SNS_CFG
 Src/Gps.c                  GPS/GNSS: NMEA (GLL/GGA/RMC), автоопределение чипа, координаты для LoRa
 Src/lis3dh.c               акселерометр LIS3DH: 6D-ориентация, кэш ускорений, ACCEL_INT
 Src/bme280_com.c           BME280: T/H/P (обёртка над Src/BME280/bme280.c от Bosch)
@@ -35,11 +36,9 @@ Src/BME280/, Src/Lis3dh_reg/  вендорские драйверы (тела з
 Src/TFT/LCD_platform.[ch]  ДРАЙВЕР ПАНЕЛИ: SPI2 + GPDMA1 Ch8 (HAL, v17), LCD_writeBulk/flush
 Src/TFT/TFT.[ch]           инициализация ST7789P3 172x320, окно, поворот, TFT_FlushBuffer
 Src/TFT/TFT_indicator.[ch] индикация прибора из Avis - ВЫКЛЮЧЕНА (CONFIG_TYPE_LCD == 2), ждёт переноса
-Common/Src/vector_sensors.c  чтение датчиков: sensors_init/sensors_read, sensors_status
-Common/Src/vector_compat.c   Delay/DelayInt/GetTick/Search_text для перенесённого кода
-Inc/vector_sensors.h       API датчиков + структура sensors_status
-Inc/vector_status.h        SET/CLEAR/TEST_STATUS_COMMON_BIT (биты Sns_Cfg_struct)
-Inc/vector_compat.h        объявления слоя совместимости + TIME_DEL_1/TIME_OUT_LORA
+Common/Src/vector_macros.c Delay/DelayInt/GetTick/Search_text + Uart_SetBaudrate
+Inc/vector_macros.h        макросы и хелперы проекта: TIME_DEL_1, TIME_OUT_LORA,
+                           VECTOR_DEVICE_IS_ON (статусы - в shared_macros.h)
 Inc/shared_macros.h        агрегатор макросов для перенесённого кода (main.h + статусы + время)
 Common/Src/vector_log.c    консольный лог: ITM/SWO и/или UART (выключается макросом)
 Common/Src/vector_board.c  всё, что делается в main() до RTOS (усилитель, проба, selftest)
@@ -176,8 +175,8 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | USART1/UART4 (лог) | `vector_log.c` (`VECTOR_LOG_ENABLE`) | только инициализация/поток, из ISR вызов отбрасывается; UART4 занят только логом |
 | Кольца приёма `InputBuffer[TYPE_*]` | поток `Receiver Task` | SPSC: производитель — ISR UART (`add_to_buffer`), потребитель — **только** `receiver_task_function()` (напрямую или через `Lora_Receive()`) |
 | Состояние плеера `audio_status` | `audio_player.c` | volatile-структура целиком; пишут поток и ISR SAI-DMA, порядок записи `sound_index`→`output` фиксирован |
-| I2C1 (PB8/PB9): BME280 0x76, LIS3DH 0x19, MAX17048 0x36 | поток `Measure Task` (`vector_sensors.c`) | один владелец: чтение только из `sensors_read()`, блокирующий `HAL_I2C_Master_*` |
-| SPI2 + GPDMA1 Ch8 + `LCD_CS/DC/RST/LED` | `LCD_platform.c` | флаг `LCD_SPI_PORT_State` + ожидание с таймаутом `VECTOR_LCD_SPI_TIMEOUT_MS`; конец кадра — из прерывания DMA |
+| I2C1 (PB8/PB9): BME280 0x76, LIS3DH 0x19, MAX17048 0x36 | поток `Measure Task` (`Vector_main.c`) | один владелец: чтение только из `sensors_read()`, блокирующий обмен через макросы `I2C_Master_Transmit/Receive` (main.h) |
+| `LCD_platform.c` | ошибки SPI2/DMA экрана, принудительное освобождение порта, предупреждения о конфигурации куба |
 | Экран как ресурс LVGL | `LVGL Task` (порт дисплея) и `Measure Task` (поворот) | поворот безопасен благодаря флагу порта; приоритеты 15 и 13 |
 
 Внешняя flash поделена без пересечений (`sfmap.h`): `SOUNDS 0..4 МБ` (пишет
@@ -257,7 +256,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | `extstore.c` | ретраи чтения (`ext_read: recovered after N retry`), конфиг/журнал (DEBUG) |
 | `audio_player.c` | старт, состояние образа, команды, запуск и ошибки звука, «звук доигран», watchdog |
 | `Vector_main.c` | старт потоков прибора (`tasks init`, `receiver task`, `measure task`, `pre init`) |
-| `vector_sensors.c` | инициализация датчиков (кто ответил на I2C1), смена ориентации/поворота |
+| `Vector_main.c` (датчики) | инициализация I2C1-модулей (кто ответил), смена ориентации/поворота экрана |
 | `LCD_platform.c` | ошибки SPI2/DMA экрана, принудительное освобождение порта, предупреждения о конфигурации куба |
 
 Правила модуля (важно при доработке):

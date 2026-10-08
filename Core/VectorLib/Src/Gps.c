@@ -4,14 +4,12 @@
  *  Created on: 2024 Sep 2
  *      Author: Dmitriy
  */
-#include "Vector_main.h"   /* агрегатор проекта: config_device.h (CONFIG_GPS),
-                              buffer.h (TYPE_GPS, transmit_buffer), позже
-                              shared_types.h (SNS_CFG) - см. PLAN.md п.25-26  */
+#include "Vector_main.h"
 #include "Gps.h"
 #if CONFIG_GPS
 
-#include <string.h>   /* strstr/memset/strlen: в Avis их тянул Avis_main.h */
-#include <stdio.h>    /* sprintf (ветка TEST_GPS)                          */
+#include <string.h>   /* strstr/memset/strlen */
+#include <stdio.h>    /* sprintf (ветка TEST_GPS) */
 
 static uint16_t Gps_Crc(uint8_t *data, uint16_t count);
 static double_t NmeaToDecimalDegrees(double_t nmea_coord);
@@ -142,13 +140,7 @@ void Gps_DeInit(uint8_t init)
 //===========================================================================================================================
 void Uart_Gps_Set_Baudrate(uint32_t baud)
 {
-	/* AT32 usart_init() -> HAL: меняем скорость и переустанавливаем порт,
-	   затем возвращаем прерывания приёма, которые включает CubeMX в
-	   MX_USART1_UART_Init (USER CODE USART1_Init 2). */
-	USART_GPS.Init.BaudRate = baud;
-	(void)HAL_UART_Init(&USART_GPS);
-	__HAL_UART_ENABLE_IT(&USART_GPS, UART_IT_ERR);
-	__HAL_UART_ENABLE_IT(&USART_GPS, UART_IT_RXNE);
+	usart_init(USART_GPS, baud, USART_DATA_8BITS, USART_STOP_1_BIT);
 }
 
 //===========================================================================================================================

@@ -61,6 +61,42 @@ extern "C" {
 #define I2C_Mem_Read(x1,x2,x3,x4,x5,x6,x7)		HAL_I2C_Mem_Read(x1,x2,x3,x4,x5,x6,x7)
 #define I2C_Master_Transmit(x1,x2,x3,x4,x5)		HAL_I2C_Master_Transmit(x1,x2,x3,x4,x5)
 #define I2C_Master_Receive(x1,x2,x3,x4,x5)		HAL_I2C_Master_Receive(x1,x2,x3,x4,x5)
+#define i2c_status_type						HAL_StatusTypeDef
+#define I2C_IsBusy(x1)						(HAL_I2C_GetState(x1) != HAL_I2C_STATE_READY)
+#define I2C_ReConfig(x1)					do { (void)HAL_I2C_DeInit(x1); (void)HAL_I2C_Init(x1); } while (0)
+
+/* --- SPI: экран (SPI2+DMA) и внешняя flash (SPI1) --- */
+#define SPI_OK							HAL_OK
+#define SPI_Transmit(x1,x2,x3,x4)			HAL_SPI_Transmit(x1,x2,x3,x4)
+#define SPI_Transmit_DMA(x1,x2,x3)			HAL_SPI_Transmit_DMA(x1,x2,x3)
+#define SPI_Abort(x1)						HAL_SPI_Abort(x1)
+#define SPI_GetErrorCode(x1)				((x1)->ErrorCode)
+#define SPI_GetDataSize(x1)					((x1)->Init.DataSize)
+#define SPI_GetDMA(x1)						((x1)->hdmatx)
+#define SPI_INSTANCE(x1)					((x1)->Instance)
+#define SPI_DATA_SIZE_8BIT				SPI_DATASIZE_8BIT
+#define MAX_DELAY						HAL_MAX_DELAY
+
+/* --- GPIO: пины экрана/модулей --- */
+#define GPIO_WritePin(x1,x2,x3)				HAL_GPIO_WritePin(x1,x2,x3)
+#define GPIO_ReadPin(x1,x2)					HAL_GPIO_ReadPin(x1,x2)
+#define PIN_SET							GPIO_PIN_SET
+#define PIN_RESET						GPIO_PIN_RESET
+
+/* --- UART: перенос скорости на ходу (Gps.c зовёт usart_init из AT32) ---
+   Разрядность и стоп-биты не меняем: их задаёт CubeMX (8N1), поэтому
+   аргументы databits/stopbits макросом игнорируются. Реализация
+   Uart_SetBaudrate() - в vector_macros.c.                                  */
+#define UART_OK							HAL_OK
+#define Uart_Init(x1)						HAL_UART_Init(x1)
+#define Uart_Enable_IT(x1,x2)				__HAL_UART_ENABLE_IT(x1,x2)
+#define UART_IT_RX_ERR					UART_IT_ERR
+#define UART_IT_RX_BYTE					UART_IT_RXNE
+#define USART_DATA_8BITS				(8u)
+#define USART_STOP_1_BIT				(1u)
+#define usart_init(port,baud,databits,stopbits)	Uart_SetBaudrate(&(port),(baud))
+
+void Uart_SetBaudrate(UART_HandleTypeDef *huart, uint32_t baud);
 
 #define READ_PIN_IN(x)  	(LL_GPIO_IsInputPinSet(x##_GPIO_Port, x##_Pin))
 #define READ_PIN_OUT(x)  	(LL_GPIO_IsOutputPinSet(x##_GPIO_Port, x##_Pin))

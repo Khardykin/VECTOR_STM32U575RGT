@@ -15,9 +15,9 @@
 
 //--------------------------------------------------------------------------------------------------------------
 //===========================================================================================================================
-#define SETBIT(var,bit)		        (var |= (1 << bit))
-#define CLRBIT(var,bit)		        (var &= ~(1 << bit))
-#define TESTBIT(var,bit)	        (var & (1 << bit))
+#define SETBIT(var,bit)		        (var |= (1UL << (bit)))
+#define CLRBIT(var,bit)		        (var &= ~(1UL << (bit)))
+#define TESTBIT(var,bit)	        (var & (1UL << (bit)))
 //--------------------------------------------------------------------------------------------------------------
 #define SET_STATUS_COMMON_BIT(BIT)	{SETBIT(Sns_Cfg_struct.Config_common.State,BIT);}
 #define CLEAR_STATUS_COMMON_BIT(BIT)	{CLRBIT(Sns_Cfg_struct.Config_common.State,BIT);}

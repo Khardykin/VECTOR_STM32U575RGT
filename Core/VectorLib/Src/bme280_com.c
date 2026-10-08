@@ -24,9 +24,9 @@ BME280_INTF_RET_TYPE bme280_i2c_read(uint8_t reg_addr, uint8_t *data, uint32_t l
 {
 	dev_addr = *(uint8_t*)intf_ptr;
 
-	if(HAL_I2C_Master_Transmit(PERIPH_I2C_BME280, (uint16_t)(dev_addr << 1), &reg_addr, 1, BME280_TIME_ERR_I2C) != HAL_OK)
+	if(I2C_Master_Transmit(PERIPH_I2C_BME280, (dev_addr << 1), &reg_addr, 1, BME280_TIME_ERR_I2C) != I2C_OK)
 		return BME280_E_NULL_PTR;
-	if(HAL_I2C_Master_Receive(PERIPH_I2C_BME280, (uint16_t)(dev_addr << 1), data, (uint16_t)len, BME280_TIME_ERR_I2C) != HAL_OK)
+	if(I2C_Master_Receive(PERIPH_I2C_BME280, (dev_addr << 1), data, len, BME280_TIME_ERR_I2C) != I2C_OK)
 		return BME280_E_NULL_PTR;
 
 	return BME280_OK;
@@ -40,17 +40,17 @@ void bme280_delay_us(uint32_t period, void *intf_ptr)
 BME280_INTF_RET_TYPE bme280_i2c_write(uint8_t reg_addr, const uint8_t *data, uint32_t len, void *intf_ptr)
 {
 	/* Статический буфер вместо malloc(): в оригинале память не освобождалась
-	   (утечка на каждой записи), а длина команды BME280 не больше 8 байт.    */
+	   (утечка на каждой записи), а команда BME280 короче 8 байт.            */
 	uint8_t buf[8];
 
 	if((len + 1u) > sizeof(buf))
 		return BME280_E_INVALID_LEN;
 
 	buf[0] = reg_addr;
-	memcpy(buf + 1, data, len);
+	memcpy(buf +1, data, len);
 	dev_addr = *(uint8_t*)intf_ptr;
 
-	if(HAL_I2C_Master_Transmit(PERIPH_I2C_BME280, (uint16_t)(dev_addr << 1), buf, (uint16_t)(len + 1u), BME280_TIME_ERR_I2C) != HAL_OK)
+	if(I2C_Master_Transmit(PERIPH_I2C_BME280, (dev_addr << 1), (uint8_t*)buf, len + 1, BME280_TIME_ERR_I2C) != I2C_OK)
 		return BME280_E_NULL_PTR;
 
 	return BME280_OK;
@@ -109,22 +109,16 @@ static void bme280_interface_selection(struct bme280_dev *dev)
 	/* Configure delay in microseconds */
 	dev->delay_us = bme280_delay_us;
 
-	/* Шина залипла (SDA удерживается ведомым) - переразводим I2C, как это делал
-	   i2c_wait_flag/i2c_config в AT32. В HAL: состояние != READY -> DeInit+Init. */
-	if(HAL_I2C_GetState(PERIPH_I2C_BME280) != HAL_I2C_STATE_READY)
+	if(I2C_IsBusy(PERIPH_I2C_BME280))
 	{
-		(void)HAL_I2C_DeInit(PERIPH_I2C_BME280);
-		(void)HAL_I2C_Init(PERIPH_I2C_BME280);
+		I2C_ReConfig(PERIPH_I2C_BME280);
 	}
 
 	Delay(100);
 }
 
 
-/* Возврат: 0 = данные обновлены и положены в pSnsCfg, 1 = измерение ещё не
-   готово (MEAS_DONE = 0), -1 = ошибка шины/регистра. Раньше функция была void,
-   и вызывающий не мог отличить "данных нет" от "данные прочитаны".          */
-int8_t bme280_measure(SNS_CFG *pSnsCfg)
+int8_t bme280_measure(SNS_CFG *pSnsCfg)	/* 0 = данные обновлены, 1 = не готово, <0 = ошибка */
 {
 	uint8_t status_reg = 0;
 

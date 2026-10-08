@@ -32,7 +32,7 @@
 #define LCD_PLATFORM_H_
 
 #include <stdint.h>
-#include "main.h"          /* LCD_*_Pin/_GPIO_Port, HAL_GPIO_WritePin */
+#include "main.h"          /* LCD_*_Pin/_GPIO_Port, GPIO_WritePin, SPI_* */
 #include "spi.h"           /* hspi2 */
 #include "vector_config.h"
 
@@ -48,7 +48,7 @@
 #define LCD_SPI_INSTANCE    (SPI2)
 #define DMA_CHANNEL         (LCD_SPI_PORT->hdmatx)
 
-/* --- пины экрана: HAL_GPIO_WritePin вместо AT32 gpio_bits_set/reset -------- */
+/* --- пины экрана: макрос GPIO_WritePin из main.h (вместо AT32 gpio_bits_*) --- */
 #define LCD_RST_PORT LCD_RST_GPIO_Port
 #define LCD_RST_PIN  LCD_RST_Pin
 #define LCD_DC_PORT  LCD_DC_GPIO_Port
@@ -61,22 +61,22 @@
 #define LCD_CS_PIN   LCD_CS_Pin
 #endif
 
-#define LCD_RST_Clr()   HAL_GPIO_WritePin(LCD_RST_PORT, LCD_RST_PIN, GPIO_PIN_RESET)
-#define LCD_RST_Set()   HAL_GPIO_WritePin(LCD_RST_PORT, LCD_RST_PIN, GPIO_PIN_SET)
-#define LCD_DC_Clr()    HAL_GPIO_WritePin(LCD_DC_PORT,  LCD_DC_PIN,  GPIO_PIN_RESET)
-#define LCD_DC_Set()    HAL_GPIO_WritePin(LCD_DC_PORT,  LCD_DC_PIN,  GPIO_PIN_SET)
+#define LCD_RST_Clr()   GPIO_WritePin(LCD_RST_PORT, LCD_RST_PIN, PIN_RESET)
+#define LCD_RST_Set()   GPIO_WritePin(LCD_RST_PORT, LCD_RST_PIN, PIN_SET)
+#define LCD_DC_Clr()    GPIO_WritePin(LCD_DC_PORT,  LCD_DC_PIN,  PIN_RESET)
+#define LCD_DC_Set()    GPIO_WritePin(LCD_DC_PORT,  LCD_DC_PIN,  PIN_SET)
 
 #ifndef CFG_NO_CS
-#define LCD_Select()    HAL_GPIO_WritePin(LCD_CS_PORT,  LCD_CS_PIN,  GPIO_PIN_RESET)
-#define LCD_UnSelect()  HAL_GPIO_WritePin(LCD_CS_PORT,  LCD_CS_PIN,  GPIO_PIN_SET)
+#define LCD_Select()    GPIO_WritePin(LCD_CS_PORT,  LCD_CS_PIN,  PIN_RESET)
+#define LCD_UnSelect()  GPIO_WritePin(LCD_CS_PORT,  LCD_CS_PIN,  PIN_SET)
 #else
 #define LCD_Select()    ((void)0)
 #define LCD_UnSelect()  ((void)0)
 #endif
 
 /* Подсветка: CONFIG_MODEL_LCD 0 -> вкл/выкл пином LCD_LED (PC6). */
-#define LCD_LED_Clr()   HAL_GPIO_WritePin(LCD_LED_PORT, LCD_LED_PIN, GPIO_PIN_RESET)
-#define LCD_LED_Set()   HAL_GPIO_WritePin(LCD_LED_PORT, LCD_LED_PIN, GPIO_PIN_SET)
+#define LCD_LED_Clr()   GPIO_WritePin(LCD_LED_PORT, LCD_LED_PIN, PIN_RESET)
+#define LCD_LED_Set()   GPIO_WritePin(LCD_LED_PORT, LCD_LED_PIN, PIN_SET)
 
 /* Пина POWER_ON на этой плате нет (в main.h не определён): макросы оставлены
    пустыми, чтобы TFT_Init() из Avis переносился без правок.                  */

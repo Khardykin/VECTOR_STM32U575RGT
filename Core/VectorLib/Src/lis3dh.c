@@ -1,9 +1,7 @@
 #include "Vector_main.h"
-#include "lis3dh.h"
-
 #if (CONFIG_LIS3DH)
-
-#include <math.h>      /* sinf: расчёт порога 6D-ориентации */
+#include "lis3dh.h"
+#include <math.h>      /* sinf: порог 6D-ориентации */
 
 // Внутренний контекст драйвера
 static stmdev_ctx_t dev_ctx;
@@ -36,14 +34,14 @@ static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *buf, uin
     tx_buf[0] = (len > 1) ? (reg | 0x80) : reg;
     for (uint16_t i = 0; i < len; i++) tx_buf[i + 1] = buf[i];
 
-    HAL_StatusTypeDef status = HAL_I2C_Master_Transmit(
+    i2c_status_type status = I2C_Master_Transmit(
         LIS3DH_I2C_HANDLE,
         LIS3DH_I2C_ADDR,  // ← Уже 8-бит адрес, сдвиг не нужен
         tx_buf,
         len + 1,
         LIS3DH_TIMEOUT_MS
     );
-    return (status == HAL_OK) ? 0 : -1;
+    return (status == I2C_OK) ? 0 : -1;
 }
 
 // Callback чтения
@@ -52,23 +50,23 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *buf, uint16_t l
     (void)handle;
     uint8_t addr = (len > 1) ? (reg | 0x80) : reg;
 
-    HAL_StatusTypeDef status = HAL_I2C_Master_Transmit(
+    i2c_status_type status = I2C_Master_Transmit(
         LIS3DH_I2C_HANDLE,
         LIS3DH_I2C_ADDR,  // ← Уже 8-бит адрес
         &addr,
         1,
         LIS3DH_TIMEOUT_MS
     );
-    if (status != HAL_OK) return -1;
+    if (status != I2C_OK) return -1;
 
-    status = HAL_I2C_Master_Receive(
+    status = I2C_Master_Receive(
         LIS3DH_I2C_HANDLE,
         LIS3DH_I2C_ADDR,
         buf,
         len,
         LIS3DH_TIMEOUT_MS
     );
-    return (status == HAL_OK) ? 0 : -1;
+    return (status == I2C_OK) ? 0 : -1;
 }
 
 // Инициализация

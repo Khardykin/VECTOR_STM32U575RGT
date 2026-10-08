@@ -11,10 +11,11 @@
  *    spi_enable()/spi_frame_bit_num_set()    -> не нужны: SPI2 всегда 8 бит,
  *        16-битные пиксели уходят двумя байтами (старший первым, см.
  *        LCD_swap_rgb565 / VECTOR_LCD_SWAP_RGB565);
- *    SPI_Transmit(port, buf, n, tmo)         -> HAL_SPI_Transmit(port, buf, n, tmo);
- *    dma_channel_config()/dma_channel_enable()-> HAL_SPI_Transmit_DMA() (канал
+ *    SPI_Transmit()/SPI_Transmit_DMA()/SPI_Abort() - макросы main.h (HAL там);
+ *    dma_channel_config()/dma_channel_enable()-> SPI_Transmit_DMA() (канал
+ *        GPDMA1_Channel8 привязан к SPI2 в кубе, Normal mode);
  *        GPDMA1_Channel8 привязан к SPI2 в HAL_SPI_MspInit, Normal mode);
- *    gpio_bits_set()/gpio_bits_reset()       -> HAL_GPIO_WritePin();
+ *    gpio_bits_set()/gpio_bits_reset()       -> GPIO_WritePin (макрос main.h);
  *    tmr_channel_value_set(TMR8, CH3)        -> ШИМ подсветки в этом проекте не
  *        настроен (PC6 = GPIO_Output), ветка CONFIG_MODEL_LCD 1 помечена TODO;
  *    завершение DMA: HAL_SPI_TxCpltCallback(SPI2) -> LCD_transferCpltCallback().
@@ -74,8 +75,8 @@ uint16_t GET_LCD_SPI_PORT_State(void)
 static void lcd_force_idle(const char *reason)
 {
     lcd_status.cnt_wait_timeout++;
-    lcd_status.last_hal_error = (uint32_t)LCD_SPI_PORT->ErrorCode;
-    (void)HAL_SPI_Abort(LCD_SPI_PORT);
+    lcd_status.last_hal_error = (uint32_t)SPI_GetErrorCode(LCD_SPI_PORT);
+    (void)SPI_Abort(LCD_SPI_PORT);
     LCD_UnSelect();
     LCD_SPI_PORT_State = 0;
     lcd_status.busy      = 0u;
@@ -135,11 +136,11 @@ static void lcd_end(void)
    "белого экрана" видна в логе сразу, а не по косвенным признакам.           */
 void LCD_initPlatform(void)
 {
-    if (LCD_SPI_PORT->Init.DataSize != SPI_DATASIZE_8BIT)
+    if (SPI_GetDataSize(LCD_SPI_PORT) != SPI_DATA_SIZE_8BIT)
     {
         LOG_W(VLOG_M_SYS, "LCD: SPI2 DataSize != 8bit (CubeMX -> SPI2)");
     }
-    if (LCD_SPI_PORT->hdmatx == (DMA_HandleTypeDef *)0)
+    if (SPI_GetDMA(LCD_SPI_PORT) == (void *)0)
     {
         LOG_W(VLOG_M_SYS, "LCD: SPI2 TX DMA not linked -> writeBulk will fail");
     }
@@ -157,9 +158,9 @@ void LCD_writeCommand8Bit(uint8_t cmd)
 
     LCD_Select();
     LCD_DC_Clr();
-    if (HAL_SPI_Transmit(LCD_SPI_PORT, &cmd, 1, LCD_SPI_TIMEOUT_MS) != HAL_OK)
+    if (SPI_Transmit(LCD_SPI_PORT, &cmd, 1, LCD_SPI_TIMEOUT_MS) != SPI_OK)
     {
-        lcd_status.last_hal_error = (uint32_t)LCD_SPI_PORT->ErrorCode;
+        lcd_status.last_hal_error = (uint32_t)SPI_GetErrorCode(LCD_SPI_PORT);
         LOG_E(VLOG_M_SYS, "LCD: cmd 0x%x fail, hal_err=%x", (uint32_t)cmd,
               lcd_status.last_hal_error);
     }
@@ -186,9 +187,9 @@ void LCD_writeData8Bit(uint8_t *data, uint32_t size)
     {
         uint16_t chunk_size = (size > 65535u) ? 65535u : (uint16_t)size;
 
-        if (HAL_SPI_Transmit(LCD_SPI_PORT, data, chunk_size, LCD_SPI_TIMEOUT_MS) != HAL_OK)
+        if (SPI_Transmit(LCD_SPI_PORT, data, chunk_size, LCD_SPI_TIMEOUT_MS) != SPI_OK)
         {
-            lcd_status.last_hal_error = (uint32_t)LCD_SPI_PORT->ErrorCode;
+            lcd_status.last_hal_error = (uint32_t)SPI_GetErrorCode(LCD_SPI_PORT);
             break;
         }
 
@@ -223,9 +224,9 @@ void LCD_writeData16Bit(uint8_t *data, uint32_t size)
     {
         uint16_t chunk_size = (bytes > 65535u) ? 65535u : (uint16_t)bytes;
 
-        if (HAL_SPI_Transmit(LCD_SPI_PORT, data, chunk_size, LCD_SPI_TIMEOUT_MS) != HAL_OK)
+        if (SPI_Transmit(LCD_SPI_PORT, data, chunk_size, LCD_SPI_TIMEOUT_MS) != SPI_OK)
         {
-            lcd_status.last_hal_error = (uint32_t)LCD_SPI_PORT->ErrorCode;
+            lcd_status.last_hal_error = (uint32_t)SPI_GetErrorCode(LCD_SPI_PORT);
             break;
         }
 
@@ -274,14 +275,14 @@ void LCD_writeBulk(const uint8_t *data, uint32_t size)
 
     lcd_status.dma_active = 1u;       /* колбэк TxCplt поймёт, что это DMA-кадр */
 
-    if (HAL_SPI_Transmit_DMA(LCD_SPI_PORT, (uint8_t *)data, (uint16_t)bytes) != HAL_OK)
+    if (SPI_Transmit_DMA(LCD_SPI_PORT, (uint8_t *)data, (uint16_t)bytes) != SPI_OK)
     {
         /* DMA не стартовала (канал занят/не привязан): снимаем состояние сами,
            иначе экран завис бы с зажатым CS. Кадр потерян - LVGL перерисует по
            следующей инвалидации.                                             */
         lcd_status.dma_active = 0u;
         lcd_status.cnt_dma_fail++;
-        lcd_status.last_hal_error = (uint32_t)LCD_SPI_PORT->ErrorCode;
+        lcd_status.last_hal_error = (uint32_t)SPI_GetErrorCode(LCD_SPI_PORT);
         LCD_UnSelect();
         lcd_end();
         LOG_E(VLOG_M_SYS, "LCD: SPI2 DMA start fail (bytes=%u hal_err=%x)",
@@ -323,9 +324,11 @@ void LCD_transferCpltCallback(void)
         флаг уже сняты самим вызовом. Поэтому реагируем только если шла
         асинхронная выдача кадра (lcd_status.dma_active) - иначе LVGL получил бы
         лишний lv_display_flush_ready() и ушёл бы рисовать в занятый буфер.    */
+/* Единственное место файла, где HAL виден напрямую: это ЕГО точка входа
+   (переопределяем weak-колбэк). Остальное - через макросы main.h.          */
 void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
 {
-    if ((hspi->Instance == LCD_SPI_INSTANCE) && (lcd_status.dma_active != 0u))
+    if ((SPI_INSTANCE(hspi) == LCD_SPI_INSTANCE) && (lcd_status.dma_active != 0u))
     {
         lcd_status.dma_active = 0u;
         LCD_transferCpltCallback();

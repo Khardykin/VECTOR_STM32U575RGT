@@ -342,7 +342,8 @@
 #endif
 
 /* --- РАБОЧЕЕ: датчики на I2C1 (BME280, LIS3DH, MAX17048) -------------------
- * Чтение - vector_sensors.c, состояние в ОДНОЙ структуре sensors_status.
+ * Чтение - sensors_read() в Vector_main.c, состояние в ОДНОЙ структуре
+ * sensors_status.
  * Включение каждой микросхемы - CONFIG_BME / CONFIG_LIS3DH / CONFIG_MAX17048 в
  * config_device.h: при 0 драйвер не компилируется вовсе (тело файла под #if).
  *
@@ -362,10 +363,6 @@
 
 #ifndef VECTOR_BME_CALIBRATION
 #define VECTOR_BME_CALIBRATION         0
-#endif
-
-#ifndef VECTOR_GPS_NAV_PERIOD_MS
-#define VECTOR_GPS_NAV_PERIOD_MS       60000u
 #endif
 
 /* --- РАБОЧЕЕ: время в проекте берётся ТОЛЬКО от тика RTOS (Azure/ThreadX) --
