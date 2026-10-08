@@ -56,12 +56,73 @@ extern "C" {
 #include <math.h>               /* double_t */
 #include "shared_types.h"       /* SNS_CFG */
 
-/* ---------------------------------------------------------------------------
- * Буфер UART модуля - по образцу Message_buffer_uart_lora (Lora_S7678S.h),
- * плюс TimerReceive (метка последнего принятого кадра, её сравнивает
- * Gps_Receive() с GetTick() для признака ошибки приёма).
- * ЕСЛИ в вашем Gps.h структура объявлена иначе - замените это определение
- * своим, чтобы не разъезжалась с Gps.c.                                      */
+#define USART_GPS		(husart1)
+#define TIME_OUT_GPS	((uint32_t)((0.05)/TIME_DEL_1 + 0.5))
+//===========================================================================================================================
+//Перечисление типов поддерживаемых чипсетов
+typedef enum {
+	CHIP_ALLYSTAR_OLD = 0,
+	CHIP_LOCOSYS_AIROHA_NEW = 1
+} GNSS_CHIP_TYPE;
+
+extern GNSS_CHIP_TYPE Gps_Chip_Type; // Глобальный флаг активного чипа
+
+// Перечисление внутренних шагов автомата состояний детекта чипа
+typedef enum {
+    DETECT_STATE_START_115200 = 0, // Включение 115200 и сброс буфера
+    DETECT_STATE_LISTEN_115200,    // Ожидание первого пакета '$' от LOCOSYS
+} DETECT_STATE_t;
+//===========================================================================================================================
+typedef enum{
+	CMD_EN_DIS_MSG = 0,
+	CMD_CONF_NAV_SYS,
+	CMD_TYPE_START,
+	CMD_SAVE_CONFIG,
+	CMD_BLOCK_PROPRIETARY,
+}COMMAND_GPS;
+
+typedef enum{
+	TYPE_NAV_GPS_L1 = 0,
+	TYPE_NAV_GLONASS_G1,
+	TYPE_NAV_BEIDOU_B1,
+	TYPE_NAV_NOP,
+	TYPE_NAV_GALILEO_E1,
+	TYPE_NAV_QZSS_L1,
+	TYPE_NAV_SBAS_L1,
+	TYPE_NAV_IRNSS_L5,
+	TYPE_NAV_GPS_L2C,
+	TYPE_NAV_GPS_L5,
+	TYPE_NAV_GLONASS_G2,
+	TYPE_NAV_BEIDOU_B1C,
+	TYPE_NAV_BEIDOU_B2,
+	TYPE_NAV_BEIDOU_B2A,
+	TYPE_NAV_BEIDOU_B3I,
+	TYPE_NAV_BEIDOU_B5,
+	TYPE_NAV_GALILEO_E5A,
+	TYPE_NAV_QZSS_L2C,
+	TYPE_NAV_QZSS_L5,
+}TYPE_NAV;
+
+typedef enum{
+	TYPE_MSG_GGA = 0,
+	TYPE_MSG_GLL,
+	TYPE_MSG_GSA,
+	TYPE_MSG_GRS,
+	TYPE_MSG_GSV,
+	TYPE_MSG_RMC,
+	TYPE_MSG_VTG,
+	TYPE_MSG_ZDA,
+	TYPE_MSG_TXT = 0x20,
+}TYPE_MSG_GPS;
+
+typedef enum{
+	TYPE_RESET = 0,
+	TYPE_COLD_START,
+	TYPE_WARM_START,
+	TYPE_HOT_START,
+}TYPE_MSG_START;
+
+/* ---------------------------------------------------------------------------                                     */
 typedef struct
 {
     uint8_t  receive[256];      /* накопитель принятых байтов               */
@@ -73,7 +134,11 @@ typedef struct
 } Message_buffer_uart_gps;
 
 extern Message_buffer_uart_gps buffer_uart_gps;
-
+//===========================================================================================================================
+extern double_t Time_coord;
+extern double_t Latitude;
+extern double_t Longitude;
+//===========================================================================================================================
 /* Результат разбора NMEA: координаты в градусах (double) и масштабированные
    в 1e-7 градуса (int32) - именно их забирает LoRa-трек
    (Lora_UpdateGPSTrack).                                                    */

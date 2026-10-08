@@ -67,17 +67,22 @@ void transmit_buffer(uint8_t *pData, uint16_t Size, uint8_t type_transmit)
 	}
 #if CONFIG_BLE
     else if (type_transmit == TYPE_BLE) {
-        huart_ptr = &USART_BLE; // Ваш USART_BLE
+        huart_ptr = &USART_BLE; // USART_BLE
     }
 #endif
-#if (CONFIG_LORA || CONFIG_LORA_G || CONFIG_G4 || CONFIG_G2)
-    else if (type_transmit == TYPE_RF) {
-        huart_ptr = &USART_RF; // Ваш USART_LORA
+#if (CONFIG_LORA)
+    else if (type_transmit == TYPE_LORA) {
+        huart_ptr = &USART_LORA; // USART_LORA
     }
 #endif
     else if (type_transmit == TYPE_DEBUG) {
-        huart_ptr = &USART_DEBUG; // Ваш SENSOR_UART (LPUART)
+        huart_ptr = &USART_DEBUG; //
     }
+#if CONFIG_GPS
+	else if(type_transmit == TYPE_GPS){
+		huart_ptr = &USART_GPS;
+	}
+#endif
 
 	if (huart_ptr != NULL)
 	{

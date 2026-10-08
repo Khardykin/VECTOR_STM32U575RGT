@@ -1,4 +1,5 @@
 /Debug/
+!/Debug/ui_Vector/
 /Drivers/
 /Middlewares/
 *.o
