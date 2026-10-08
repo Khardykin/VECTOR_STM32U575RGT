@@ -14,6 +14,10 @@
 #ifndef MAX17048_H_
 #define MAX17048_H_
 
+#include <stdint.h>
+#include <stdbool.h>
+#include "config_device.h"   /* CONFIG_MAX17048 */
+
 
 #define PERIPH_I2C_MAX17048	(&hi2c1)
 // I2C default address for MAX17048

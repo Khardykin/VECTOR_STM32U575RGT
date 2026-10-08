@@ -39,6 +39,10 @@
 /*! @file bme280.c
  * @brief Sensor driver for BME280 sensor
  */
+#include "config_device.h"
+
+#if (CONFIG_BME)   /* выключено конфигурацией - файл не компилируется вовсе */
+
 #include "bme280.h"
 
 /**\name Internal macros */
@@ -1569,3 +1573,5 @@ static int8_t null_ptr_check(const struct bme280_dev *dev)
 
     return rslt;
 }
+
+#endif /* CONFIG_BME */

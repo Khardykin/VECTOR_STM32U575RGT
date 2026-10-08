@@ -16,6 +16,10 @@
   ******************************************************************************
   */
 
+#include "config_device.h"
+
+#if (CONFIG_LIS3DH)   /* выключено конфигурацией - файл не компилируется вовсе */
+
 #include "lis3dh_reg.h"
 
 /**
@@ -2848,3 +2852,5 @@ int32_t lis3dh_spi_mode_get(const stmdev_ctx_t *ctx, lis3dh_sim_t *val)
   * @}
   *
   */
+
+#endif /* CONFIG_LIS3DH */

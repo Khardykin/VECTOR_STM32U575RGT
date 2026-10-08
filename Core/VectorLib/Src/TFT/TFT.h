@@ -2,15 +2,32 @@
 #define __TFT_H
 
 //#include "main.h"
-#include "TFT_indicator.h"
-#include "ui.h"
+#include "vector_config.h"   /* CONFIG_MODEL_LCD, VECTOR_LCD_USE_LVGL */
+/* TFT_indicator.h сюда НЕ включаем намеренно: это слой приборной индикации,
+   ему нужны SNS_CFG_Type/CALIB_CFG/COUNT_CHAN (модель каналов газоанализатора),
+   которых в этом проекте пока нет. Драйвер панели от индикации зависеть не
+   должен - включайте TFT_indicator.h в тех файлах, где она реально нужна
+   (TFT_indicator.c), вместе с TFT.h.                                     */
+#if VECTOR_LCD_USE_LVGL
+#include "lvgl.h"           /* lv_obj_invalidate/lv_scr_act */
+#include "ui.h"              /* SquareLine Studio: экспорт в Drivers (см. docs/LVGL.md) */
+#endif
 //#include "LCD_platform.h"
+/* Модель 0 - ST7789P3 172x320 (портрет). RAM контроллера 240x320, поэтому у
+   узкой панели есть смещение окна по столбцам: TFT_COL_OFFSET. Если картинка
+   сдвинута/обрезана по горизонтали - поправьте смещение (типовые значения для
+   172x320: 34, реже 0 или 68 - зависит от ревизии панели).
+   Модель 1 - 320x240 (ILI9341, ландшафт), смещений нет.                     */
 #if (CONFIG_MODEL_LCD == 0)
-	#define TFT_WIDTH    (240)
-	#define TFT_HEIGHT   (320)
+	#define TFT_WIDTH       (172)
+	#define TFT_HEIGHT      (320)
+	#define TFT_COL_OFFSET  (34)
+	#define TFT_ROW_OFFSET  (0)
 #elif (CONFIG_MODEL_LCD == 1)
-	#define TFT_WIDTH    (320)
-	#define TFT_HEIGHT   (240)
+	#define TFT_WIDTH       (320)
+	#define TFT_HEIGHT      (240)
+	#define TFT_COL_OFFSET  (0)
+	#define TFT_ROW_OFFSET  (0)
 #endif
 /* Control Registers and constant codes */
 #define TFT_NOP     0x00

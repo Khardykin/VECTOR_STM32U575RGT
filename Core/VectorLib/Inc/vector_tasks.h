@@ -108,6 +108,12 @@ void Vector_Run_Measure(void);
 void Vector_RunFlashMemory(void);
 void Vector_Options_System(void);
 
+/* Реакция на серию ошибок BME280 (в Avis - Avis_Search_Temp_Start):
+   переинициализация/поиск температурного датчика. Зовётся из bme280_com.c,
+   weak-заглушка определена в Vector_main.c. data - код причины (2 = ошибка
+   инициализации, 0 = 10 незавершённых измерений подряд).                 */
+void Vector_Search_Temp_Start(uint16_t data);
+
 /* --- МОДУЛИ: приём (поток receiver_task) ------------------------------------
  * Слабые (__attribute__((weak))) заглушки в Vector_main.c: когда перенесёте
  * свою реализацию в файл модуля, она автоматически заменит заглушку, править

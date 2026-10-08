@@ -56,7 +56,7 @@ extern "C" {
 #include <math.h>               /* double_t */
 #include "shared_types.h"       /* SNS_CFG */
 
-#define USART_GPS		(husart1)
+#define USART_GPS		(huart1)
 #define TIME_OUT_GPS	((uint32_t)((0.05)/TIME_DEL_1 + 0.5))
 //===========================================================================================================================
 //Перечисление типов поддерживаемых чипсетов
@@ -143,9 +143,6 @@ extern double_t Longitude;
    в 1e-7 градуса (int32) - именно их забирает LoRa-трек
    (Lora_UpdateGPSTrack).                                                    */
 extern GNSS_CHIP_TYPE Gps_Chip_Type;    /* какой чип определился при старте  */
-extern double_t  Time_coord;
-extern double_t  Latitude;
-extern double_t  Longitude;
 extern int32_t   g_lat_scaled;
 extern int32_t   g_lon_scaled;
 extern uint32_t  Gps_type_nav_pre;      /* маска навигационных систем        */

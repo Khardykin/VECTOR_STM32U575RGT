@@ -1,4 +1,7 @@
-#include "Avis_main.h"
+#include "Vector_main.h"
+#include "MAX17048.h"
+
+#if (CONFIG_MAX17048)
 
 //===========================================================================================================================
 static void writeRegister(uint8_t reg, uint16_t value);
@@ -15,8 +18,8 @@ static void writeRegister(uint8_t reg, uint16_t value) {
 	buffer[0] = reg;
 	buffer[1] = ((value >> 8) & 0xFF);
 	buffer[2] = (value & 0xFF);
-	error |= I2C_Master_Transmit(PERIPH_I2C_MAX17048, MAX17048_I2C_ADDR, &buffer[0], 3, MAX17048_TIME_ERR_I2C);
-	if(error != I2C_OK){
+	error |= HAL_I2C_Master_Transmit(PERIPH_I2C_MAX17048, MAX17048_I2C_ADDR, &buffer[0], 3, MAX17048_TIME_ERR_I2C);
+	if(error != HAL_OK){
     	count_err ++;
     }
 /*	
@@ -36,9 +39,9 @@ static void write16(uint8_t reg, uint16_t value) {
 	buffer[0] = reg;
 	buffer[1] = (value & 0xFF);
 	buffer[2] = ((value >> 8) & 0xFF);
-	error |= I2C_Master_Transmit(PERIPH_I2C_MAX17048, MAX17048_I2C_ADDR, &buffer[0], 3, MAX17048_TIME_ERR_I2C);
+	error |= HAL_I2C_Master_Transmit(PERIPH_I2C_MAX17048, MAX17048_I2C_ADDR, &buffer[0], 3, MAX17048_TIME_ERR_I2C);
 	
-	if(error != I2C_OK){
+	if(error != HAL_OK){
     	count_err ++;
     }
 	/*
@@ -58,11 +61,11 @@ static uint8_t readReg(uint8_t reg) {
     uint8_t buffer[2] = {0};
 	
 	buffer[0] = reg;
-	error |= I2C_Master_Transmit(PERIPH_I2C_MAX17048, MAX17048_I2C_ADDR, &buffer[0], 1, MAX17048_TIME_ERR_I2C);
+	error |= HAL_I2C_Master_Transmit(PERIPH_I2C_MAX17048, MAX17048_I2C_ADDR, &buffer[0], 1, MAX17048_TIME_ERR_I2C);
 	
-	error |= I2C_Master_Receive(PERIPH_I2C_MAX17048, MAX17048_I2C_ADDR, &buffer[0], 2, MAX17048_TIME_ERR_I2C);
+	error |= HAL_I2C_Master_Receive(PERIPH_I2C_MAX17048, MAX17048_I2C_ADDR, &buffer[0], 2, MAX17048_TIME_ERR_I2C);
 	
-	if(error != I2C_OK){
+	if(error != HAL_OK){
     	count_err ++;
     }
 	value = buffer[0]; // MSB
@@ -86,11 +89,11 @@ static uint16_t read2Reg(uint8_t reg) {
     uint8_t buffer[2] = {0};
 	
 	buffer[0] = reg;
-	error |= I2C_Master_Transmit(PERIPH_I2C_MAX17048, MAX17048_I2C_ADDR, &buffer[0], 1, MAX17048_TIME_ERR_I2C);
+	error |= HAL_I2C_Master_Transmit(PERIPH_I2C_MAX17048, MAX17048_I2C_ADDR, &buffer[0], 1, MAX17048_TIME_ERR_I2C);
 	
-	error |= I2C_Master_Receive(PERIPH_I2C_MAX17048, MAX17048_I2C_ADDR, &buffer[0], 2, MAX17048_TIME_ERR_I2C);
+	error |= HAL_I2C_Master_Receive(PERIPH_I2C_MAX17048, MAX17048_I2C_ADDR, &buffer[0], 2, MAX17048_TIME_ERR_I2C);
 
-	if(error != I2C_OK){
+	if(error != HAL_OK){
     	count_err ++;
     }
 	
@@ -195,3 +198,5 @@ void max17048_resetALRTPin() {
   config &= ~(1 << 5); // Clear ALRT bit
   write16(CONFIG_REG, config);
 }
+
+#endif /* CONFIG_MAX17048 */

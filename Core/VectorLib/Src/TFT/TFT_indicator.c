@@ -1,5 +1,9 @@
-#include "Avis_main.h"
-#if (CONFIG_TYPE_LCD == 2)
+#include "Vector_main.h"
+#if (CONFIG_TYPE_LCD == 2)   /* слой индикации Avis: ждёт переноса (SNS_CFG_Type,
+                               CALIB_CFG, COUNT_CHAN, DEVICE_NUMBER Device2/3_Pro) */
+#include "TFT.h"
+#include "TFT_indicator.h"
+#include "LCD_platform.h"
 //------------------------------------------------------------------------------
 static uint16_t  buf_lcd[BUF_SIZE] __attribute__((aligned(4)));
 static uint16_t  buf_lcd2[BUF_SIZE] __attribute__((aligned(4)));

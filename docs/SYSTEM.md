@@ -27,7 +27,20 @@ Audio/Inc, Audio/Src
   audio_player.[ch]        ПЛЕЕР: поток, очередь команд, повтор звука, громкость, стриминг в SAI-DMA
   audio_beep.[ch]          аварийный писк (const PCM 44.1 кГц во внутренней flash)
 Src/Vector_main.c          ПОТОКИ ПРИБОРА: receiver_task (приём/парсинг UART) + measure_task
-Src/Gps.c                  GPS/GNSS: NMEA-приём, координаты для LoRa (CONFIG_GPS 0)
+Src/Gps.c                  GPS/GNSS: NMEA (GLL/GGA/RMC), автоопределение чипа, координаты для LoRa
+Src/lis3dh.c               акселерометр LIS3DH: 6D-ориентация, кэш ускорений, ACCEL_INT
+Src/bme280_com.c           BME280: T/H/P (обёртка над Src/BME280/bme280.c от Bosch)
+Src/MAX17048.c             топливный счётчик MAX17048 (I2C): SOC, VCELL, ALRT
+Src/BME280/, Src/Lis3dh_reg/  вендорские драйверы (тела закрыты CONFIG_BME / CONFIG_LIS3DH)
+Src/TFT/LCD_platform.[ch]  ДРАЙВЕР ПАНЕЛИ: SPI2 + GPDMA1 Ch8 (HAL, v17), LCD_writeBulk/flush
+Src/TFT/TFT.[ch]           инициализация ST7789P3 172x320, окно, поворот, TFT_FlushBuffer
+Src/TFT/TFT_indicator.[ch] индикация прибора из Avis - ВЫКЛЮЧЕНА (CONFIG_TYPE_LCD == 2), ждёт переноса
+Common/Src/vector_sensors.c  чтение датчиков: sensors_init/sensors_read, sensors_status
+Common/Src/vector_compat.c   Delay/DelayInt/GetTick/Search_text для перенесённого кода
+Inc/vector_sensors.h       API датчиков + структура sensors_status
+Inc/vector_status.h        SET/CLEAR/TEST_STATUS_COMMON_BIT (биты Sns_Cfg_struct)
+Inc/vector_compat.h        объявления слоя совместимости + TIME_DEL_1/TIME_OUT_LORA
+Inc/shared_macros.h        агрегатор макросов для перенесённого кода (main.h + статусы + время)
 Common/Src/vector_log.c    консольный лог: ITM/SWO и/или UART (выключается макросом)
 Common/Src/vector_board.c  всё, что делается в main() до RTOS (усилитель, проба, selftest)
 Inc/vector_tick.h          ЕДИНСТВЕННЫЙ источник времени приложения - тик ThreadX
@@ -86,7 +99,7 @@ main()
 |---|---|---|---|
 | `Audio Player` (`ap_thread_entry`) | 10 | 4096 | **единственный владелец** SAI/DMA и `ap_buf[]`: ждёт `ap_wake` (heartbeat или будильник паузы повтора), разбирает команды, дозагружает половины стрим-буфера, запускает DMA, повторяет последний звук по кругу |
 | `Receiver Task` (`receiver_task_function`) | 12 | 2048 | **единственный потребитель** колец приёма `InputBuffer[TYPE_USART/TYPE_LORA/TYPE_BLE/TYPE_LTE/TYPE_GPS/TYPE_SENSOR]`: `command_message()`, `Lora_Receive()`, `Ble_Receive()`, `Lte_Receive()`, `Gps_Receive()`, `Uart_Channel_Receive()`, затем `Vector_Options_System()`; пауза `VECTOR_TASKS_RECEIVER_DELAY_MS` |
-| `Measure Task` (`measure_task_function`) | 13 | 4096 | `Vector_Run_Pre_Init()` один раз, затем каждые `VECTOR_TASKS_MEASURE_PERIOD_MS` (1 с): `Vector_Run_Measure()` (измерения + `Ble_Run/Lora_Run/Lte_Run/Gps_Run`) и `Vector_RunFlashMemory()` |
+| `Measure Task` (`measure_task_function`) | 13 | 4096 | `Vector_Run_Pre_Init()` один раз (`sensors_init()`, биты включения модулей), затем каждые `VECTOR_TASKS_MEASURE_PERIOD_MS` (1 с): `Vector_Run_Measure()` → `sensors_read()` (BME280/LIS3DH/MAX17048), поворот экрана по 6D-ориентации, `Ble_Run/Lora_Run/Lte_Run/Gps_Run`; и `Vector_RunFlashMemory()` |
 | `LVGL Task` | 15 | 4096 | заглушка: спит по 1 с |
 
 Мёртвый поток `Audio Task` и семафор `audio_done_sem` удалены: звуком владеет
@@ -103,7 +116,11 @@ main()
 | `EXTI1/2/3` | `audio_demo_key_handler` → `audio_play_now/stop/set_volume` → очередь + `tx_semaphore_put(ap_wake)` | да |
 | `GPDMA1_Channel11` | DMA звука SAI1_A → `HAL_SAI_TxHalfCplt/TxCpltCallback` → счётчик выданных сэмплов, флаг «половина освободилась», `tx_semaphore_put(ap_wake)` | да |
 | `GPDMA1_Channel10` + `SPI1` | DMA приёма SPI1 → ЕOT → `HAL_SPI_RxCpltCallback` → `tx_semaphore_put(sf_dma_sem)` | да |
-| `UART4` / `USART2` | 1 байт → кольцо → `tx_semaphore_put(ub_sem)` → снова `Receive_IT` | да |
+| `UART4` / `USART2` / `USART3` | 1 байт → кольцо (`add_to_buffer`) или эхо в TDR | да |
+| `USART1` (GPS, PB6/PB7) | 1 байт → `Gps_Data_Verification()` (кадр NMEA и таймаут ведёт `Gps.c`) | да, но из ISR только накопление байта |
+| `EXTI11` (`ACCEL_INT`, PC11) | `lis3dh_irq_handler()` — только флаг; фронт переключается `LL_EXTI_*Trig_0_31` | да |
+| `SPI2` + `GPDMA1_Channel8` | выдача кадра на экран → `HAL_SPI_TxCpltCallback` → `LCD_transferCpltCallback()` → `lv_display_flush_ready(disp)` | да |
+| `TIM3_UP` (1 кГц) | `Uart_Gps_Receive_Timer_Inc()` (+ `Uart_Lora_Receive_Timer_Inc()` при `CONFIG_LORA`) — таймауты кадров | только декремент |
 | `TIM6_UP` | только `HAL_IncTick()` — внутренняя тайм-база HAL (тик ThreadX — SysTick от порта, 100 Гц) | — |
 
 > Порт ThreadX для Cortex-M33 маскирует критические секции через **PRIMASK**
@@ -159,6 +176,9 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | USART1/UART4 (лог) | `vector_log.c` (`VECTOR_LOG_ENABLE`) | только инициализация/поток, из ISR вызов отбрасывается; UART4 занят только логом |
 | Кольца приёма `InputBuffer[TYPE_*]` | поток `Receiver Task` | SPSC: производитель — ISR UART (`add_to_buffer`), потребитель — **только** `receiver_task_function()` (напрямую или через `Lora_Receive()`) |
 | Состояние плеера `audio_status` | `audio_player.c` | volatile-структура целиком; пишут поток и ISR SAI-DMA, порядок записи `sound_index`→`output` фиксирован |
+| I2C1 (PB8/PB9): BME280 0x76, LIS3DH 0x19, MAX17048 0x36 | поток `Measure Task` (`vector_sensors.c`) | один владелец: чтение только из `sensors_read()`, блокирующий `HAL_I2C_Master_*` |
+| SPI2 + GPDMA1 Ch8 + `LCD_CS/DC/RST/LED` | `LCD_platform.c` | флаг `LCD_SPI_PORT_State` + ожидание с таймаутом `VECTOR_LCD_SPI_TIMEOUT_MS`; конец кадра — из прерывания DMA |
+| Экран как ресурс LVGL | `LVGL Task` (порт дисплея) и `Measure Task` (поворот) | поворот безопасен благодаря флагу порта; приоритеты 15 и 13 |
 
 Внешняя flash поделена без пересечений (`sfmap.h`): `SOUNDS 0..4 МБ` (пишет
 программатор), `CONFIG 0x400000 (4 КБ)`, `LOG 0x401000..8 МБ` (пишет прошивка).
@@ -182,6 +202,8 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | `audio_status.last_error` / `sai_error_code` | код `audio_err_t` и сырой `SAI.ErrorCode` (больше не смешаны в одном числе) |
 | `audio_status.loop_enabled` / `loop_index` / `loop_next_at_ms` | повтор: включён ли, какой звук, когда следующий |
 | `tasks_status` | потоки прибора: `receiver_running` / `measure_running`, `cnt_receiver_passes`, `cnt_measure_runs`, по модулям `mod[0..5]` (com/lora/ble/lte/gps/sensor) — `cnt_receive_calls`, `cnt_run_calls`, `cnt_rx_bytes`, `cnt_rx_frames`, `cnt_tx_frames`, `cnt_errors`, `last_*_ms` |
+| `sensors_status` | датчики: `bme_ok` / `lis3dh_ok` / `max17048_ok`, `temperature_c`, `humidity_pct`, `pressure_hpa`, `accel_x/y/z_g`, `orientation`, `screen_rotation`, `battery_percent_x10`, `cnt_*` |
+| `lcd_status` | экран: `busy`, `dma_active`, `cnt_cmd/data8/data16/bulk`, `cnt_flush_ready` (0 при растущем `cnt_bulk` = нет прерывания DMA), `cnt_dma_fail`, `cnt_wait_timeout`, `last_hal_error` |
 | `sf_dbg_dma_chunks` / `_fallback` / `_tmo` | работает ли SPI-DMA и сколько раз откатились на опрос |
 | `vlog_dbg_lines` | сколько строк ушло в лог |
 
@@ -235,6 +257,8 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | `extstore.c` | ретраи чтения (`ext_read: recovered after N retry`), конфиг/журнал (DEBUG) |
 | `audio_player.c` | старт, состояние образа, команды, запуск и ошибки звука, «звук доигран», watchdog |
 | `Vector_main.c` | старт потоков прибора (`tasks init`, `receiver task`, `measure task`, `pre init`) |
+| `vector_sensors.c` | инициализация датчиков (кто ответил на I2C1), смена ориентации/поворота |
+| `LCD_platform.c` | ошибки SPI2/DMA экрана, принудительное освобождение порта, предупреждения о конфигурации куба |
 
 Правила модуля (важно при доработке):
 
@@ -409,6 +433,22 @@ HAL-тик не использует, но внутренние таймауты
 считаются по нему; при приоритете 15 их «съедают» EXTI/SPI/GPDMA/UART (0–1)
 и остановки ядра. Для ThreadX безопасно (порт маскирует критические секции
 через PRIMASK).
+
+### 9.x. Экран, GPS, акселерометр (v17)
+
+* **SPI2**: Simplex Bidirectional Master, 8 бит, MSB, PB13 SCK / PB15 MOSI;
+  **Baud Rate Prescaler — поставить /4 или /8** (сейчас /2 = 80 МГц, что выше
+  допустимого для ST7789P3);
+* **GPDMA1 Channel8** = SPI2_TX, Memory→Periph, BYTE/BYTE, Normal mode;
+  NVIC: `GPDMA1_Channel8_IRQn` и `SPI2_IRQn` включены;
+* **USART1** (PB6/PB7) = GPS: `USART1_IRQn` включён, в `USART1_IRQHandler`
+  байт уходит в `Gps_Data_Verification()`;
+* **PC11 = ACCEL_INT**: `GPIO_MODE_IT_RISING_FALLING` + `GPIO_PULLDOWN`,
+  `EXTI11_IRQn` (в `main.h` есть `ACCEL_INT_EXINT_LINE LL_EXTI_LINE_11`);
+* **TIM3**: 1 кГц (Prescaler 159, Period 1000), `TIM3_IRQn` — такт таймаутов
+  кадров GPS/LoRa;
+* пины экрана: PB14 `LCD_CS`, PB10 `LCD_DC`, PB12 `LCD_RST`, PC6 `LCD_LED`
+  (GPIO Output; ШИМ подсветки не настроен).
 
 ### 9.5. UART4: однопроводный полудуплекс → обычный асинхронный
 

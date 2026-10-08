@@ -40,7 +40,7 @@
 #define CONFIG_SAVE_PARAM_LOG           1               // Включение конфигурации с использованием микросхемы памяти
 #define CONFIG_DISPLAY                  1               // Включение конфигурации с использованием управления дисплеем
 #define CONFIG_TYPE_LCD_TFT				1
-#define CONFIG_MODEL_LCD
+#define CONFIG_MODEL_LCD				0				// 0 = ST7789P3 172x320 (портрет, подсветка вкл/выкл PC6), 1 = 320x240 ILI9341 (ШИМ)
 
 #define CONFIG_LIS3DH					1
 #define CONFIG_BME						1

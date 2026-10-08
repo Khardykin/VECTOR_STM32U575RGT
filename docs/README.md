@@ -7,6 +7,7 @@
 | **[PLAN.md](PLAN.md)** | **что за прибор и что дальше**: назначение, состав модулей, транспорт BLE↔LoRa, план по этапам, принятые решения (частоты, API плеера, лог), список известных дефектов |
 | **[FLASHING.md](FLASHING.md)** | **прошить всё программатором**: прошивка MCU через CubeProgrammer/ST-LINK, external loader для внешней flash, запись `sounds.bin`, CubeMX-чек-лист, диагностика записи |
 | **[AUDIO.md](AUDIO.md)** | **запустить звук**: качество 44.1 кГц/16 бит, стриминг через circular DMA, индексы/очередь/повтор, API, набор звуков, пересборка образа, диагностика «звука нет» |
+| **[LVGL.md](LVGL.md)** | **включить графику**: LVGL 9.2 + SquareLine Studio, где что лежит, `lv_conf.h`, порт дисплея и поток LVGL, порядок байт RGB565, переводы `lv_i18n`, чек-лист |
 | **[SYSTEM.md](SYSTEM.md)** | понять устройство проекта: слои кода, контексты (init/поток/ISR), цепочки вызовов, IRQ, время (только тик ThreadX), лог, **что настраивать в CubeMX** (раздел 9) |
 | `archive/FIX_REPORT.md` | история правок: разбор «зависания» в `tx_semaphore_get`, SPI-DMA, что проверено и причиной НЕ является |
 | `archive/AUDIO_MAP.md` | исторический справочник по фазам разработки |
@@ -101,6 +102,19 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 | `VECTOR_TASKS_MEASURE_PRIORITY` / `_STACK` | `13` / `4096` | поток периодики прибора |
 | `VECTOR_TASKS_MEASURE_DELAY_MS` | `50` | пауза между проходами потока измерений |
 | `VECTOR_TASKS_MEASURE_PERIOD_MS` | `1000` | период `Vector_Run_Measure()` (в `Avis_main.c` — `timer.flag_1s`) |
+
+### Экран TFT (ST7789P3 172×320, SPI2 + DMA) и датчики
+
+| Макрос | По умолчанию | Смысл |
+|---|---|---|
+| `VECTOR_LCD_USE_LVGL` | `1` | `0` = экран без LVGL (`TFT_Init`/`TFT_Fill`/`TFT_Test` работают сами) |
+| `VECTOR_LCD_SWAP_RGB565` | `1` | менять байты пикселя перед выдачей (LVGL little-endian → ST7789 big-endian) |
+| `VECTOR_LCD_SPI_TIMEOUT_MS` | `200` | таймаут передачи и ожидания свободного порта экрана |
+| `VECTOR_SCREEN_ROTATION` | `1` | крутить экран по 6D-ориентации LIS3DH (`ACCEL_INT`, PC11) |
+| `VECTOR_BME_CALIBRATION` | `0` | калибровка температуры BME280 с записью во flash (пока выключена) |
+| `VECTOR_GPS_NAV_PERIOD_MS` | `60000` | как часто обновлять навигационные системы GNSS |
+| `CONFIG_TYPE_LCD_TFT` / `CONFIG_MODEL_LCD` | `1` / `0` | в `config_device.h`: TFT включён; 0 = ST7789P3 172×320 |
+| `CONFIG_BME` / `CONFIG_LIS3DH` / `CONFIG_MAX17048` / `CONFIG_GPS` | `1` | в `config_device.h`: микросхема компилируется и опрашивается |
 
 Модули внутри потока закрыты своими `CONFIG_*` из `config_device.h`: `CONFIG_UART` (COM),
 `CONFIG_LORA`, `CONFIG_BLE`, `CONFIG_G4`/`CONFIG_G2` (LTE), `CONFIG_GPS` — как в `Avis_main.c`.

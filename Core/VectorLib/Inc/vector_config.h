@@ -298,6 +298,76 @@
 #define VECTOR_TASKS_MEASURE_PERIOD_MS   1000u
 #endif
 
+/* --- РАБОЧЕЕ: экран TFT (ST7789P3 172x320, SPI2 + GPDMA1 Channel8) ---------
+ * Драйвер - Core/VectorLib/Src/TFT/LCD_platform.c (v17 переведён с AT32 на HAL,
+ * названия функций сохранены). Периферию задаёт CubeMX: SPI2 8 бит Simplex TX,
+ * GPDMA1 Channel8 = SPI2_TX (Normal mode), пины LCD_CS PB14 / LCD_DC PB10 /
+ * LCD_RST PB12 / LCD_LED PC6. Модель панели и размеры - CONFIG_MODEL_LCD в
+ * config_device.h и TFT_WIDTH/TFT_HEIGHT/TFT_COL_OFFSET в TFT.h.
+ *
+ * VECTOR_LCD_USE_LVGL       1 = LCD_platform включает lvgl.h и зовёт
+ *                           lv_display_flush_ready(disp) по концу DMA-кадра
+ *                           (LVGL 9.2 в Drivers/lvgl - см. docs/LVGL.md).
+ *                           0 = экран без LVGL: TFT_Init/TFT_Fill/TFT_Test
+ *                           работают сами по себе (проверка SPI без графики).
+ * VECTOR_LCD_SWAP_RGB565    1 = менять байты пикселя перед выдачей: LVGL рисует
+ *                           в little-endian, а ST7789P3 ждёт старший байт
+ *                           первым. Цвета правильные без обмена -> ставьте 0.
+ * VECTOR_LCD_SPI_TIMEOUT_MS таймаут блокирующей передачи и ожидания свободного
+ *                           порта; по истечении порт освобождается принудительно
+ *                           (счётчик lcd_status.cnt_wait_timeout).
+ * VECTOR_LCD_PWM_PERIOD     период ШИМ подсветки - нужен только при
+ *                           CONFIG_MODEL_LCD 1. В этом проекте ШИМ на PC6 не
+ *                           настроен (в кубе GPIO_Output) - см. TODO в
+ *                           backlight_set().
+ *
+ * ЧАСТОТА SPI2: в кубе сейчас Baud Rate Prescaler = 2, то есть 80 МГц при
+ * PCLK1 160 МГц. Для ST7789P3 это выше допустимого (запись ~62.5 МГц max) -
+ * поставьте /4 (40 МГц) или /8 (20 МГц), иначе возможны битые пиксели и
+ * зависания выдачи кадра.                                                    */
+#ifndef VECTOR_LCD_USE_LVGL
+#define VECTOR_LCD_USE_LVGL            1
+#endif
+
+#ifndef VECTOR_LCD_SWAP_RGB565
+#define VECTOR_LCD_SWAP_RGB565         1
+#endif
+
+#ifndef VECTOR_LCD_SPI_TIMEOUT_MS
+#define VECTOR_LCD_SPI_TIMEOUT_MS      200u
+#endif
+
+#ifndef VECTOR_LCD_PWM_PERIOD
+#define VECTOR_LCD_PWM_PERIOD          249u
+#endif
+
+/* --- РАБОЧЕЕ: датчики на I2C1 (BME280, LIS3DH, MAX17048) -------------------
+ * Чтение - vector_sensors.c, состояние в ОДНОЙ структуре sensors_status.
+ * Включение каждой микросхемы - CONFIG_BME / CONFIG_LIS3DH / CONFIG_MAX17048 в
+ * config_device.h: при 0 драйвер не компилируется вовсе (тело файла под #if).
+ *
+ * VECTOR_SCREEN_ROTATION   1 = при смене 6D-ориентации LIS3DH (прерывание
+ *                          ACCEL_INT, PC11) Measure Task вызывает
+ *                          TFT_Rotation(sensors_status.screen_rotation).
+ *                          0 = ориентация считается, экран не крутится.
+ * VECTOR_BME_CALIBRATION   1 = калибровка температуры BME280 с записью поправки
+ *                          во flash (Calib_bme280_Temp из Avis). Сейчас 0:
+ *                          механизма калибровки и страницы под неё в проекте
+ *                          нет, код вырезан из сборки.
+ * VECTOR_GPS_NAV_PERIOD_MS период обновления навигационных систем GNSS
+ *                          (Gps_Init_Nav_Sys) после инициализации модуля.     */
+#ifndef VECTOR_SCREEN_ROTATION
+#define VECTOR_SCREEN_ROTATION         1
+#endif
+
+#ifndef VECTOR_BME_CALIBRATION
+#define VECTOR_BME_CALIBRATION         0
+#endif
+
+#ifndef VECTOR_GPS_NAV_PERIOD_MS
+#define VECTOR_GPS_NAV_PERIOD_MS       60000u
+#endif
+
 /* --- РАБОЧЕЕ: время в проекте берётся ТОЛЬКО от тика RTOS (Azure/ThreadX) --
  * Единственный источник времени приложения - tx_time_get() (SysTick,
  * приоритет 4). Всё через vector_tick.h: VTICK_MS(), VTICK_ELAPSED_MS(),

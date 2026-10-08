@@ -1,4 +1,7 @@
-#include "Avis_main.h"
+#include "Vector_main.h"
+#include "TFT.h"
+#include "LCD_platform.h"
+
 #if (CONFIG_TYPE_LCD_TFT)
 
 uint16_t TFT_Initialized = 0;
@@ -278,7 +281,9 @@ void TFT_Rotation(uint8_t state)
             break;
     }
 #endif
+#if VECTOR_LCD_USE_LVGL
     lv_obj_invalidate(lv_scr_act());
+#endif
 }
 
 /**
@@ -288,8 +293,11 @@ void TFT_Rotation(uint8_t state)
  */
 static void TFT_SetAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
-    uint16_t x_start = x0, x_end = x1;
-    uint16_t y_start = y0, y_end = y1;
+    /* Панель 172x320 на контроллере с RAM 240x320: окно адресуется со
+       смещением (TFT_COL_OFFSET/TFT_ROW_OFFSET в TFT.h), иначе картинка
+       уезжает в край и обрезается. */
+    uint16_t x_start = x0 + TFT_COL_OFFSET, x_end = x1 + TFT_COL_OFFSET;
+    uint16_t y_start = y0 + TFT_ROW_OFFSET, y_end = y1 + TFT_ROW_OFFSET;
 
     TFT_WriteCommand(TFT_CASET);
     {

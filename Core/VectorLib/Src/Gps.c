@@ -89,7 +89,7 @@ void Gps_Data_Verification(uint8_t data)
 		}
 	}
 	else if((Gps_Verification_Mode == 0) && (Gps_Receive_flag_read() == 1) && (Gps_count_receive >= 6)){
-		if(strstr(buffer_uart_gps.receive, "GLL") != NULL){
+		if(strstr((char *)buffer_uart_gps.receive, "GLL") != NULL){
 			buffer_uart_gps.TimeRX = TIME_OUT_GPS;
 		}
 		else{
@@ -142,7 +142,13 @@ void Gps_DeInit(uint8_t init)
 //===========================================================================================================================
 void Uart_Gps_Set_Baudrate(uint32_t baud)
 {
-	usart_init(USART_GPS, baud, USART_DATA_8BITS, USART_STOP_1_BIT);
+	/* AT32 usart_init() -> HAL: меняем скорость и переустанавливаем порт,
+	   затем возвращаем прерывания приёма, которые включает CubeMX в
+	   MX_USART1_UART_Init (USER CODE USART1_Init 2). */
+	USART_GPS.Init.BaudRate = baud;
+	(void)HAL_UART_Init(&USART_GPS);
+	__HAL_UART_ENABLE_IT(&USART_GPS, UART_IT_ERR);
+	__HAL_UART_ENABLE_IT(&USART_GPS, UART_IT_RXNE);
 }
 
 //===========================================================================================================================
@@ -373,7 +379,7 @@ void Gps_Transmit(uint8_t command, uint16_t param1, uint16_t param2)
                     if (sysMask == 0) {
                         sysMask = 0xC5;
                     }
-                    sprintf(temp_str, "LSSCFGSYS,%lu", sysMask);
+                    sprintf(temp_str, "LSSCFGSYS,%lu", (unsigned long)sysMask);
                 }
                 break;
 
@@ -656,15 +662,15 @@ void parsing_gga(uint8_t *data)
 		pos = Search_text(data, "GGA");
 		pos += Search_text(&data[pos], ",");
 		//
-		Time_coord  = atof(&data[pos]);
+		Time_coord  = atof((char *)&data[pos]);
 		pos += Search_text(&data[pos], ",");
 		//
-		Latitude  = atof(&data[pos]);
+		Latitude  = atof((char *)&data[pos]);
 
 		pos += Search_text(&data[pos], ",");
 		pos += Search_text(&data[pos], ",");
 		//
-		Longitude = atof(&data[pos]);
+		Longitude = atof((char *)&data[pos]);
 }
 
 void parsing_gll(uint8_t *data)
@@ -673,7 +679,7 @@ void parsing_gll(uint8_t *data)
 		pos = Search_text(data, "GLL");
 		pos += Search_text(&data[pos], ",");
 		//
-		Latitude  = atof(&data[pos]);
+		Latitude  = atof((char *)&data[pos]);
 
 		pos += Search_text(&data[pos], ",");
 		if(data[pos] == 'S'){
@@ -681,7 +687,7 @@ void parsing_gll(uint8_t *data)
 		}
 		pos += Search_text(&data[pos], ",");
 		//
-		Longitude = atof(&data[pos]);
+		Longitude = atof((char *)&data[pos]);
 
 		pos += Search_text(&data[pos], ",");
 		if(data[pos] == 'W'){
@@ -689,7 +695,7 @@ void parsing_gll(uint8_t *data)
 		}
 		pos += Search_text(&data[pos], ",");
 		//
-		Time_coord  = atof(&data[pos]);
+		Time_coord  = atof((char *)&data[pos]);
 }
 
 void parsing_rmc(uint8_t *data)
@@ -698,16 +704,16 @@ void parsing_rmc(uint8_t *data)
 		pos = Search_text(data, "RMC");
 		pos += Search_text(&data[pos], ",");
 		//
-		Time_coord  = atof(&data[pos]);
+		Time_coord  = atof((char *)&data[pos]);
 		pos += Search_text(&data[pos], ",");
 		pos += Search_text(&data[pos], ",");
 		//
-		Latitude  = atof(&data[pos]);
+		Latitude  = atof((char *)&data[pos]);
 
 		pos += Search_text(&data[pos], ",");
 		pos += Search_text(&data[pos], ",");
 		//
-		Longitude = atof(&data[pos]);
+		Longitude = atof((char *)&data[pos]);
 }
 
 #endif

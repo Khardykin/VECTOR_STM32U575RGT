@@ -1,6 +1,8 @@
 #ifndef LIS3DH_H
 #define LIS3DH_H
 
+#include "config_device.h"   /* CONFIG_LIS3DH */
+
 #ifdef __cplusplus
 extern "C" {
 #endif

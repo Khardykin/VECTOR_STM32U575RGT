@@ -3,178 +3,391 @@
  *
  *  Created on: Nov 5, 2024
  *      Author: me
+ *
+ *  v17: STM32 HAL вместо AT32. НАЗВАНИЯ ФУНКЦИЙ СОХРАНЕНЫ - TFT.c,
+ *  TFT_indicator.c и flush-callback LVGL править не нужно.
+ *
+ *  Что изменилось по сравнению с AT32-версией:
+ *    spi_enable()/spi_frame_bit_num_set()    -> не нужны: SPI2 всегда 8 бит,
+ *        16-битные пиксели уходят двумя байтами (старший первым, см.
+ *        LCD_swap_rgb565 / VECTOR_LCD_SWAP_RGB565);
+ *    SPI_Transmit(port, buf, n, tmo)         -> HAL_SPI_Transmit(port, buf, n, tmo);
+ *    dma_channel_config()/dma_channel_enable()-> HAL_SPI_Transmit_DMA() (канал
+ *        GPDMA1_Channel8 привязан к SPI2 в HAL_SPI_MspInit, Normal mode);
+ *    gpio_bits_set()/gpio_bits_reset()       -> HAL_GPIO_WritePin();
+ *    tmr_channel_value_set(TMR8, CH3)        -> ШИМ подсветки в этом проекте не
+ *        настроен (PC6 = GPIO_Output), ветка CONFIG_MODEL_LCD 1 помечена TODO;
+ *    завершение DMA: HAL_SPI_TxCpltCallback(SPI2) -> LCD_transferCpltCallback().
+ *
+ *  ЧЕГО ЗДЕСЬ НЕТ И ПОЧЕМУ: HAL_SPI_ErrorCallback. В проекте он уже определён
+ *  в spiflash.c (внешняя flash на SPI1) - второй такой же символ линкер не
+ *  переживёт. Поэтому ошибка/потеря завершения обрабатывается локально:
+ *  ожидание свободного порта ограничено временем (lcd_wait_idle), всё видно в
+ *  lcd_status.
+ *
+ *  КОНТЕКСТ: поток (LVGL/индикация). Из ISR звать нельзя - внутри блокирующие
+ *  HAL_SPI_Transmit и ожидание готовности.
  */
 
 #include "LCD_platform.h"
-#if (CONFIG_TYPE_LCD == 2)
-#include "lvgl.h"
-extern lv_display_t * disp;
-static uint16_t LCD_SPI_PORT_State = 0;
+
+#if (CONFIG_TYPE_LCD_TFT)
+
+#include "vector_config.h"
+#include "vector_log.h"
+#include "vector_tick.h"
+
+#if VECTOR_LCD_USE_LVGL
+/* Указатель на дисплей LVGL, которому сообщаем lv_display_flush_ready().
+   Объявлен WEAK: если ваш порт LVGL (ui_init/lv_port из SquareLine Studio)
+   определяет disp сам - возьмётся ваше определение, а проект при этом
+   линкуется даже до появления UI-кода (тогда disp == NULL и flush_ready
+   просто не вызывается - см. проверку в LCD_transferCpltCallback).          */
+__attribute__((weak)) lv_display_t *disp = (lv_display_t *)0;
+#endif
+
+/* 0 = порт свободен, 1 = идёт передача. Нужен, чтобы вызовы из разных мест
+   (TFT_Fill из потока индикации и flush из LVGL) не наложились друг на друга:
+   DMA-выдача кадра асинхронная, флаг снимает LCD_transferCpltCallback().     */
+static volatile uint16_t LCD_SPI_PORT_State = 0;
+
+/* Сколько итераций ждать освобождения порта ДО планировщика (тика RTOS нет,
+   спать нельзя). ~160 МГц / ~5 тактов на итерацию = порядка единиц мс на
+   тысячу итераций; передачу 64 КБ на 40 МГц ждём не больше ~13 мс.           */
+#define LCD_BUSY_GUARD_INIT   4000000u
+
+volatile lcd_status_t lcd_status =
+{
+  .busy             = 0u,
+  .dma_active       = 0u,
+  .last_hal_error   = 0u
+};
 
 uint16_t GET_LCD_SPI_PORT_State(void)
 {
-	return LCD_SPI_PORT_State;
+    return LCD_SPI_PORT_State;
 }
 
+/* Принудительно освободить порт: предыдущая передача не завершилась (потеряно
+   прерывание DMA/SPI, ошибка канала). Иначе следующий вызов ждал бы вечно, а
+   экран остался бы с зажатым CS. КОНТЕКСТ: поток.                            */
+static void lcd_force_idle(const char *reason)
+{
+    lcd_status.cnt_wait_timeout++;
+    lcd_status.last_hal_error = (uint32_t)LCD_SPI_PORT->ErrorCode;
+    (void)HAL_SPI_Abort(LCD_SPI_PORT);
+    LCD_UnSelect();
+    LCD_SPI_PORT_State = 0;
+    lcd_status.busy      = 0u;
+    lcd_status.dma_active = 0u;
+    LOG_E(VLOG_M_SYS, "LCD: port stuck (%s), forced idle, hal_err=%x",
+          reason, (uint32_t)lcd_status.last_hal_error);
+}
+
+/* Дождаться свободного порта. В потоке - сном по тику RTOS (CPU свободен),
+   до планировщика - счётчиком итераций. Таймаут VECTOR_LCD_SPI_TIMEOUT_MS.   */
+static void lcd_wait_idle(void)
+{
+    if (VTICK_IN_THREAD())
+    {
+        uint32_t t0 = VTICK_MS();
+        while (LCD_SPI_PORT_State != 0u)
+        {
+            if (VTICK_ELAPSED_MS(t0) > (uint32_t)LCD_SPI_TIMEOUT_MS)
+            {
+                lcd_force_idle("wait timeout");
+                return;
+            }
+            VTICK_SLEEP_MS(1);
+        }
+    }
+    else
+    {
+        uint32_t guard = LCD_BUSY_GUARD_INIT;
+        while ((LCD_SPI_PORT_State != 0u) && (guard != 0u))
+        {
+            guard--;
+        }
+        if (LCD_SPI_PORT_State != 0u)
+        {
+            lcd_force_idle("guard");
+        }
+    }
+}
+
+/* Занять порт под передачу. */
+static void lcd_begin(void)
+{
+    lcd_wait_idle();
+    LCD_SPI_PORT_State = 1;
+    lcd_status.busy    = 1u;
+}
+
+/* Отпустить порт (блокирующие пути; DMA-путь отпускает колбэк). */
+static void lcd_end(void)
+{
+    LCD_SPI_PORT_State = 0;
+    lcd_status.busy    = 0u;
+}
+
+/* SPI2, DMA и пины настраивает CubeMX (MX_SPI2_Init + HAL_SPI_MspInit), поэтому
+   здесь только контроль конфигурации: если в кубе что-то сбросилось, причина
+   "белого экрана" видна в логе сразу, а не по косвенным признакам.           */
 void LCD_initPlatform(void)
 {
-
+    if (LCD_SPI_PORT->Init.DataSize != SPI_DATASIZE_8BIT)
+    {
+        LOG_W(VLOG_M_SYS, "LCD: SPI2 DataSize != 8bit (CubeMX -> SPI2)");
+    }
+    if (LCD_SPI_PORT->hdmatx == (DMA_HandleTypeDef *)0)
+    {
+        LOG_W(VLOG_M_SYS, "LCD: SPI2 TX DMA not linked -> writeBulk will fail");
+    }
+    lcd_status.busy       = 0u;
+    lcd_status.dma_active = 0u;
+    LCD_SPI_PORT_State    = 0;
+    LCD_UnSelect();
 }
 
+/* Команда контроллеру (DC = 0). 8 бит, блокирующая передача. КОНТЕКСТ: поток. */
 void LCD_writeCommand8Bit(uint8_t cmd)
 {
-    while (LCD_SPI_PORT_State != 0)
-    {
-    }
-    LCD_SPI_PORT_State = 1;
-
-    spi_enable(LCD_SPI_PORT, FALSE);
-    spi_frame_bit_num_set(LCD_SPI_PORT, SPI_FRAME_8BIT);
-    spi_enable(LCD_SPI_PORT, TRUE);
+    lcd_begin();
+    lcd_status.cnt_cmd++;
 
     LCD_Select();
     LCD_DC_Clr();
-    SPI_Transmit(LCD_SPI_PORT, &cmd, sizeof(cmd), MAX_DELAY);
+    if (HAL_SPI_Transmit(LCD_SPI_PORT, &cmd, 1, LCD_SPI_TIMEOUT_MS) != HAL_OK)
+    {
+        lcd_status.last_hal_error = (uint32_t)LCD_SPI_PORT->ErrorCode;
+        LOG_E(VLOG_M_SYS, "LCD: cmd 0x%x fail, hal_err=%x", (uint32_t)cmd,
+              lcd_status.last_hal_error);
+    }
     LCD_UnSelect();
 
-    LCD_SPI_PORT_State = 0;
+    lcd_end();
 }
 
 /**
- * @brief Write data to LCD controller
- * @param data -> pointer of data buffer
- * @param size -> size of the data buffer
- * @return none
+ * @brief Данные в контроллер (DC = 1), 8 бит, блокирующе, кусками до 64 КБ
+ * @param data -> указатель на буфер
+ * @param size -> размер в БАЙТАХ
  */
 void LCD_writeData8Bit(uint8_t *data, uint32_t size)
 {
-    while (LCD_SPI_PORT_State != 0)
-    {
-    }
-    LCD_SPI_PORT_State = 1;
+    lcd_begin();
+    lcd_status.cnt_data8++;
 
     LCD_Select();
     LCD_DC_Set();
 
-    // split data in small chunks because HAL can't send more than 64K at once
+    /* HAL принимает uint16_t Size - режем на куски, как и в оригинале */
     while (size > 0)
     {
-        uint16_t chunk_size = size > 65535 ? 65535 : size;
+        uint16_t chunk_size = (size > 65535u) ? 65535u : (uint16_t)size;
 
-        SPI_Transmit(LCD_SPI_PORT, data, chunk_size, MAX_DELAY);
+        if (HAL_SPI_Transmit(LCD_SPI_PORT, data, chunk_size, LCD_SPI_TIMEOUT_MS) != HAL_OK)
+        {
+            lcd_status.last_hal_error = (uint32_t)LCD_SPI_PORT->ErrorCode;
+            break;
+        }
 
         data += chunk_size;
         size -= chunk_size;
     }
 
     LCD_UnSelect();
-
-    LCD_SPI_PORT_State = 0;
-}
-
-void LCD_writeData16Bit(uint8_t *data, uint32_t size)
-{
-    while (LCD_SPI_PORT_State != 0)
-    {
-    }
-    LCD_SPI_PORT_State = 1;
-
-    spi_enable(LCD_SPI_PORT, FALSE);
-    spi_frame_bit_num_set(LCD_SPI_PORT, SPI_FRAME_16BIT);
-    spi_enable(LCD_SPI_PORT, TRUE);
-//    HAL_SPI_Init(&hspi1);
-
-    LCD_Select();
-    LCD_DC_Set();
-
-    while (size > 0)
-    {
-        uint16_t chunk_size = size > 65535 ? 65535 : size;
-
-    SPI_Transmit(LCD_SPI_PORT, data, size, MAX_DELAY);
-        data += chunk_size;
-        size -= chunk_size;
-    }
-
-    LCD_UnSelect();
-
-    LCD_SPI_PORT_State = 0;
+    lcd_end();
 }
 
 /**
- * @brief DMA write data to LCD controller
- * @param data -> pointer of data buffer
- * @param size -> size of the data buffer
- * @return none
+ * @brief 16-битные данные (пиксели RGB565), блокирующе
+ * @param data -> буфер пикселей
+ * @param size -> число 16-битных СЛОВ (пикселей), не байт
+ */
+void LCD_writeData16Bit(uint8_t *data, uint32_t size)
+{
+    uint32_t bytes = size * 2u;
+
+    lcd_begin();
+    lcd_status.cnt_data16++;
+
+#if VECTOR_LCD_SWAP_RGB565
+    LCD_swap_rgb565(data, bytes);
+#endif
+
+    LCD_Select();
+    LCD_DC_Set();
+
+    while (bytes > 0)
+    {
+        uint16_t chunk_size = (bytes > 65535u) ? 65535u : (uint16_t)bytes;
+
+        if (HAL_SPI_Transmit(LCD_SPI_PORT, data, chunk_size, LCD_SPI_TIMEOUT_MS) != HAL_OK)
+        {
+            lcd_status.last_hal_error = (uint32_t)LCD_SPI_PORT->ErrorCode;
+            break;
+        }
+
+        data  += chunk_size;
+        bytes -= chunk_size;
+    }
+
+    LCD_UnSelect();
+    lcd_end();
+}
+
+/**
+ * @brief Асинхронная выда кадра по DMA (GPDMA1 Channel8 -> SPI2_TX)
+ * @param data -> буфер пикселей RGB565
+ * @param size -> число 16-битных СЛОВ (пикселей)
+ *
+ * CS и флаг занятости снимаются в LCD_transferCpltCallback(), который зовётся
+ * из HAL_SPI_TxCpltCallback() - то есть когда DMA реально выдала последний
+ * байт. До этого момента буфер менять нельзя (LVGL так и работает: ждёт
+ * lv_display_flush_ready()).
  */
 void LCD_writeBulk(const uint8_t *data, uint32_t size)
 {
-    if (size > 0xFFFF) // Maximum chunk size that HAL_SPI_Transmit_DMA can handle (uint16_t max value)
-        size = 0xFFFF;
+    uint32_t bytes = size * 2u;
 
-    while (LCD_SPI_PORT_State != 0)
+    /* HAL_SPI_Transmit_DMA берёт uint16_t Size: максимум 65535 байт за раз
+       (32767 пикселей). Ограничиваем, как в оригинале.                       */
+    if (bytes > 65535u)
     {
+        bytes = 65534u;               /* чётное: пиксель пополам не режем */
     }
-    LCD_SPI_PORT_State = 1;
+    if ((data == (const uint8_t *)0) || (bytes == 0u))
+    {
+        return;
+    }
 
-    spi_enable(LCD_SPI_PORT, FALSE);
-    spi_frame_bit_num_set(LCD_SPI_PORT, SPI_FRAME_16BIT);
-    spi_enable(LCD_SPI_PORT, TRUE);
+    lcd_begin();
+
+#if VECTOR_LCD_SWAP_RGB565
+    /* меняем байты ДО старта DMA: после старта буфер принадлежит контроллеру */
+    LCD_swap_rgb565((uint8_t *)data, bytes);
+#endif
 
     LCD_Select();
     LCD_DC_Set();
 
-    dma_channel_enable(DMA_CHANNEL, FALSE);
-    dma_channel_config(DMA_CHANNEL,
-                            (uint32_t)&LCD_SPI_PORT->dt,
-							(uint32_t)data,
-							size);
-	dma_channel_enable(DMA_CHANNEL, TRUE);
-//    if (HAL_OK != SPI_Transmit_DMA(LCD_SPI_PORT, (const uint8_t*) data, size))
-//        Error_Handler();
+    lcd_status.dma_active = 1u;       /* колбэк TxCplt поймёт, что это DMA-кадр */
+
+    if (HAL_SPI_Transmit_DMA(LCD_SPI_PORT, (uint8_t *)data, (uint16_t)bytes) != HAL_OK)
+    {
+        /* DMA не стартовала (канал занят/не привязан): снимаем состояние сами,
+           иначе экран завис бы с зажатым CS. Кадр потерян - LVGL перерисует по
+           следующей инвалидации.                                             */
+        lcd_status.dma_active = 0u;
+        lcd_status.cnt_dma_fail++;
+        lcd_status.last_hal_error = (uint32_t)LCD_SPI_PORT->ErrorCode;
+        LCD_UnSelect();
+        lcd_end();
+        LOG_E(VLOG_M_SYS, "LCD: SPI2 DMA start fail (bytes=%u hal_err=%x)",
+              bytes, lcd_status.last_hal_error);
+        return;
+    }
+
+    lcd_status.cnt_bulk++;
 }
 
 /**
- * @brief DMA complete callback
- * @return none
+ * @brief Конец DMA-передачи кадра: снять CS и сказать LVGL, что буфер свободен
+ *
+ * Вызывается из HAL_SPI_TxCpltCallback() (ниже), то есть из прерывания
+ * GPDMA1_Channel8/SPI2 - поэтому здесь только пин, счётчики и
+ * lv_display_flush_ready() (он неблокирующий).
  */
 void LCD_transferCpltCallback(void)
 {
     LCD_UnSelect();
-    /* IMPORTANT!!!
-     * Inform the graphics library that you are ready with the flushing */
-    lv_display_flush_ready(disp);
+    lcd_end();
 
-    spi_enable(LCD_SPI_PORT, FALSE);
-    spi_frame_bit_num_set(LCD_SPI_PORT, SPI_FRAME_8BIT);
-    spi_enable(LCD_SPI_PORT, TRUE);
+    lcd_status.cnt_flush_ready++;
 
-    LCD_SPI_PORT_State = 0;
+#if VECTOR_LCD_USE_LVGL
+    /* IMPORTANT!!! Inform the graphics library that you are ready with the flushing */
+    if (disp != (lv_display_t *)0)
+    {
+        lv_display_flush_ready(disp);
+    }
+#endif
 }
 
-#define PWM_PERIOD  249
+/* Колбэк HAL: передача по SPI2 завершилась.
+   КОНТЕКСТ: прерывание.
+   ДВА ВАЖНЫХ МОМЕНТА:
+     1) чужие SPI не трогаем - на SPI1 внешняя flash (её колбэки в spiflash.c);
+     2) HAL зовёт этот колбэк и после БЛОКИРУЮЩЕЙ HAL_SPI_Transmit, а там CS и
+        флаг уже сняты самим вызовом. Поэтому реагируем только если шла
+        асинхронная выдача кадра (lcd_status.dma_active) - иначе LVGL получил бы
+        лишний lv_display_flush_ready() и ушёл бы рисовать в занятый буфер.    */
+void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+    if ((hspi->Instance == LCD_SPI_INSTANCE) && (lcd_status.dma_active != 0u))
+    {
+        lcd_status.dma_active = 0u;
+        LCD_transferCpltCallback();
+    }
+}
+
+/* Поменять байты местами в каждом 16-битном пикселе RGB565.
+   LVGL рисует в порядке байт хоста (little-endian: младший первым), а
+   ST7789P3 принимает пиксель старшим байтом вперёд - без обмена цвета уходят
+   в сине-зелёную гамму. len - в байтах; нечётный хвост не трогаем.
+   КОНТЕКСТ: поток, ДО старта DMA.                                            */
+void LCD_swap_rgb565(uint8_t *data, uint32_t len)
+{
+    uint32_t i;
+
+    if (data == (uint8_t *)0)
+    {
+        return;
+    }
+    len &= ~(uint32_t)1u;
+
+    for (i = 0; i < len; i += 2u)
+    {
+        uint8_t t    = data[i];
+        data[i]      = data[i + 1u];
+        data[i + 1u] = t;
+    }
+}
+
+/* Подсветка. CONFIG_MODEL_LCD 0 (наш случай, ST7789P3 172x320): PC6 - обычный
+   выход, поэтому просто вкл/выкл с порогом. ШИМ-ветка (CONFIG_MODEL_LCD 1) в
+   Avis крутила TMR8 CH3 - в этом проекте ШИМ на LCD_LED не настроен, поэтому
+   TODO: завести в кубе TIM+канал на PC6 и звать HAL_TIM_PWM_Start /
+   __HAL_TIM_SET_COMPARE.                                                     */
 void backlight_set(uint8_t percent)
 {
-    uint32_t duty;
 #if (CONFIG_MODEL_LCD == 0)
-    if (percent > 30){
-    	LCD_LED_Set();
+    if (percent > 30u)
+    {
+        LCD_LED_Set();
     }
-    else{
-    	LCD_LED_Clr();
+    else
+    {
+        LCD_LED_Clr();
     }
 #elif (CONFIG_MODEL_LCD == 1)
-    if (percent > 100)
-        percent = 100;
+    uint32_t duty;
 
-    duty = ((PWM_PERIOD + 1) * percent) / 100;
-
-    if (duty > (PWM_PERIOD + 1))
-        duty = PWM_PERIOD + 1;
-
-    if(tmr_channel_value_get(TMR8, TMR_SELECT_CHANNEL_3) != duty){
-    	tmr_channel_value_set(TMR8, TMR_SELECT_CHANNEL_3, duty);
+    if (percent > 100u)
+    {
+        percent = 100u;
     }
+    duty = ((uint32_t)(VECTOR_LCD_PWM_PERIOD + 1u) * percent) / 100u;
+    if (duty > (uint32_t)(VECTOR_LCD_PWM_PERIOD + 1u))
+    {
+        duty = VECTOR_LCD_PWM_PERIOD + 1u;
+    }
+    /* TODO: ШИМ подсветки в кубе не настроен - см. комментарий выше.
+       HAL_TIM_PWM_Start(&htimX, TIM_CHANNEL_Y);
+       __HAL_TIM_SET_COMPARE(&htimX, TIM_CHANNEL_Y, duty);                    */
+    (void)duty;
 #endif
 }
-#endif
+
+#endif /* CONFIG_TYPE_LCD_TFT */

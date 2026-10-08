@@ -47,11 +47,39 @@
 #include "vector_log.h"
 #include "vector_tick.h"
 
+#if (CONFIG_TYPE_LCD_TFT && VECTOR_SCREEN_ROTATION)
+#include "TFT.h"          /* TFT_Rotation(): поворот экрана по акселерометру */
+#endif
+
 /* --------------------------------------------------------------- потоки ----
  * Приоритеты (в ThreadX МЕНЬШЕ = выше): Audio Player = 10, Receiver = 12,
  * Measure = 13, LVGL = 15. Обмен данными не должен обгонять звук.
  * Стек - в БАЙТАХ (в FreeRTOS xTaskCreate считает слова: 512 слов там =
  * 2048 байт здесь).                                                          */
+/* ------------------------------------------------------- данные прибора ---
+ * Экземпляры структур, которые объявляет shared_types.h (в Avis они жили в
+ * Avis_main.c). Определены ЗДЕСЬ, в файле приложения: если заведёте отдельный
+ * модуль конфигурации прибора - перенесите определения туда и удалите эти.
+ *
+ *   Sns_Cfg_struct      рабочий конфиг и состояние: Status/StateErr, данные
+ *                       датчиков (Temperature/Humidity/Pressure), батарея,
+ *                       серийный номер, параметры LoRa. Сюда пишет
+ *                       bme280_measure(), отсюда читают модули обмена.
+ *   Cfg_structdef_read  буфер чтения конфигурации из внешней flash (страница
+ *                       CONFIG 0x400000, sfmap.h) - загрузка ещё не реализована.
+ *   tempsensor_calib    калибровка температуры BME280 (VECTOR_BME_CALIBRATION 0
+ *                       -> пока не используется).
+ *   device_turn         прибор включён/выключен (DEVICE_TURNED).
+ *
+ * ВАЖНО: Sns_Cfg_struct сейчас zero-init, то есть все биты статусов сброшены.
+ * Модули обмена проверяют их через TEST_STATUS_COMMON_BIT(), поэтому до
+ * загрузки конфига из flash биты включения выставляются в
+ * Vector_Run_Pre_Init() по флагам сборки CONFIG_*.                        */
+SNS_CFG          Sns_Cfg_struct;
+SNS_CFG          Cfg_structdef_read;
+TEMPSENSOR_CALIB tempsensor_calib;
+DEVICE_TURNED    device_turn = DEVICE_TURNED_ON;
+
 static TX_THREAD receiver_task_handler;
 static TX_THREAD measure_task_handler;
 static uint8_t   receiver_task_stack[VECTOR_TASKS_RECEIVER_STACK] __attribute__((aligned(8)));
@@ -102,7 +130,7 @@ static void receiver_task_function(ULONG thread_input)
   tasks_status.receiver_running = 1u;
   LOG_I(VLOG_M_TASKS, "receiver task: com=%u lora=%u ble=%u lte=%u gps=%u (delay %u ms)",
         (uint32_t)CONFIG_UART, (uint32_t)CONFIG_LORA, (uint32_t)CONFIG_BLE,
-        (uint32_t)(CONFIG_G4 || CONFIG_G2), (uint32_t)CONFIG_GPS,
+        (uint32_t)CONFIG_G4, (uint32_t)CONFIG_GPS,
         (uint32_t)VECTOR_TASKS_RECEIVER_DELAY_MS);
 
   while (1)
@@ -218,6 +246,28 @@ void Vector_Run_Pre_Init(void)
 {
   LOG_I(VLOG_M_TASKS, "pre init");
 
+  /* Датчики на I2C1: BME280 / LIS3DH / MAX17048 (включаются CONFIG_*).
+     Результат - в sensors_status.*_ok и в логе.                            */
+  sensors_init();
+
+  /* Биты включения модулей обмена. Пока конфиг прибора не читается из
+     CONFIG-страницы внешней flash, выставляем их по флагам сборки - иначе
+     *_Run() ничего не делают (проверяют TEST_STATUS_COMMON_BIT). Как только
+     появится загрузка SNS_CFG (PLAN.md раздел 5, этап 2), эти строки надо
+     убрать: биты будут приходить из конфига и по BLE.                      */
+#if CONFIG_GPS
+  SET_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GPS);
+#endif
+#if CONFIG_LORA
+  SET_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_LORA);
+#endif
+#if CONFIG_BLE
+  SET_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_BLE);
+#endif
+#if CONFIG_G4
+  SET_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GSM);
+#endif
+
   /* TODO: по образцу Avis_Run_Pre_Init():
      - прочитать SNS_CFG из CONFIG-страницы внешней flash (extstore: ext_read,
        контроль CRC_CONFIG) - PLAN.md раздел 3;
@@ -236,6 +286,22 @@ void Vector_Run_Measure(void)
      Setting_system/LimitProcessing/BumpTest по каналам).
      Звук/индикация по статусам - только через API плеера: audio_play_now(idx),
      audio_set_loop(1), с учётом ST_COMMON_BIT_BLOCK_SOUND (PLAN.md раздел 4).*/
+
+  /* Датчики: BME280 (T/H/P), LIS3DH (ускорение + 6D-ориентация), MAX17048
+     (батарея). Значения уходят в Sns_Cfg_struct.Config_common и в
+     sensors_status; ошибки шины - в ST_COMMON_BIT_ERR_*.                   */
+  sensors_read();
+
+  /* Поворот экрана по акселерометру: прерывание ACCEL_INT (PC11) только
+     ставит флаг, ориентацию определяет lis3dh_update_all() внутри
+     sensors_read(), а экран крутим здесь - в одном потоке с остальной
+     индикацией, чтобы не получить двух владельцев дисплея.                 */
+#if (CONFIG_TYPE_LCD_TFT && VECTOR_SCREEN_ROTATION)
+  if (sensors_rotation_changed() != 0u)
+  {
+    TFT_Rotation(sensors_status.screen_rotation);
+  }
+#endif
 
   /* Модули обмена вызываются КАЖДЫЙ период, а свой ритм (инициализация,
      передача, сон) каждый модуль держит внутри - в Avis это RTC-таймеры
@@ -328,7 +394,7 @@ __attribute__((weak)) void Ble_Receive(void)
 /* LTE/GSM-модем: приём из кольца и парсинг AT-ответов. */
 __attribute__((weak)) void Lte_Receive(void)
 {
-#if (CONFIG_G4 || CONFIG_G2)
+#if CONFIG_G4
   uint8_t b;
 
   /* TODO: if (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GSM)) { ... } */
@@ -393,35 +459,90 @@ __attribute__((weak)) void Lora_Run(void)
 /* LTE/GSM-модем: регистрация в сети, передача данных. */
 __attribute__((weak)) void Lte_Run(void)
 {
-#if (CONFIG_G4 || CONFIG_G2)
+#if CONFIG_G4
   /* TODO: AT-диалог модема (инициализация, регистрация, отправка), контроль
      пинов LTE_EN / LTE_RESET / LTE_STATUS / LTE_LED (main.h), статусы
      ST_COMMON_BIT_TURN_ON_GSM и ST_COMMON_BIT_ERR_GSM.                      */
 #endif
 }
 
-/* GPS/GNSS: инициализация, выбор навигационных систем, контроль ошибки.
-   Аналог Gps_Run() в Avis_main.c. Драйвер - Gps.c (приложен к проекту).
-   Приём NMEA - Gps_Receive() в потоке receiver_task, НЕ здесь.              */
+/* GPS/GNSS: инициализация модуля, периодическое обновление навигационных
+   систем, контроль ошибки приёма. Аналог Gps_Run() в Avis_main.c, но вместо
+   RTC-таймеров прибора (TIMER_RTC_GPS_DATA_INIT) - тик RTOS: таймеров прибора
+   в этом проекте пока нет (PLAN.md раздел 5, этап 2).
+   Приём NMEA - Gps_Receive() в потоке receiver_task, НЕ здесь.
+   КОНТЕКСТ: поток Measure Task (внутри блокирующий обмен по UART и Delay()). */
 __attribute__((weak)) void Gps_Run(void)
 {
 #if CONFIG_GPS
-  /* TODO: по образцу Avis_main.c:
-     if (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GPS)) {
-       get_state_init_flag_gps() == 0 -> подать питание/снять сброс модуля
-         (пины GNSS_MODE PB4 и GNSS_RST PB5, main.h) и взвести таймер
-         инициализации (TIMER_RTC_GPS_DATA_INIT);
-       по таймеру: Gps_Init(&Sns_Cfg_struct) == 1 -> RESET таймера и
-         Gps_Init_Nav_Sys(&Sns_Cfg_struct) (маска систем GPS/GLONASS/BDS/GAL);
-     } else { Gps_DeInit(0); }
-     ошибка приёма (get_state_err_gps()) -> SET/CLEAR_STATUS_COMMON_ERR_BIT(
-     ST_COMMON_BIT_ERR_GPS).                                                */
+  static uint32_t nav_last_ms = 0;
+
+  if (!VECTOR_DEVICE_IS_ON())
+  {
+    Gps_DeInit(0);
+    return;
+  }
+
+  if (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GPS))
+  {
+    /* Питание/сброс GNSS: пины GNSS_MODE (PB4) и GNSS_RST (PB5) в кубе есть,
+       но полярность и длительность импульса сброса по схеме не подтверждены -
+       поэтому их не дёргаем. Как подтвердите, добавьте перед Gps_Init():
+         SET_ON(GNSS_RST); Delay(10); SET_OFF(GNSS_RST);                    */
+    if (get_state_init_flag_gps() == 0)
+    {
+      /* Gps_Init сам определяет чип (Gps_Auto_Detect_Chip), настраивает
+         состав NMEA-сообщений и скорость UART (Uart_Gps_Set_Baudrate).
+         Возврат 1 = модуль инициализирован.                                */
+      if (Gps_Init(&Sns_Cfg_struct) == 1)
+      {
+        nav_last_ms = VTICK_MS();
+        LOG_I(VLOG_M_TASKS, "gps: init ok, chip=%u", (uint32_t)Gps_Chip_Type);
+      }
+    }
+    else if (VTICK_ELAPSED_MS(nav_last_ms) >= (uint32_t)VECTOR_GPS_NAV_PERIOD_MS)
+    {
+      /* маска навигационных систем (GPS/GLONASS/BDS/GAL) - редко, чтобы не
+         спамить в UART модуля; в Avis это делалось каждый проход           */
+      nav_last_ms = VTICK_MS();
+      Gps_Init_Nav_Sys(&Sns_Cfg_struct);
+    }
+    else
+    {
+      /* ждём следующего периода */
+    }
+  }
+  else
+  {
+    Gps_DeInit(0);
+  }
+
+  /* Ошибка приёма: нет валидных кадров NMEA дольше 20 с (считает Gps.c). */
+  if (get_state_err_gps())
+  {
+    SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_ERR_GPS);
+  }
+  else
+  {
+    CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_ERR_GPS);
+  }
 #endif
 }
 
 /* ============================================================================
  *                                  СЛУЖЕБНОЕ
  * ============================================================================ */
+
+/* Реакция на серию ошибок BME280 (в Avis - Avis_Search_Temp_Start): зовётся из
+   bme280_com.c, когда модуль не отвечает или 10 раз подряд не завершает
+   измерение. Пока заглушка: фиксируем в логе и в счётчике; наполнение - когда
+   появится процедура поиска/переинициализации температурного датчика.
+   КОНТЕКСТ: поток Measure Task.                                            */
+__attribute__((weak)) void Vector_Search_Temp_Start(uint16_t data)
+{
+  tasks_status.mod[TASK_MOD_SENSOR].cnt_errors++;
+  LOG_W(VLOG_M_SYS, "bme280: error (%u) -> search temp (stub)", (uint32_t)data);
+}
 
 /* Короткое имя модуля для лога (только ASCII - требование vector_log.h).
    КОНТЕКСТ: любой. Возвращает статическую строку, не освобождать.            */

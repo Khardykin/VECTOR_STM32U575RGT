@@ -31,6 +31,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "Vector_main.h"    /* CONFIG_*, Uart_Gps/Lora_Receive_Timer_Inc */
 #include "vector_board.h"   /* вся бортовая инициализация до RTOS - один вызов */
 /* USER CODE END Includes */
 
@@ -253,6 +254,16 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   }
   /* USER CODE BEGIN Callback 1 */
   else if(htim->Instance == TIM3){
+	  /* TIM3 = 1 кГц (Prescaler 159, Period 1000): счётчики таймаута кадра
+	     периферийных модулей. Время приложения по-прежнему только тик RTOS
+	     (vector_tick.h) - эти счётчики нужны самим драйверам.
+	     КОНТЕКСТ: прерывание, только декремент.                              */
+#if CONFIG_GPS
+	  Uart_Gps_Receive_Timer_Inc();    /* таймаут кадра NMEA (TIME_OUT_GPS)  */
+#endif
+#if CONFIG_LORA
+	  Uart_Lora_Receive_Timer_Inc();   /* таймаут AT-ответа LoRa             */
+#endif
 //	  SET_TGL(STATE_LED);
   }
   /* пусто: время приложения считается только от тика ThreadX (vector_tick.h),

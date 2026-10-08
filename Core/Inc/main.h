@@ -57,6 +57,11 @@ extern "C" {
 
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
+#define I2C_Mem_Write(x1,x2,x3,x4,x5,x6,x7)		HAL_I2C_Mem_Write(x1,x2,x3,x4,x5,x6,x7)
+#define I2C_Mem_Read(x1,x2,x3,x4,x5,x6,x7)		HAL_I2C_Mem_Read(x1,x2,x3,x4,x5,x6,x7)
+#define I2C_Master_Transmit(x1,x2,x3,x4,x5)		HAL_I2C_Master_Transmit(x1,x2,x3,x4,x5)
+#define I2C_Master_Receive(x1,x2,x3,x4,x5)		HAL_I2C_Master_Receive(x1,x2,x3,x4,x5)
+
 #define READ_PIN_IN(x)  	(LL_GPIO_IsInputPinSet(x##_GPIO_Port, x##_Pin))
 #define READ_PIN_OUT(x)  	(LL_GPIO_IsOutputPinSet(x##_GPIO_Port, x##_Pin))
 #define SET_OFF(x)  		LL_GPIO_ResetOutputPin(x##_GPIO_Port, x##_Pin);

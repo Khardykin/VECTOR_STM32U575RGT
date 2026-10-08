@@ -129,8 +129,8 @@ void HAL_GPIO_EXTI_Rising_Callback(uint16_t GPIO_Pin)
 	else if(GPIO_Pin == ACCEL_INT_Pin){
 		if((READ_PIN_IN(ACCEL_INT))){
 			lis3dh_irq_handler();
-			EXINT->polcfg1 &= ~ACCEL_INT_EXINT_LINE;//DisableRising
-			EXINT->polcfg2 |= ACCEL_INT_EXINT_LINE;//EnableFalling
+			LL_EXTI_DisableRisingTrig_0_31(ACCEL_INT_EXINT_LINE);
+			LL_EXTI_EnableFallingTrig_0_31(ACCEL_INT_EXINT_LINE);
 		}
 	}
 #endif
@@ -176,8 +176,8 @@ void HAL_GPIO_EXTI_Falling_Callback(uint16_t GPIO_Pin)
 #if (CONFIG_LIS3DH)
 	else if(GPIO_Pin == ACCEL_INT_Pin){
 		if((!READ_PIN_IN(ACCEL_INT))){
-			EXINT->polcfg1 |= ACCEL_INT_EXINT_LINE;//EnableRising
-			EXINT->polcfg2 &= ~ACCEL_INT_EXINT_LINE;//DisableFalling
+			LL_EXTI_EnableRisingTrig_0_31(ACCEL_INT_EXINT_LINE);
+			LL_EXTI_DisableFallingTrig_0_31(ACCEL_INT_EXINT_LINE);
 		}
 	}
 #endif
@@ -419,11 +419,19 @@ void SPI2_IRQHandler(void)
 void USART1_IRQHandler(void)
 {
   /* USER CODE BEGIN USART1_IRQn 0 */
-
+#if CONFIG_GPS
+	uint8_t data_uart = 0;
+	if (UART_IRQReceive(&huart1, &data_uart)){
+		Gps_Data_Verification(data_uart);
+	}
+	else{
+#endif
   /* USER CODE END USART1_IRQn 0 */
   HAL_UART_IRQHandler(&huart1);
   /* USER CODE BEGIN USART1_IRQn 1 */
-
+#if CONFIG_GPS
+	}
+#endif
   /* USER CODE END USART1_IRQn 1 */
 }
 

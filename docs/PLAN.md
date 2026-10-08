@@ -34,6 +34,10 @@
 | Кольцевые буферы UART | `Src/buffer.c`, `Inc/buffer.h` | каркас: приём по байту из ISR, передача polling/DMA |
 | Потоки прибора | `Src/Vector_main.c`, `Inc/vector_tasks.h` | каркас готов (v15, GPS в v16) по образцу `Avis_main.c`: поток `Receiver Task` (приём и парсинг по каждому UART) и поток `Measure Task` (периодика 1 с → `Vector_Run_Measure()` → `Ble_Run/Lora_Run/Lte_Run/Gps_Run`). Заглушки модулей — слабые (`__attribute__((weak))`): ваша реализация в файле модуля заменит их сама |
 | GPS/GNSS | `Src/Gps.c`, `Inc/Gps.h` | **приложен из другого прибора (v16)**: NMEA (GGA/GLL/RMC), автоопределение чипа (Allystar/LOCOSYS), координаты для LoRa-трека, команды LOCOSYS. Закрыт `CONFIG_GPS 0`; что нужно для включения — раздел 7, п.26 |
+| Экран TFT | `Src/TFT/LCD_platform.[ch]`, `TFT.[ch]`, `TFT_indicator.[ch]` | **v17**: `LCD_platform` переведён с AT32 на HAL (SPI2 + GPDMA1 Ch8, имена функций сохранены), ST7789P3 172×320, `lcd_status`; `TFT_indicator` (2783 строки индикации Avis) пока выключен — нужны `SNS_CFG_Type`/`CALIB_CFG`/`COUNT_CHAN` |
+| Датчики I2C1 | `Src/lis3dh.c` + `Src/Lis3dh_reg/`, `Src/bme280_com.c` + `Src/BME280/`, `Src/MAX17048.c`, `Common/Src/vector_sensors.c` | **v17**: AT32 I2C → HAL, чтение в `sensors_read()` (Measure Task), состояние в `sensors_status`, поворот экрана по `ACCEL_INT` |
+| Графика LVGL | `Drivers/lvgl` (9.2) + UI SquareLine Studio, `Core/ui/lv_i18n`, `Core/translations/*.yml` | LVGL и UI в git **не лежат**; описание и чек-лист — `docs/LVGL.md`; поток `LVGL Task` пока заглушка |
+| Слой совместимости | `Inc/shared_macros.h`, `Inc/vector_compat.h`, `Src/Common/Src/vector_compat.c`, `Inc/vector_status.h` | **v17**: `Delay/DelayInt/GetTick/Search_text`, `TIME_DEL_1/TIME_OUT_LORA`, макросы битов статусов — чтобы код с других приборов собирался без правок |
 | Кнопки | `stm32u5xx_it.c` (EXTI), `Src/Test/Src/audio_demo.c` | два слоя: продуктовые флаги `button1/2/3/button_sos` и тестовое демо плеера |
 | LoRa S7678S | `Src/Lora_S7678S.c` (2094 строки) | реализация автора: AT-обмен, классы A/C, регионы, GPS-трек, `SNS_CFG` |
 | Конфигурация прибора | `Inc/config_device.h`, `Inc/shared_types.h` | флаги сборки `CONFIG_*`, структура `SNS_CFG`, биты статусов `ST_COMMON` |
@@ -45,9 +49,9 @@ UART-роли (как задумано):
 |---|---|---|
 | `USART_COM` / `USART_DEBUG` | UART4 (PC10/PC11) | терминал + лог (`VECTOR_LOG_UART 4`), кольцо `TYPE_USART` |
 | `USART_BLE` (не определён) | USART3 (PC4/PC5, метки `USART3_*_BLE`) | BLE-модуль (`BLE_RESET` = PC12) |
-| `USART_LORA` | USART1 (PB6/PB7) | LoRa S7678S — порт задан в самом драйвере: `Lora_S7678S.h:21` `#define USART_LORA (USART1)`. **`USART1_IRQn` в NVIC не включён** — без этого приёма не будет |
+| `USART_LORA` | **UART4 (`huart4`)** | так задано в `Lora_S7678S.h:21` — КОНФЛИКТ: UART4 занят терминалом и логом (`USART_COM`/`USART_DEBUG`, `VECTOR_LOG_UART 4`) и работает в полудуплексе. До включения `CONFIG_LORA` порт надо переназначить (раздел 7, п.27) |
 | (LTE, макроса нет) | USART2 (PA2/PA3, метки `USART2_*_LTE`) | сотовый модем: пины `LTE_EN`/`LTE_RESET`/`LTE_STATUS`/`LTE_LED` (PC0..PC3), кольцо `TYPE_LTE` |
-| (GPS) | не назначен | GNSS-модуль: пины `GNSS_MODE` (PB4) и `GNSS_RST` (PB5) в кубе есть, порт не выбран, `USART1_IRQn`/IRQ нужного порта не включён; кольцо `TYPE_GPS` (buffer.h) |
+| `USART_GPS` | **USART1 (PB6/PB7)** | GPS/GNSS (`Gps.h`). **v17**: `USART1_IRQn` включён, байт из ISR уходит в `Gps_Data_Verification()`, таймаут кадра — от TIM3 1 кГц |
 | (сенсоры) | не назначен | кольцо `TYPE_SENSOR`; свободных портов кроме USART1 пока нет |
 
 Макросы `USART_BLE` и `USART_RF` в `main.h` пока **не определены** — они
@@ -145,21 +149,30 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 **Этап 2. Транспорт LoRa**
 * [ ] `CONFIG_LORA 1`, определить `USART_RF` в `main.h`
 * [ ] `FIRMWARE_VERSION` — дефолт для всех `DEVICE_NUMBER` (иначе LoRa не соберётся)
-* [ ] приём USART1 → `InputBuffer[TYPE_LORA]`, AT-машина состояний S7678S — `Lora_Receive()` уже вызывается из `Receiver Task` под `CONFIG_LORA`; что мешает включить конфиг — см. раздел 7, п.24
+* [ ] приём → `InputBuffer[TYPE_LORA]`, AT-машина состояний S7678S — `Lora_Receive()` вызывается из `Receiver Task` под `CONFIG_LORA`; порт LoRa сейчас = UART4 (конфликт с логом, п.27), что мешает включить конфиг — п.25
 * [ ] `SNS_CFG` в CONFIG-странице внешней flash: загрузка при старте,
       сохранение по изменению, контроль `CRC_CONFIG`
 * [ ] передача: очередь пакетов + `transmit_buffer(..., TYPE_RF)` — вызывается из `Lora_Run()` (поток `Measure Task`), счётчики в `tasks_status.mod[TASK_MOD_LORA]`
 
-**Этап 2b. GPS/GNSS (модуль приложен к проекту, ждёт включения)**
-* [ ] `CONFIG_GPS 1` и перенести в `Gps.h` типы/константы модуля — точный список раздел 7, п.26
-* [ ] выбрать UART под GNSS, включить его IRQ в кубе, определить `USART_GPS`
-* [ ] `Uart_Gps_Set_Baudrate()`: AT32-вызов `usart_init(USART_GPS, ...)` заменить на HAL
-* [ ] общие хелперы `Delay()` / `GetTick()` / `Search_text()` (нужны и LoRa, и GPS):
-      по правилам проекта время — только тик RTOS (`VTICK_SLEEP_MS()` / `VTICK_MS()`)
-* [ ] приём: `Gps_Data_Verification()` из ISR UART (или чтение `InputBuffer[TYPE_GPS]`
-      в `Gps_Receive()`) и `Uart_Gps_Receive_Timer_Inc()` с периодом 1 мс (TIM3 1 кГц)
-* [ ] `Gps_Run()` наполнить по образцу `Avis_main.c` (weak-заглушка в `Vector_main.c`):
-      `Gps_Init()` → `Gps_Init_Nav_Sys()`, `Gps_DeInit()`, `ST_COMMON_BIT_ERR_GPS`
+**Этап 2b. GPS/GNSS — модуль подключён к проекту (v17), собирается при `CONFIG_GPS 1`
+* [x] `CONFIG_GPS 1`, типы/константы модуля в `Gps.h`, `USART_GPS (huart1)`, `TIME_DEL_1` — собирается (проверено gcc -fsyntax-only)
+* [x] UART под GNSS = USART1 (PB6/PB7): `USART1_IRQn` включён, `USART1_IRQHandler` → `Gps_Data_Verification()`
+* [x] `Uart_Gps_Set_Baudrate()`: AT32 `usart_init()` → `HAL_UART_Init()` + возврат прерываний RXNE/ERR
+* [x] общие хелперы `Delay()` / `DelayInt()` / `GetTick()` / `Search_text()` — `vector_compat.c` (время только тик RTOS, до планировщика busy-wait); они же нужны LoRa-драйверу
+* [x] `Uart_Gps_Receive_Timer_Inc()` вызывается из `HAL_TIM_PeriodElapsedCallback(TIM3)` (1 кГц) в `main.c`
+* [x] `Gps_Run()` в `Vector_main.c` (weak): `Gps_Init()` → `Gps_Init_Nav_Sys()` раз в `VECTOR_GPS_NAV_PERIOD_MS`, `Gps_DeInit()` при снятом статусе, ошибка приёма → `ST_COMMON_BIT_ERR_GPS`
+* [ ] подтвердить по схеме полярность и длительность сброса `GNSS_RST` (PB5), режим `GNSS_MODE` (PB4) — пока пины не дёргаем
+* [ ] проверить приём NMEA на живом модуле: `tasks_status.mod[TASK_MOD_GPS]`, `Latitude/Longitude`, `Gps_flag_err`
+
+**Этап 2c. Экран и графика (LVGL 9.2 + SquareLine Studio)**
+* [x] `LCD_platform.c/h` переведён с AT32 на HAL (SPI2 + GPDMA1 Ch8), имена функций сохранены — v17
+* [x] `TFT.h`: ST7789P3 172×320 + `TFT_COL_OFFSET` (RAM контроллера 240×320) — v17
+* [x] include paths: `Drivers/lvgl`, `Drivers/ui`, `Core/ui/lv_i18n`, `Src/TFT`, `Src/BME280`, `Src/Lis3dh_reg` — v17
+* [ ] `lv_conf.h` (LV_COLOR_DEPTH 16, память, тик) — в git его нет
+* [ ] порт дисплея: `lv_display_create(172,320)` + `lv_display_set_flush_cb` → `TFT_FlushBuffer`, `lv_tick_set_cb(VTICK_MS)`
+* [ ] тело потока `LVGL Task` (`ui_init()`, `lv_i18n_init()`, `lv_timer_handler()`) и `LVGL_STACK_SIZE` 8–16 КБ
+* [ ] в кубе SPI2 prescaler /4 или /8 (сейчас /2 = 80 МГц — выше spec ST7789P3)
+* [ ] перенос `TFT_indicator.c` (нужны `SNS_CFG_Type`, `CALIB_CFG`, `COUNT_CHAN`)
 
 **Этап 3. Мост и статусы**
 * [ ] таблица «статус → индекс звука» и «статус → LED»
@@ -212,6 +225,11 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 | Патчи | правки передаются как `git apply --binary <file>.diff` (не `git am`: он срезает CRLF у `.bat`); коммиты делает автор проекта |
 | Состояние плеера | ОДНА volatile-структура `audio_status` (вместо 14 переменных `audio_dbg_*`): состояние — enum'ы `audio_output_t` (`AUDIO_OUT_SILENT/_SOUND/_ALARM_BEEP`), `audio_boot_t`, `audio_cmd_t`, `audio_err_t`; счётчики — `cnt_*`. Дубли состояния убраны: `ap_playing_idx`, `ap_loop_*`, `ap_img_ok` удалены. То же для кнопок — `demo_status` |
 | Потоки прибора | Два потока по образцу `Avis_main.c`: `Receiver Task` (приоритет 12, стек 2 КБ) — приём и парсинг по каждому UART (`command_message`, `Lora_Receive`, `Ble_Receive`, `Lte_Receive`, `Gps_Receive`, `Uart_Channel_Receive`); `Measure Task` (13 / 4 КБ) — `Vector_Run_Pre_Init()` один раз и `Vector_Run_Measure()` + `Vector_RunFlashMemory()` каждые `VECTOR_TASKS_MEASURE_PERIOD_MS` (внутри `Ble_Run/Lora_Run/Lte_Run/Gps_Run`). Модули закрыты `CONFIG_*` из `config_device.h`, заглушки — `__attribute__((weak))`. Выключатель всего: `VECTOR_TASKS_ENABLE` |
+| Перенос с AT32 | Весь перенесённый код (Gps, TFT, BME280, LIS3DH, MAX17048) переводим на HAL, **имена функций сохраняем**: `I2C_Master_Transmit/Receive` → `HAL_I2C_Master_*`, `gpio_bits_set/reset` → `HAL_GPIO_WritePin`, `spi_*`/`dma_channel_*` → `HAL_SPI_Transmit[_DMA]`, `EXINT->polcfg1/2` → `LL_EXTI_*Trig_0_31`. Общее, чего в HAL нет (`Delay`, `GetTick`, `Search_text`, `TIME_DEL_1`) — в `vector_compat.[ch]` |
+| Экран | ST7789P3 **172×320** (`CONFIG_MODEL_LCD 0`), SPI2 8 бит + GPDMA1 Ch8 (Normal), кадр уходит `LCD_writeBulk()` → колбэк DMA → `lv_display_flush_ready`. Байты RGB565 меняются местами (`VECTOR_LCD_SWAP_RGB565`). `HAL_SPI_ErrorCallback` не занимаем (он уже у `spiflash.c`) — залипание порта лечим таймаутом ожидания, всё видно в `lcd_status` |
+| Датчики | I2C1: BME280 (0x76), LIS3DH (0x19), MAX17048 (0x36). Владелец шины — `Measure Task` (`vector_sensors.c`), чтение раз в `VECTOR_TASKS_MEASURE_PERIOD_MS`. Значения → `Sns_Cfg_struct.Config_common` и `sensors_status`. Поворот экрана: `ACCEL_INT` (PC11) → только флаг → `lis3dh_update_all()` в потоке → `TFT_Rotation()` |
+| Данные прибора | Экземпляры `Sns_Cfg_struct`, `Cfg_structdef_read`, `tempsensor_calib`, `device_turn` определены в `Vector_main.c` (как в Avis_main.c). Калибровка температуры выключена (`VECTOR_BME_CALIBRATION 0`): `flash_write_calibration_safe()` в проекте нет |
+| i18n | Переводы в `Core/translations/*.yml` (ru-RU, en-GB), генерация `Core/update_lang.bat` → `Core/ui/lv_i18n/*`; в UI текст через `_("ключ")`. Описание — `docs/LVGL.md` |
 | Порядок работ (решение автора, v16) | Сначала **база**: модули прикладываем к проекту (`Gps.c`, потоки, кольца `TYPE_*`, флаги `CONFIG_* = 0`), периферию не трогаем. UART/куб/NVIC (`USART1_IRQn`, `USART_GPS`, `USART_BLE`/`USART_RF` в `main.h`) и значения `CONFIG_*` **пока не настраиваем и не включаем** — вернёмся к этому отдельным этапом |
 
 ---
@@ -341,3 +359,20 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
       см. п.8) и AT32-`usart_init()` — заменить на HAL/`VTICK_*`;
     * `<string.h>` и `<stdio.h>` добавлены в `Gps.c` (v16): в Avis их тянул `Avis_main.h`.
     Пока `CONFIG_GPS 0`, файл компилируется в пустой translation unit и сборке не мешает.
+27. `USART_LORA` назначен на **UART4** (`Lora_S7678S.h:21`), а UART4 — терминал и лог (`USART_COM`/`USART_DEBUG`,
+    `VECTOR_LOG_UART 4`), к тому же полудуплекс (`HAL_HalfDuplex_Init`). При `CONFIG_LORA 1` передача LoRa пойдёт в порт
+    лога. До включения LoRa: перенести `USART_LORA` на свободный порт (USART1 занят GPS) или убрать лог с UART4.
+28. **SPI2 = 80 МГц** (Baud Rate Prescaler 2 при PCLK1 160 МГц) — выше допустимого для ST7789P3 (~62.5 МГц на запись).
+    Поставить в кубе /4 или /8, иначе возможны битые пиксели и зависания `LCD_writeBulk`.
+29. `TFT_indicator.c` (2783 строки индикации Avis) выключен (`CONFIG_TYPE_LCD == 2`) и без переноса не соберётся:
+    нужны `SNS_CFG_Type`, `CALIB_CFG`, `COUNT_CHAN`, значения `DEVICE_NUMBER` (Device2/Device3_Pro) и функции Avis
+    (`Avis_Run_Temp`, `DisplayIndication`, `Button_Run`). Из `TFT.h` он больше не включается — драйвер панели от слоя
+    индикации не зависит.
+30. Графика не воспроизводится из git: `Drivers/lvgl` (9.2), UI SquareLine Studio и `lv_conf.h` в репозитории не лежат
+    (`/Drivers/` в `.gitignore`). Строка `!/Debug/ui_Vector/` после `/Debug/` не работает (git не заходит в исключённый
+    каталог): нужно `/Debug/*` + `!/Debug/ui_Vector/`, либо держать UI в `Drivers/` и зафиксировать версии в README.
+31. `LVGL Task`: стек 4096 байт для LVGL 9 мал (нужно 8–16 КБ), тело потока — заглушка (спит 1 с), порт дисплея и
+    `lv_tick` не настроены. Шаблон — `docs/LVGL.md` раздел 4.
+32. `flash_write_calibration_safe()`, `Avis_Run_Temp()`, `TIMER_RTC_*` и `COUNT_CHAN` в проекте не определены:
+    калибровка температуры выключена (`VECTOR_BME_CALIBRATION 0`), `Vector_Search_Temp_Start()` — weak-заглушка
+    (переименована с `Avis_Search_Temp_Start`), таймеры прибора не перенесены (в `Gps_Run` вместо них тик RTOS).
