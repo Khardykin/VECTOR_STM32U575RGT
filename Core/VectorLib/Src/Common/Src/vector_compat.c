@@ -52,22 +52,11 @@ uint32_t GetTick(void)
    так же вёл себя оригинал).
    ВАЖНО: buffer обязан быть NUL-terminated - в Gps.c накопитель memset'ится
    после каждого кадра, поэтому завершающий '\0' там всегда есть.             */
-uint16_t Search_text(uint8_t *data, const char *text)
+uint16_t Search_text(uint8_t *data1, uint8_t *data2)
 {
-  const char *found;
-  size_t text_len;
-
-  if ((data == (uint8_t *)0) || (text == (const char *)0))
-  {
-    return 0u;
-  }
-
-  found = strstr((const char *)data, text);
-  if (found == (const char *)0)
-  {
-    return 0u;
-  }
-
-  text_len = strlen(text);
-  return (uint16_t)((size_t)(found - (const char *)data) + text_len);
+	uint8_t * index;
+	uint16_t pos = 0;
+	index = strstr(data1, data2) + 1;
+	pos = (uint16_t)(index - data1);
+	return pos;
 }

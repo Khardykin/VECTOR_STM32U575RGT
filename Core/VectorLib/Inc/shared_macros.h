@@ -19,6 +19,26 @@
 #define CLRBIT(var,bit)		        (var &= ~(1 << bit))
 #define TESTBIT(var,bit)	        (var & (1 << bit))
 //--------------------------------------------------------------------------------------------------------------
+#define SET_STATUS_COMMON_BIT(BIT)	{SETBIT(Sns_Cfg_struct.Config_common.State,BIT);}
+#define CLEAR_STATUS_COMMON_BIT(BIT)	{CLRBIT(Sns_Cfg_struct.Config_common.State,BIT);}
+#define TEST_STATUS_COMMON_BIT(BIT)	(TESTBIT(Sns_Cfg_struct.Config_common.State,BIT))
+//--------------------------------------------------------------------------------------------------------------
+#define SET_STATUS_COMMON_ERR_BIT(BIT)	{SETBIT(Sns_Cfg_struct.Config_common.StateErr,BIT);}
+#define CLEAR_STATUS_COMMON_ERR_BIT(BIT){CLRBIT(Sns_Cfg_struct.Config_common.StateErr,BIT);}
+#define TEST_STATUS_COMMON_ERR_BIT(BIT)	(TESTBIT(Sns_Cfg_struct.Config_common.StateErr,BIT))
+//--------------------------------------------------------------------------------------------------------------
+#define START_TIMER(TIMER, TIME)	{ countdown_time.Timers[TIMER] = TIME;	CLRBIT(countdown_time.TimerIsEnd, TIMER); }
+#define RESET_TIMER(TIMER)	        { countdown_time.Timers[TIMER] = 0;	CLRBIT(countdown_time.TimerIsEnd, TIMER); }
+#define TEST_TIMER(TIMER)			TESTBIT(countdown_time.TimerIsEnd, TIMER)
+#define TEST_TIMER_RUN(TIMER)		(countdown_time.Timers[TIMER])
+#define END_TIMER(TIMER)			{ SETBIT(countdown_time.TimerIsEnd, TIMER); }
+//--------------------------------------------------------------------------------------------------------------
+#define START_TIMER_RTC(TIMER, TIME)	{ countdown_time_rtc.Timers[TIMER] = TIME;	CLRBIT(countdown_time_rtc.TimerIsEnd, TIMER); }
+#define RESET_TIMER_RTC(TIMER)	        { countdown_time_rtc.Timers[TIMER] = 0;	CLRBIT(countdown_time_rtc.TimerIsEnd, TIMER); }
+#define TEST_TIMER_RTC(TIMER)			TESTBIT(countdown_time_rtc.TimerIsEnd, TIMER)
+#define TEST_TIMER_RUN_RTC(TIMER)		(countdown_time_rtc.Timers[TIMER])
+#define END_TIMER_RTC(TIMER)			{ SETBIT(countdown_time_rtc.TimerIsEnd, TIMER); }
+//--------------------------------------------------------------------------------------------------------------
 #define TO_GO_STATE_SCREEN(x)	(state_screen = x)
 #define IS_STATE_SCREEN()		(state_screen)
 #define SET_STATE_BUTTON(x)		(state_button = x)

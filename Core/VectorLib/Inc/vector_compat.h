@@ -72,7 +72,7 @@ uint32_t GetTick(void);
 /* Поиск подстроки text в буфере data (буфер обязан заканчиваться '\0').
    Возврат: смещение СРАЗУ ЗА найденной подстрокой, 0 если не найдено.
    КОНТЕКСТ: любой.                                                           */
-uint16_t Search_text(uint8_t *data, const char *text);
+uint16_t Search_text(uint8_t *data1, uint8_t *data2);
 
 #ifdef __cplusplus
 }

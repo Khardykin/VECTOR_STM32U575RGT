@@ -30,17 +30,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* --- общие статусы прибора (Config_common.State) --------------------------- */
-#define SET_STATUS_COMMON_BIT(bit)        (Sns_Cfg_struct.Config_common.State |= (uint32_t)(1UL << (bit)))
-#define CLEAR_STATUS_COMMON_BIT(bit)      (Sns_Cfg_struct.Config_common.State &= (uint32_t)~(1UL << (bit)))
-#define TEST_STATUS_COMMON_BIT(bit)       ((Sns_Cfg_struct.Config_common.State & (uint32_t)(1UL << (bit))) != 0UL)
-
-/* --- ошибки модулей (Config_common.StateErr) ------------------------------- */
-#define SET_STATUS_COMMON_ERR_BIT(bit)    (Sns_Cfg_struct.Config_common.StateErr |= (uint32_t)(1UL << (bit)))
-#define CLEAR_STATUS_COMMON_ERR_BIT(bit)  (Sns_Cfg_struct.Config_common.StateErr &= (uint32_t)~(1UL << (bit)))
-#define TEST_STATUS_COMMON_ERR_BIT(bit)   ((Sns_Cfg_struct.Config_common.StateErr & (uint32_t)(1UL << (bit))) != 0UL)
-
 /* --- статусы канала (ST_GA_ERR) --------------------------------------------
  * НЕ ОПРЕДЕЛЕНЫ намеренно: в SNS_CFG этого проекта нет массива Sensor[]
  * (только Config_common + application_language + CRC_CONFIG), а COUNT_CHAN не
