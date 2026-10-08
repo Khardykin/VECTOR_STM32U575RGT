@@ -80,10 +80,56 @@ extern TIM_HandleTypeDef htim6;
 
 /* USER CODE BEGIN EV */
 //===========================================================================================================================
+Timer_variables 	timer = {0};
+DOWN_TIMER			countdown_time = {0};
+DOWN_TIMER_RTC 		countdown_time_rtc = {0};
+//===========================================================================================================================
+// Обработчик прерываний от RTC1
+// Обработчик прерываний таймера
+// Обработчик таймера интервал вызова (1000.mS)
+void Countdown_Timer_Rtc(void)
+{
+	uint8_t i = 0;
+	for(i=0; i < COUNT_TIMERS_RTC; i++)
+	{
+		if(countdown_time_rtc.Timers[i])
+		{
+			countdown_time_rtc.Timers[i] --;
+			if(!countdown_time_rtc.Timers[i])
+				END_TIMER_RTC(i);
+		}
+	}
+}
+
+void Clear_Timer_Rtc(void)
+{
+	uint8_t i = 0;
+	for(i=0; i < COUNT_TIMERS_RTC; i++)
+	{
+		if(countdown_time_rtc.Timers[i])
+		{
+			countdown_time_rtc.Timers[i] = 0;
+			END_TIMER_RTC(i);
+		}
+	}
+}
+
+//===========================================================================================================================
 // Обработчик прерываний RTC
 void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc)
 {
-
+	timer.flag_start_work = 1;
+	timer.flag_start_work_bat_sys = 1;
+	Sns_Cfg_struct.Config_common.working_hours += 1;
+	Countdown_Timer_Rtc();
+#if CONFIG_UART
+	if(timer_end_data_exchange){
+		timer_end_data_exchange --;
+		if(!timer_end_data_exchange){
+			flag_end_data_exchange = 1;
+		}
+	}
+#endif
 }
 
 // Обработчик прерываний TIM

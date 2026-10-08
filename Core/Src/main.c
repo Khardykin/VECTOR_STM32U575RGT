@@ -229,7 +229,38 @@ void PeriphCommonClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+//===========================================================================================================================
+// Обработчик прерываний таймера 2
+// Обработчик таймера интервал вызова (1mS)
+void Countdown_Timer_Chan(void)
+{
+	uint8_t i = 0;
+	for(uint8_t chan = 0; chan < COUNT_CHAN; chan++){
+		for(i=0; i < COUNT_TIMERS_CHAN; i++)
+		{
+			if(countdown_time_chan[chan].Timers[i])
+			{
+				countdown_time_chan[chan].Timers[i] --;
+				if(!countdown_time_chan[chan].Timers[i])
+					END_TIMER_CH(i, chan);
+			}
+		}
+	}
+}
 
+void Countdown_Timer(void)
+{
+	uint8_t i = 0;
+	for(i=0; i < COUNT_TIMERS; i++)
+	{
+		if(countdown_time.Timers[i])
+		{
+			countdown_time.Timers[i] --;
+			if(!countdown_time.Timers[i])
+				END_TIMER(i);
+		}
+	}
+}
 /* USER CODE END 4 */
 
 /**
@@ -254,10 +285,38 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   }
   /* USER CODE BEGIN Callback 1 */
   else if(htim->Instance == TIM3){
-	  /* TIM3 = 1 кГц (Prescaler 159, Period 1000): счётчики таймаута кадра
-	     периферийных модулей. Время приложения по-прежнему только тик RTOS
-	     (vector_tick.h) - эти счётчики нужны самим драйверам.
-	     КОНТЕКСТ: прерывание, только декремент.                              */
+	  Countdown_Timer();
+	  Countdown_Timer_Chan();
+	  timer.flag_1ms = 1;
+	  timer.count_1ms++;
+	  if(timer.count_1ms >= 10){
+		  timer.count_1ms = 0;
+		  timer.flag_10ms = 1;
+		  timer.count_10ms++;
+		  if((timer.count_10ms%10) == 0){
+			  timer.flag_100ms = 1;
+			  timer.count_100ms++;
+			  if(timer.count_100ms >= 10){
+				  timer.count_10ms = 0;
+				  timer.count_100ms = 0;
+				  timer.flag_1s = 1;
+				  timer.count_1s++;
+			  }
+		  }
+	  }
+	  if(button.button_flag){
+		  button.button_count++;
+	  }
+	  if(button2.button_flag){
+		  button2.button_count++;
+	  }
+	  if(button3.button_flag){
+		  button3.button_count++;
+	  }
+	  //--------------------------------------------------------------------------
+#if CONFIG_UART
+	  Uart_Command_Receive_Timer_Inc();
+#endif
 #if CONFIG_GPS
 	  Uart_Gps_Receive_Timer_Inc();    /* таймаут кадра NMEA (TIME_OUT_GPS)  */
 #endif
