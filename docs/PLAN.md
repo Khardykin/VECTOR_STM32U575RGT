@@ -16,6 +16,13 @@
   (модуль S7678S), и наоборот;
 * **статусы**: в BLE-сообщениях приходят статусы, на которые прибор
   *сигнализирует звуком/индикацией* и которые *так же передаются по LoRa*;
+* **GPS/GNSS** (USART1): NMEA, автоопределение чипа (Allystar/LOCOSYS),
+  координаты для LoRa-трека — включён (`CONFIG_GPS 1`);
+* **датчики** (I2C1): BME280 — T/H/P, LIS3DH — 6D-ориентация и поворот экрана,
+  MAX17048 — батарея;
+* **экран** TFT ST7789P3 172×320 (SPI2), графика — LVGL 9.2 + SquareLine
+  (подключается, `docs/LVGL.md`); **LTE-модем** (USART2, пины `LTE_*`) —
+  каркас потока готов, `CONFIG_G4` выключен;
 * **кнопки** PB1/PB2/PB3, RTC (LSE), режим пониженного потребления
   (сон + пробуждение по RTC), кольцевой журнал и страница конфигурации во
   внешней flash.
@@ -33,7 +40,7 @@
 | Лог | `Src/Common/Src/vector_log.c` | работает: ITM/SWO и/или UART4, уровни и маски, выключатели |
 | Кольцевые буферы UART | `Src/buffer.c`, `Inc/buffer.h` | каркас: приём по байту из ISR, передача polling/DMA |
 | Потоки прибора | `Src/Vector_main.c`, `Inc/vector_tasks.h` | каркас готов (v15, GPS в v16) по образцу `Avis_main.c`: поток `Receiver Task` (приём и парсинг по каждому UART) и поток `Measure Task` (периодика 1 с → `Vector_Run_Measure()` → `Ble_Run/Lora_Run/Lte_Run/Gps_Run`). Заглушки модулей — слабые (`__attribute__((weak))`): ваша реализация в файле модуля заменит их сама |
-| GPS/GNSS | `Src/Gps.c`, `Inc/Gps.h` | **приложен из другого прибора (v16)**: NMEA (GGA/GLL/RMC), автоопределение чипа (Allystar/LOCOSYS), координаты для LoRa-трека, команды LOCOSYS. Закрыт `CONFIG_GPS 0`; что нужно для включения — раздел 7, п.26 |
+| GPS/GNSS | `Src/Gps.c`, `Inc/Gps.h` | **приложен из другого прибора (v16), включён** (`CONFIG_GPS 1` — решение автора): USART1 (PB6/PB7), NMEA (GGA/GLL/RMC), автоопределение чипа (Allystar/LOCOSYS), координаты для LoRa-трека, команды LOCOSYS. Проверка на живом модуле — раздел 5, этап 2b |
 | Экран TFT | `Src/TFT/LCD_platform.[ch]`, `TFT.[ch]`, `TFT_indicator.[ch]` | **v17**: `LCD_platform` переведён с AT32 на HAL (SPI2 + GPDMA1 Ch8, имена функций сохранены), ST7789P3 172×320, `lcd_status`; `TFT_indicator` (2783 строки индикации Avis) пока выключен — нужны `SNS_CFG_Type`/`CALIB_CFG`/`COUNT_CHAN` |
 | Датчики I2C1 | `Src/lis3dh.c` + `Src/Lis3dh_reg/`, `Src/bme280_com.c` + `Src/BME280/`, `Src/MAX17048.c`, чтение — в `Src/Vector_main.c` | **v17/v18**: обмен через макросы `I2C_Master_Transmit/I2C_OK` (main.h), HAL внутри библиотек нет; `sensors_init()/sensors_read()` в Measure Task, состояние в `sensors_status`, поворот экрана по `ACCEL_INT` |
 | Графика LVGL | `Drivers/lvgl` (9.2) + UI SquareLine Studio, `Core/ui/lv_i18n`, `Core/translations/*.yml` | LVGL и UI в git **не лежат**; описание и чек-лист — `docs/LVGL.md`; поток `LVGL Task` пока заглушка |
@@ -47,7 +54,7 @@ UART-роли (как задумано):
 
 | Роль | Периферия | Куда |
 |---|---|---|
-| `USART_COM` / `USART_DEBUG` | UART4 (PC10/PC11) | терминал + лог (`VECTOR_LOG_UART 4`), кольцо `TYPE_USART` |
+| `USART_COM` / `USART_DEBUG` | UART4 (**только PC10**, однопроводный полудуплекс; PC11 занят `ACCEL_INT`) | терминал + лог (`VECTOR_LOG_UART 4`), кольцо `TYPE_USART` |
 | `USART_BLE` (не определён) | USART3 (PC4/PC5, метки `USART3_*_BLE`) | BLE-модуль (`BLE_RESET` = PC12) |
 | `USART_LORA` | **UART4 (`huart4`)** | так задано в `Lora_S7678S.h:21` — КОНФЛИКТ: UART4 занят терминалом и логом (`USART_COM`/`USART_DEBUG`, `VECTOR_LOG_UART 4`) и работает в полудуплексе. До включения `CONFIG_LORA` порт надо переназначить (раздел 7, п.27) |
 | (LTE, макроса нет) | USART2 (PA2/PA3, метки `USART2_*_LTE`) | сотовый модем: пины `LTE_EN`/`LTE_RESET`/`LTE_STATUS`/`LTE_LED` (PC0..PC3), кольцо `TYPE_LTE` |
@@ -64,7 +71,8 @@ UART-роли (как задумано):
 можно решить позже, не переписывая поток: в `.ioc` USART2 (PA2/PA3) подписан
 `_LTE` и к нему относятся пины `LTE_EN/RESET/STATUS/LED`, тогда как
 `USART2_IRQHandler` кладёт байты в `InputBuffer[TYPE_LORA]`; USART1 (PB6/PB7)
-инициализирован, но не используется и IRQ у него в NVIC не включён.
+занят GPS (`USART1_IRQn` включён, байты из ISR идут прямо в
+`Gps_Data_Verification()`, минуя кольца `InputBuffer`).
 
 ---
 
@@ -93,10 +101,14 @@ UART-роли (как задумано):
 
 ```
 COM  (UART4)  --байты--> ISR --> InputBuffer[TYPE_USART]   ---\
-LoRa (USART1) --байты--> ISR --> InputBuffer[TYPE_LORA]     ---+--> Receiver Task
+LoRa (UART4!) --байты--> ISR --> InputBuffer[TYPE_LORA]     ---+--> Receiver Task
 BLE  (USART3) --байты--> ISR --> InputBuffer[TYPE_BLE]      ---+   (Vector_main.c)
-LTE  (USART2) --байты--> ISR --> InputBuffer[TYPE_LTE]      ---+
-GPS  (порт TBD) --байты--> ISR --> InputBuffer[TYPE_GPS]     ---/   (Gps.c, CONFIG_GPS)
+LTE  (USART2) --байты--> ISR --> InputBuffer[TYPE_LTE]      ---/
+GPS  (USART1) --байты--> ISR --> Gps_Data_Verification(): свой буфер в Gps.c
+               (мимо колец; разбор - Gps_Receive() в Receiver Task, CONFIG_GPS 1)
+
+(!) LoRa пока назначен на huart4 (Lora_S7678S.h:21) - конфликт с COM и логом;
+до включения CONFIG_LORA порт надо переназначить (раздел 7, п.27).
 
 Receiver Task: command_message() / Lora_Receive() / Ble_Receive() /
                Lte_Receive() / Gps_Receive() / Uart_Channel_Receive() +
@@ -190,9 +202,11 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 **Этап 5. Сон и питание**
 * [ ] `CONFIG_SLEEP`: Stop2 (RAM сохраняется) или Standby (меньше ток, RAM
       теряется) при «прибор выключен»
-* [ ] пробуждение: RTC Wakeup (`HAL_RTCEx_SetWakeUpTimer_IT`, период N−1 при
-      CK_SPRE) + `RTC_IRQn` в NVIC + `RTC_IRQHandler` + колбэк; для Standby —
-      WKUP-пин кнопки
+* [x] источник пробуждения: RTC Wakeup 1 с (`HAL_RTCEx_SetWakeUpTimer_IT` +
+      `RTC_IRQn` в NVIC + `RTC_IRQHandler` + колбэк → `Timer_Tick_1s()`) — v19,
+      в кубе включено автором (`.ioc`: Wakeup Interrupt + RTC global interrupt)
+* [ ] для Standby — WKUP-пин кнопки; если период wakeup в снах менять (≠ 1 с),
+      пересчитать секундные таймеры и мото-часы (сейчас такт ровно 1 с)
 * [ ] перед сном: усилитель `SD_MODE` low, flash в deep power-down (B9h —
       команды в драйвере пока нет), дождаться TC у UART, `HAL_SuspendTick()`,
       остановить SysTick; после: `SystemClock_Config()`, реинит периферии,
@@ -312,17 +326,17 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     комментариев.
 
 **Прочее**
-21. **[исправлено в v19]** RTC Wakeup: куб запускал `HAL_RTCEx_SetWakeUpTimer()`
-    БЕЗ прерывания, `RTC_IRQn` в NVIC не был разрешён, `RTC_IRQHandler` в
-    `startup` только weak (`Default_Handler`) → колбэк
-    `HAL_RTCEx_WakeUpTimerEventCallback` не приходил никогда, то есть секундные
-    таймеры прибора (`countdown_time_rtc`, все `TIMER_RTC_*`) не шли. Теперь в
-    `rtc.c` (USER CODE `RTC_Init 2`) таймер перезапущен через
-    `HAL_RTCEx_SetWakeUpTimer_IT`, `RTC_IRQn` разрешён, в `stm32u5xx_it.c`
-    добавлен `RTC_IRQHandler`. В кубе то же самое: `RTC → Wakeup Interrupt` +
-    `NVIC Settings → RTC global interrupt` (тогда USER CODE-блок можно убрать).
-22. `tools/Документ Microsoft Word.odt` и тестовые образы `build/*.bin` — в
-    репозитории, но не используются.
+21. **[закрыт: v19 + куб, v20]** RTC Wakeup: куб запускал
+    `HAL_RTCEx_SetWakeUpTimer()` БЕЗ прерывания, `RTC_IRQn` не был разрешён →
+    секундные таймеры прибора не шли. v19 временно чинил это USER CODE-блоком
+    в `rtc.c`; автор включил то же в кубе (`RTC → Wakeup Interrupt` +
+    `NVIC → RTC global interrupt`, `.ioc` и код перегенерированы: куб сам зовёт
+    `HAL_RTCEx_SetWakeUpTimer_IT` и настраивает NVIC в `HAL_RTC_MspInit`,
+    приоритет 0). В v20 страховочный блок удалён: он дублировал куб, а его
+    3-аргументный вызов не собирался бы с новой HAL (у
+    `HAL_RTCEx_SetWakeUpTimer_IT` появился 4-й аргумент AutoReload).
+22. `tools/Документ Microsoft Word.odt` — в репозитории, но не используется
+    (тестовые образы `build/*.bin` из репозитория уже убраны).
 23. «Хрип» при воспроизведении (слышен даже на чистом `tone_1k.wav` при 50%
     громкости → аналоговое клиппирование исключено). Данные в образе
     проверены (SHA256 совпадает), масштабирование громкости `(*g)>>15`
@@ -334,41 +348,30 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     (счётчик `audio_status.cnt_underruns`); (в) аналог: питание MAX98357A/GAIN/
     динамик (проверяется писком `VECTOR_AUDIO_SELFTEST 1` — он идёт мимо
     внешней flash). План тестов — в сообщении к v11.
-24. Маппинг «модуль → UART» уточнён по коду (v15), но не доведён до куба:
-    * LoRa = **USART1** (PB6/PB7) — `Lora_S7678S.h:21`; `USART1_IRQn` в NVIC НЕ включён,
-      приём по нему сейчас невозможен (включить в CubeMX: USART1 → NVIC);
-    * LTE = USART2 (PA2/PA3, метки `_LTE`, пины `LTE_EN/RESET/STATUS/LED`), но
-      `USART2_IRQHandler` кладёт байты в `InputBuffer[TYPE_LORA]` — надо `TYPE_LTE`;
-    * BLE = USART3 (PC4/PC5), `USART3_IRQHandler` → `InputBuffer[TYPE_BLE]` под `CONFIG_BLE`;
-    * `USART_BLE` / `USART_RF` в `main.h` не определены (п.13) — `transmit_buffer()` без них
-      не передаст ничего.
-25. `CONFIG_LORA 1` / `CONFIG_BLE 1` пока НЕ СОБИРАЮТСЯ (проверено gcc -fsyntax-only).
-    До включения конфига нужно, по порядку:
-    * `Vector_main.h`: раскомментировать `#include "shared_types.h"` (нужны `SNS_CFG`,
-      `ST_COMMON_*`, `DEVICE_TURNED`);
-    * определить `COUNT_CHAN` (число каналов прибора) — используется в `Lora_S7678S.h:24`,
-      сейчас не определён нигде;
-    * определить экземпляры `SNS_CFG Sns_Cfg_struct;` и `DEVICE_TURNED device_turn;`
-      (в `shared_types.h` они только `extern`);
-    * добавить макросы статусов/таймеров `SET_/TEST_/CLEAR_STATUS_COMMON_BIT`,
-      `START_/TEST_/RESET_TIMER_RTC` (в `stm32u5xx_it.c` на них уже есть закомментированные
-      вызовы) — без них `Ble_Run()`/`Lora_Run()` не написать как в `Avis_main.c`;
-    * `FIRMWARE_VERSION` определён только для `DEVICE_NUMBER == Dev1` (п.19).
-26. `CONFIG_GPS 1` пока НЕ СОБИРАЕТСЯ (проверено gcc -fsyntax-only на `Gps.c`). Модуль
-    перенесён с прибора на AT32, поэтому не хватает:
-    * типов и констант из вашего `Gps.h`: `GNSS_CHIP_TYPE` (`CHIP_ALLYSTAR_OLD`,
-      `CHIP_LOCOSYS_AIROHA_NEW`, ...), `DETECT_STATE_t` (`DETECT_STATE_START_115200`,
-      `DETECT_STATE_LISTEN_115200`), команды `CMD_EN_DIS_MSG`, `CMD_TYPE_START`,
-      `CMD_SAVE_CONFIG`, `CMD_CONF_NAV_SYS`, `CMD_BLOCK_PROPRIETARY`, сообщения
-      `TYPE_MSG_GGA/GLL/GSA/GSV/RMC/VTG/ZDA/GRS/TXT`, старты `TYPE_HOT_START`,
-      `TYPE_WARM_START`, `TYPE_COLD_START`, `TYPE_RESET`, системы `TYPE_NAV_GPS_L1`,
-      `TYPE_NAV_BEIDOU_B1`, `TYPE_NAV_GLONASS_G1`, `TYPE_NAV_GALILEO_E1`,
-      `TIME_OUT_GPS`, `TEST_GPS`, `USART_GPS`;
-    * `SNS_CFG` — то же, что в п.25 (`shared_types.h` не включён в `Vector_main.h`);
-    * функций `Delay()`, `GetTick()`, `Search_text()` (их нет и у LoRa-драйвера,
-      см. п.8) и AT32-`usart_init()` — заменить на HAL/`VTICK_*`;
-    * `<string.h>` и `<stdio.h>` добавлены в `Gps.c` (v16): в Avis их тянул `Avis_main.h`.
-    Пока `CONFIG_GPS 0`, файл компилируется в пустой translation unit и сборке не мешает.
+24. Маппинг «модуль → UART» (фактический, v17+): GPS = USART1 (PB6/PB7,
+    `USART1_IRQn` включён); BLE = USART3 (PC4/PC5) → `InputBuffer[TYPE_BLE]`
+    под `CONFIG_BLE`; LTE = USART2 (PA2/PA3, метки `_LTE`, пины
+    `LTE_EN/RESET/STATUS/LED`), но `USART2_IRQHandler` кладёт байты в
+    `InputBuffer[TYPE_LORA]` — надо `TYPE_LTE`; LoRa = **huart4**
+    (`Lora_S7678S.h:21`) — конфликт с COM/логом (п.27). `USART_BLE` /
+    `USART_RF` в `main.h` не определены (п.13) — `transmit_buffer()` без них
+    не передаст ничего.
+25. `CONFIG_LORA 1` / `CONFIG_BLE 1`: прежние блокеры сняты (v18–v20) —
+    `shared_types.h` включён в `Vector_main.h`, экземпляры `Sns_Cfg_struct` и
+    `device_turn` определены в `Vector_main.c`, `COUNT_CHAN` = 10
+    (`shared_types.h`, решение автора), макросы статусов/таймеров есть в
+    `shared_macros.h`, `FIRMWARE_VERSION` для `Dev1` задан. Осталось до
+    включения:
+    * определить `USART_BLE` / `USART_RF` в `main.h` (п.13);
+    * решить порт LoRa: `USART_LORA = huart4` конфликтует с COM/логом (п.27);
+    * перепроверить сборку с `CONFIG_LORA 1` / `CONFIG_BLE 1`
+      (gcc -fsyntax-only), затем на живом железе.
+26. **[закрыт: v16/v17]** `CONFIG_GPS 1` собирается: типы и константы — в
+    `Gps.h`, `USART_GPS` = `huart1`, хелперы `Delay()/DelayInt()/GetTick()/
+    Search_text()` — в `vector_macros.c`, AT32-`usart_init()` заменён на
+    `Uart_SetBaudrate()` (HAL). `CONFIG_GPS 1` включён автором. Осталось
+    проверить на живом модуле (этап 2b): приём NMEA, полярность
+    `GNSS_RST`/`GNSS_MODE`.
 27. `USART_LORA` назначен на **UART4** (`Lora_S7678S.h:21`), а UART4 — терминал и лог (`USART_COM`/`USART_DEBUG`,
     `VECTOR_LOG_UART 4`), к тому же полудуплекс (`HAL_HalfDuplex_Init`). При `CONFIG_LORA 1` передача LoRa пойдёт в порт
     лога. До включения LoRa: перенести `USART_LORA` на свободный порт (USART1 занят GPS) или убрать лог с UART4.
@@ -385,8 +388,8 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     `lv_tick` не настроены. Шаблон — `docs/LVGL.md` раздел 4.
 32. `flash_write_calibration_safe()` и `Avis_Run_Temp()` в проекте не определены: калибровка температуры
     выключена (`VECTOR_BME_CALIBRATION 0`), `Vector_Search_Temp_Start()` — weak-заглушка (переименована с
-    `Avis_Search_Temp_Start`). `TIMER_RTC_*` и `COUNT_CHAN` **[исправлено в v19]**: таймеры прибора перенесены
-    (см. п.33), `COUNT_CHAN` определён как 1.
+    `Avis_Search_Temp_Start`). `TIMER_RTC_*` и `COUNT_CHAN` **[исправлено в v19/v20]**: таймеры прибора перенесены
+    (см. п.33), `COUNT_CHAN` = 10 (решение автора).
 33. **Ошибки в пуше с таймерами (исправлены в v19)**
 
     | Что | Почему ломалось | Как исправлено |
@@ -398,7 +401,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     | `Timer_variables` объявлен в `stm32u5xx_it.h` | тип жил в заголовке прерываний, экземпляры и обслуживание — в двух разных файлах | тип и `extern` — в `shared_types.h`, экземпляры и `Timer_Tick_*` — в `Vector_main.c` |
     | `TIMER_RTC_GPS_DATA_INIT`, `TIMER_RTC_LORA_DATA_SET_ALARM`, `TIME_RTC_*` | используются в `Gps_Run`/`Lora_Run`, но нигде не определены | добавлены в `shared_types.h` (длительности стартовые — подобрать под модули) |
     | `Lora_Run()` вставлен вариантом `Lora_g_*` | драйвер `Lora_g` (`CONFIG_LORA_G`) в этом проекте отсутствует | переписан под имеющийся `Lora_S7678S.c` (`Lora_Init/Lora_DataSet/Lora_DeInit/Lora_IsTxBusy/get_state_*_lora`) по образцу `Lora_Run()` из `Avis_main.c`; джиттер периода через `rand()` |
-    | `COUNT_CHAN` не определён | `Lora_S7678S.h`: `#define COUNT_CHAN_LORA (COUNT_CHAN)` → с `CONFIG_LORA 1` не собиралось | `#define COUNT_CHAN (1)` в `shared_types.h` (газовых каналов нет) |
+    | `COUNT_CHAN` не определён | `Lora_S7678S.h`: `#define COUNT_CHAN_LORA (COUNT_CHAN)` → с `CONFIG_LORA 1` не собиралось | `#define COUNT_CHAN (10)` в `shared_types.h` (решение автора, v20) |
     | `VECTOR_GPS_NAV_PERIOD_MS` | автор удалил макрос, а `Gps_Run()` на нём строился | `Gps_Run()` переведён на секундные таймеры прибора |
     | `VECTOR_TASKS_MEASURE_PERIOD_MS` | период задавал поток, хотя такт 1 с уже даёт TIM3 | макрос удалён, `Measure Task` работает по `timer.flag_1s` |
-    | `working_hours += 1` в колбэке RTC | единица поля — 937.5 мкс (см. `shared_types.h`), а такт — 1 с: мото-часы занижались в ~1067 раз | `+= 1067`; в Avis значение брали из `RTC_ReadTime()` — как перенесёте, читать лучше оттуда |
+    | `working_hours += 1` в колбэке RTC | в Avis единица поля — 937.5 мкс, такт здесь — 1 с | **решение автора (v20)**: на этом приборе мото-часы в секундах, `+= 1` оставлен; при сохранении/загрузке конфига (`working_hours_offset`) единицы с Avis не смешивать |

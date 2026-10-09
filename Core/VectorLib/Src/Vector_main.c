@@ -165,14 +165,18 @@ void Timer_Tick_1ms(void)
 
 /* Такт 1 с: секундные таймеры, мото-часы, флаг старта, таймер окончания
    режима обмена данными. Звать из HAL_RTCEx_WakeUpTimerEventCallback() - одна
-   строка. ВАЖНО: куб включает WakeUp БЕЗ прерывания, поэтому в rtc.c
-   (USER CODE RTC_Init 2) таймер перезапущен с _IT и разрешён RTC_IRQn.
+   строка. Источник такта: RTC WakeUp (CK_SPRE, ровно 1 Гц) - куб запускает его
+   с _IT и разрешает RTC_IRQn (rtc.c), колбэк живёт в stm32u5xx_it.c.
    КОНТЕКСТ: прерывание.                                                     */
 void Timer_Tick_1s(void)
 {
 	timer.flag_start_work = 1;
 	timer.flag_start_work_bat_sys = 1;
 
+	/* Мото-часы: решение автора - единица поля = 1 с (такт RTC wakeup ровно
+	   1 с), поэтому += 1. В Avis поле было в единицах 937.5 мкс и значение
+	   читалось из RTC (working_hours = RTC_ReadTime()); при подключении
+	   сохранения/загрузки конфига (working_hours_offset) единицы не смешивать. */
 	Sns_Cfg_struct.Config_common.working_hours += 1;
 
 	Countdown_Timer_Rtc();
@@ -325,8 +329,9 @@ static void receiver_task_function(ULONG thread_input)
     /* --- COM/терминал: команды обмена данными ------------------------------
      * В Avis вызов закрыт статусом режима обмена:
      *   if (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE)) command_message();
-     * В этом приборе Sns_Cfg_struct и макросы статусов пока не определены
-     * (shared_types.h не включён в сборку) - как появятся, раскомментируйте.  */
+     * Макросы и Sns_Cfg_struct определены (shared_macros.h/shared_types.h), но
+     * бит ST_COMMON_BIT_DATA_EXCHANGE ставить пока некому: модуль COM
+     * (command_message) не перенесён - guard раскомментируется вместе с ним.  */
 #if CONFIG_UART
     /* if (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE)) */
     {
@@ -356,8 +361,12 @@ static void receiver_task_function(ULONG thread_input)
     Lte_Receive();
 
     /* --- GPS/GNSS: приём и разбор NMEA -------------------------------------
-     * Gps_Receive() реализован в Gps.c (приложен к проекту, закрыт CONFIG_GPS).
-     * Координаты оттуда забирает LoRa-трек (Lora_UpdateGPSTrack).            */
+     * Gps_Receive() реализован в Gps.c (CONFIG_GPS включён автором). Байты из
+     * USART1_IRQHandler идут прямо в Gps_Data_Verification() (свой буфер в
+     * Gps.c, мимо колец InputBuffer). Координаты забирает LoRa-трек
+     * (Lora_UpdateGPSTrack). Guard из Avis (TURN_ON_GPS) закомментирован: бит
+     * временно ставит Vector_Run_Pre_Init() по флагам сборки - до загрузки
+     * конфига из CONFIG-страницы внешней flash.                              */
 #if CONFIG_GPS
     /* if (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GPS)) */
     {
@@ -379,8 +388,8 @@ static void receiver_task_function(ULONG thread_input)
 
 /* ============================================================================
  * ПОТОК ИЗМЕРЕНИЙ/ПЕРИОДИКИ: аналог measure_task_function() в Avis_main.c.
- * Один раз делает Vector_Run_Pre_Init(), затем каждые
- * такту timer.flag_1s (1 с от TIM3) вызывает Vector_Run_Measure() и
+ * Один раз делает Vector_Run_Pre_Init(), затем по флагу timer.flag_1s
+ * (такт 1 с от TIM3) вызывает Vector_Run_Measure() и
  * Vector_RunFlashMemory().                                                    */
 static void measure_task_function(ULONG thread_input)
 {
@@ -426,6 +435,15 @@ static void measure_task_function(ULONG thread_input)
 void Vector_Run_Pre_Init(void)
 {
   LOG_I(VLOG_M_TASKS, "pre init");
+
+  //----------------------------------------------------------------------------
+  // Для уменьшения потребления, пин PWR_WAKEUP_PIN4_LOW_1 на всякий случай, так как в слип наврятли мы войдем
+	HAL_PWR_EnableWakeUpPin(PWR_WAKEUP_PIN4_LOW_1);
+	HAL_FLASHEx_ConfigLowPowerRead(FLASH_LPM_ENABLE);
+	HAL_PWREx_EnableUltraLowPowerMode();
+	__HAL_RCC_MSIKSTOP_DISABLE();
+	__HAL_RCC_HSISTOP_DISABLE();
+  //----------------------------------------------------------------------------
 
   /* Датчики на I2C1: BME280 / LIS3DH / MAX17048 (включаются CONFIG_*).
      Результат - в sensors_status.*_ok и в логе.                            */
@@ -839,9 +857,6 @@ void sensors_read(void)
 
     if (lis3dh_get_cached_accel_g(&x, &y, &z))
     {
-      Sns_Cfg_struct.Config_common.Accel_x = x;
-      Sns_Cfg_struct.Config_common.Accel_y = y;
-      Sns_Cfg_struct.Config_common.Accel_z = z;
       sensors_status.cnt_accel_reads++;
     }
 

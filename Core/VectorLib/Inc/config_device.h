@@ -8,9 +8,9 @@
 #ifndef VECTORLIB_INC_CONFIG_DEVICE_H_
 #define VECTORLIB_INC_CONFIG_DEVICE_H_
 
-#define MIRAX 1
-#define BACS 2
-#define MIRAX_BACS_BUILD	MIRAX		// 1-Mirax, 2- Bacs
+#define MIRAX 0
+#define BACS 1
+#define MIRAX_BACS_BUILD	current_build_type		// 0-Mirax, 1- Bacs
 
 //Конфигурация
 #define Dev1     		(6) //

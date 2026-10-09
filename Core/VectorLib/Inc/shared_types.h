@@ -124,6 +124,8 @@ enum ST_COMMON
 //Колличество таймеров------------------------------------------------------------------------------------------
 #define COUNT_TIMERS			(TIMER_END)
 #define COUNT_TIMERS_RTC        (TIMER_RTC_END)
+//Колличество каналов прибора. LoRa-драйвер строит по нему COUNT_CHAN_LORA и массив sensors[] (Lora_S7678S.h)
+#define COUNT_CHAN				(10)
 //--------------------------------------------------------------------------------------------------------------
 typedef struct
 {
@@ -169,7 +171,6 @@ typedef struct//
   uint32_t              State;                                                  // Состояние системы(Общий)
   uint32_t              StateErr;                                               // Ошибки
 
-  uint16_t				SoundPWM;
   uint16_t              TimeLedStatePulse;
   uint16_t              TimeLedStatePeriod;
 
@@ -200,13 +201,10 @@ typedef struct//
   /* --- данные датчиков: ЕДИНСТВЕННОЕ место для измеренных значений --------
      BME280   -> Temperature / Humidity / Pressure (выше),
      MAX17048 -> battery_charge_percent / battery_charge_volt,
-     LIS3DH   -> Accel_x/y/z, Orientation, Screen_rotation.
+     LIS3DH   -> Orientation, Screen_rotation.
      Дублей в sensors_status больше нет: там остались только счётчики
      диагностики шины. Поля добавлены ДО Reserve[], поэтому sizeof(SNS_CFG)
      вырос - учтите при разметке CONFIG-страницы внешней flash и CRC.            */
-  float                 Accel_x;                                                // LIS3DH, g (шкала +-4g, HR 12 бит)
-  float                 Accel_y;
-  float                 Accel_z;
   uint8_t               Orientation;                                            // lis3dh_orientation_t
   uint8_t               Screen_rotation;                                        // 0 или 2 -> TFT_Rotation()
   uint8_t               Sensors_ok;                                             // биты: 1=BME280 2=LIS3DH 4=MAX17048

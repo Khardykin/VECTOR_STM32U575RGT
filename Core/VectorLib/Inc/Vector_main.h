@@ -56,16 +56,24 @@
 #include "audio_player.h"
 #include "vector_tasks.h"
 
+
+#define FLASH_ADDRESS_START_BOOTLOADER  (0x08000000)	// Адресс основной программы
+#define FLASH_ADDRESS_STOP_BOOTLOADER   (0x08005000)  	// Конец памяти stm
+#define FLASH_PAGE_SIZE                 (2048)
+
+#define FLASH_ADDRESS_APPKEY    		(0x0803A000)
+#define FLASH_ADDRESS_CALIB_TEMP_T     	(0x080FF800)
+#define FLASH_ADDRESS_CALIB_TEMP_V     	(FLASH_ADDRESS_CALIB_TEMP_T + 4)
+#define FLASH_ADDRESS_BUILD_TYPE    	(FLASH_ADDRESS_CALIB_TEMP_T + 8)
+
+#define TEMPSENSOR_CALIB_TEMP_T     	(*(float*) FLASH_ADDRESS_CALIB_TEMP_T)
+#define TEMPSENSOR_CALIB_TEMP_V     	(*(uint32_t*) FLASH_ADDRESS_CALIB_TEMP_V)
+
 /* --- датчики на I2C1: BME280 (0x76), LIS3DH (0x19), MAX17048 (0x36) --------
  * Владелец шины - поток Measure Task: чтение только из sensors_read(), поэтому
  * мьютекс не нужен. Микросхемы выключаются CONFIG_BME / CONFIG_LIS3DH /
  * CONFIG_MAX17048 (тело драйверов закрыто этими флагами).
  * Всё состояние - ОДНА структура sensors_status (как audio_status).          */
-/* ДАННЫЕ датчиков здесь НЕ храним: всё в одном месте -
-   Sns_Cfg_struct.Config_common (Temperature/Humidity/Pressure,
-   battery_charge_percent/volt, Accel_x/y/z, Orientation, Screen_rotation,
-   Sensors_ok). В этой структуре - только диагностика шины I2C1 для
-   отладчика: сколько чтений прошло и сколько времени заняло.              */
 typedef struct
 {
   volatile uint32_t cnt_init_ok;        /* сколько модулей поднялось         */

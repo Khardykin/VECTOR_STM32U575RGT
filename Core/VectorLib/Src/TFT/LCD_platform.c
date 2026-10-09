@@ -366,15 +366,6 @@ void LCD_swap_rgb565(uint8_t *data, uint32_t len)
 void backlight_set(uint8_t percent)
 {
 #if (CONFIG_MODEL_LCD == 0)
-    if (percent > 30u)
-    {
-        LCD_LED_Set();
-    }
-    else
-    {
-        LCD_LED_Clr();
-    }
-#elif (CONFIG_MODEL_LCD == 1)
     uint32_t duty;
 
     if (percent > 100u)
@@ -386,9 +377,9 @@ void backlight_set(uint8_t percent)
     {
         duty = VECTOR_LCD_PWM_PERIOD + 1u;
     }
-    /* TODO: ШИМ подсветки в кубе не настроен - см. комментарий выше.
-       HAL_TIM_PWM_Start(&htimX, TIM_CHANNEL_Y);
-       __HAL_TIM_SET_COMPARE(&htimX, TIM_CHANNEL_Y, duty);                    */
+    //ШИМ подсветки в кубе не настроен - см. комментарий выше.
+	HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_1);
+	__HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, duty);
     (void)duty;
 #endif
 }

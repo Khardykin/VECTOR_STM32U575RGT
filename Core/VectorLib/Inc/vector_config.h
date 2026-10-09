@@ -166,7 +166,7 @@
  *   Возврат дублируется в audio_status.cnt_errors / audio_status.last_error.
  *
  * Побочный бонус: пауза между писками отсчитывается циклами ядра
- * (board_delay_cycles(12000000)), поэтому при заниженном SYSCLK она
+ * (DelayInt(300) в Vector_Run_Board_Init), поэтому при заниженном SYSCLK она
  * растягивается - при реальных 80 МГц вместо 160 было бы ~600 мс. Сам писк
  * при этом всегда 240 мс: его темп задаёт SAI, а не ядро.                    */
 #ifndef VECTOR_AUDIO_SELFTEST
@@ -260,8 +260,9 @@
  *                                 тике 1 мс). Байты при этом не теряются: их
  *                                 копит ISR в кольце.
  * VECTOR_TASKS_MEASURE_DELAY_MS   пауза потока измерений между проходами.
- * VECTOR_TASKS_MEASURE_TICK       период Vector_Run_Measure() = флаг timer.flag_1s
- *                                 (такт 1 с даёт Timer_Tick_1ms() от TIM3).
+ *                                 Период Vector_Run_Measure() макросом НЕ
+ *                                 задаётся: это флаг timer.flag_1s (такт 1 с
+ *                                 даёт Timer_Tick_1ms() от TIM3).
  *
  * Модули внутри заглушек закрыты своими CONFIG_* из config_device.h
  * (CONFIG_UART, CONFIG_LORA, CONFIG_BLE, CONFIG_G4/CONFIG_G2 для LTE) - как в
@@ -293,7 +294,6 @@
 #ifndef VECTOR_TASKS_MEASURE_DELAY_MS
 #define VECTOR_TASKS_MEASURE_DELAY_MS    50u
 #endif
-
 
 /* --- РАБОЧЕЕ: экран TFT (ST7789P3 172x320, SPI2 + GPDMA1 Channel8) ---------
  * Драйвер - Core/VectorLib/Src/TFT/LCD_platform.c (v17 переведён с AT32 на HAL,
@@ -339,8 +339,9 @@
 #endif
 
 /* --- РАБОЧЕЕ: датчики на I2C1 (BME280, LIS3DH, MAX17048) -------------------
- * Чтение - sensors_read() в Vector_main.c, состояние в ОДНОЙ структуре
- * sensors_status.
+ * Чтение - sensors_read() в Vector_main.c: измеренные значения ->
+ * Sns_Cfg_struct.Config_common (единственное место), живость чипов -> маска
+ * Config_common.Sensors_ok, счётчики диагностики шины I2C1 -> sensors_status.
  * Включение каждой микросхемы - CONFIG_BME / CONFIG_LIS3DH / CONFIG_MAX17048 в
  * config_device.h: при 0 драйвер не компилируется вовсе (тело файла под #if).
  *
@@ -351,7 +352,6 @@
  * VECTOR_BME_CALIBRATION   1 = калибровка температуры BME280 с записью поправки
  *                          во flash (Calib_bme280_Temp из Avis). Сейчас 0:
  *                          механизма калибровки и страницы под неё в проекте
- *                          нет, код вырезан из сборки.
  *                          нет, код вырезан из сборки.     */
 #ifndef VECTOR_SCREEN_ROTATION
 #define VECTOR_SCREEN_ROTATION         1
@@ -411,8 +411,10 @@
  *   Если отладчик не подключён, ITM_SendChar() просто ничего не делает.
  *
  * VECTOR_LOG_UART: 0 = не печатать в UART, 1..4 = USART1/USART2/USART3/UART4.
- *   Сейчас 4 - вы видите сообщения в своём терминале на UART4 (PC10).
- *   UART4 принадлежит ТОЛЬКО логу; USART2 свободен под рабочий протокол.
+ *   Сейчас 4 - вы видите сообщения в своём терминале на UART4 (PC10, один
+ *   провод, полудуплекс). UART4 = лог + терминал COM (USART_COM/USART_DEBUG,
+ *   кольцо TYPE_USART); USART1 занят GPS, USART2 - LTE, USART3 - BLE:
+ *   значения 1/2/3 конфликтуют с портами модулей.
  *
  * VECTOR_LOG_ENABLE: 0 = ВСЁ выключено на этапе компиляции: макросы LOG_*
  *   становятся ((void)0), vector_log.c пустой, в прошивке не остаётся ни

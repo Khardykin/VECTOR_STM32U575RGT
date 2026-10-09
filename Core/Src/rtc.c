@@ -72,14 +72,7 @@ void MX_RTC_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN RTC_Init 2 */
-  /* Куб включает WakeUp БЕЗ прерывания (HAL_RTCEx_SetWakeUpTimer), а секундные
-     таймеры прибора живут в HAL_RTCEx_WakeUpTimerEventCallback -> Timer_Tick_1s()
-     (stm32u5xx_it.c). Поэтому перезапускаем таймер с _IT и разрешаем RTC_IRQn.
-     То же самое в кубе: RTC -> Wakeup Interrupt и NVIC Settings -> RTC global
-     interrupt - тогда этот блок можно удалить.                            */
-  (void)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 0, RTC_WAKEUPCLOCK_CK_SPRE_17BITS);
-  HAL_NVIC_SetPriority(RTC_IRQn, 3, 0);
-  HAL_NVIC_EnableIRQ(RTC_IRQn);
+
   /* USER CODE END RTC_Init 2 */
 
 }

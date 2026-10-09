@@ -54,7 +54,7 @@ void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, LTE_LED_Pin|LTE_EN_Pin|LTE_STATUS_Pin|LTE_RESET_Pin
-                          |LCD_LED_Pin|SD_MODE_Pin, GPIO_PIN_RESET);
+                          |SD_MODE_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, CS_FLASH_Pin|ALARM_LED_1_Pin|ALARM_LED_2_Pin, GPIO_PIN_RESET);
@@ -73,9 +73,9 @@ void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : LTE_LED_Pin LTE_EN_Pin LTE_STATUS_Pin LTE_RESET_Pin
-                           LCD_LED_Pin SD_MODE_Pin BLE_RESET_Pin */
+                           SD_MODE_Pin BLE_RESET_Pin */
   GPIO_InitStruct.Pin = LTE_LED_Pin|LTE_EN_Pin|LTE_STATUS_Pin|LTE_RESET_Pin
-                          |LCD_LED_Pin|SD_MODE_Pin|BLE_RESET_Pin;
+                          |SD_MODE_Pin|BLE_RESET_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;

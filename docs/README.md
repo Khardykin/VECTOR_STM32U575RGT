@@ -41,7 +41,8 @@
 7. **Диагностика**: структуры `audio_status` (всё состояние плеера),
    `demo_status` (кнопки), `tasks_status` (потоки прибора) и счётчики `sf_dbg_*`
    в Expressions; расшифровка — `AUDIO.md` раздел 7 и `SYSTEM.md` раздел 5. Модули BLE/LoRa/LTE/GPS
-   лежат в `Core/VectorLib/Src/` и закрыты своими `CONFIG_*` (пока выключены).
+   лежат в `Core/VectorLib/Src/` и закрыты своими `CONFIG_*` в `config_device.h`
+   (GPS включён — `CONFIG_GPS 1`; BLE/LoRa/LTE пока выключены).
 
 Прошивка **не записывает** внешнюю flash никогда: ни при старте, ни по команде.
 Образ звуков во внутренней flash MCU больше не линкуется (модуль
@@ -82,7 +83,7 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 | `VECTOR_LOG_ITM` | `1` | вывод в ITM/SWO → консоль CubeIDE (нужен свободный PB3) |
 | `VECTOR_LOG_UART` | `4` | вывод в UART: `0` выкл, `1/2/3/4` = USART1/2/3/UART4 |
 | `VECTOR_LOG_LEVEL` | `2` | порог: 1 DEBUG, 2 INFO, 3 WARN, 4 ERROR (рантайм: `vlog_set_level`) |
-| `VECTOR_LOG_MASK` | `0xFFFFFFFF` | какие модули печатать: SYS/FLASH/AUDIO (рантайм: `vlog_set_mask`) |
+| `VECTOR_LOG_MASK` | `0xFFFFFFFF` | какие модули печатать: SYS/FLASH/AUDIO/TASKS (рантайм: `vlog_set_mask`) |
 
 ### Прочее
 

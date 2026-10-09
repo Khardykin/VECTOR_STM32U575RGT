@@ -48,7 +48,7 @@ Src/Vector_main.c          ТАКТЫ ПРИБОРА: timer/countdown_time/count
                            main() до RTOS: SRAM4, заморозка TIM6, усилитель,
                            проба flash, selftest) - бывшие vector_board.[ch]
 Inc/vector_tasks.h         API потоков: vector_tasks_init, Vector_Run_*, структура tasks_status
-Inc/Gps.h                  API GPS-модуля + что нужно донести при CONFIG_GPS 1
+Inc/Gps.h                  API GPS-модуля (включён: CONFIG_GPS 1, USART1)
 Test/  audio_demo.[ch]     ТЕСТ: кнопки PB1/PB2/PB3 как пульт плеера
 ```
 
@@ -101,7 +101,7 @@ main()
 | Поток | Приоритет | Стек | Что делает |
 |---|---|---|---|
 | `Audio Player` (`ap_thread_entry`) | 10 | 4096 | **единственный владелец** SAI/DMA и `ap_buf[]`: ждёт `ap_wake` (heartbeat или будильник паузы повтора), разбирает команды, дозагружает половины стрим-буфера, запускает DMA, повторяет последний звук по кругу |
-| `Receiver Task` (`receiver_task_function`) | 12 | 2048 | **единственный потребитель** колец приёма `InputBuffer[TYPE_USART/TYPE_LORA/TYPE_BLE/TYPE_LTE/TYPE_GPS/TYPE_SENSOR]`: `command_message()`, `Lora_Receive()`, `Ble_Receive()`, `Lte_Receive()`, `Gps_Receive()`, `Uart_Channel_Receive()`, затем `Vector_Options_System()`; пауза `VECTOR_TASKS_RECEIVER_DELAY_MS` |
+| `Receiver Task` (`receiver_task_function`) | 12 | 2048 | **единственный потребитель** колец приёма `InputBuffer[TYPE_USART/TYPE_LORA/TYPE_BLE/TYPE_LTE/TYPE_SENSOR]` (GPS — исключение: байты из ISR идут прямо в `Gps_Data_Verification()`, а `Gps_Receive()` разбирает внутренний буфер `Gps.c`): `command_message()`, `Lora_Receive()`, `Ble_Receive()`, `Lte_Receive()`, `Gps_Receive()`, `Uart_Channel_Receive()`, затем `Vector_Options_System()`; пауза `VECTOR_TASKS_RECEIVER_DELAY_MS` |
 | `Measure Task` (`measure_task_function`) | 13 | 4096 | `Vector_Run_Pre_Init()` один раз (`sensors_init()`, биты включения модулей), затем по флагу `timer.flag_1s` (такт 1 с от TIM3): `Vector_Run_Measure()` → `sensors_read()` (BME280/LIS3DH/MAX17048), поворот экрана по 6D-ориентации, `Ble_Run/Lora_Run/Lte_Run/Gps_Run`; и `Vector_RunFlashMemory()` |
 | `LVGL Task` | 15 | 4096 | заглушка: спит по 1 с |
 
@@ -123,7 +123,8 @@ main()
 | `USART1` (GPS, PB6/PB7) | 1 байт → `Gps_Data_Verification()` (кадр NMEA и таймаут ведёт `Gps.c`) | да, но из ISR только накопление байта |
 | `EXTI11` (`ACCEL_INT`, PC11) | `lis3dh_irq_handler()` — только флаг; фронт переключается `LL_EXTI_*Trig_0_31` | да |
 | `SPI2` + `GPDMA1_Channel8` | выдача кадра на экран → `HAL_SPI_TxCpltCallback` → `LCD_transferCpltCallback()` → `lv_display_flush_ready(disp)` | да |
-| `TIM3_UP` (1 кГц) | `Uart_Gps_Receive_Timer_Inc()` (+ `Uart_Lora_Receive_Timer_Inc()` при `CONFIG_LORA`) — таймауты кадров | только декремент |
+| `TIM3_UP` (1 кГц) | `Timer_Tick_1ms()` (`Vector_main.c`): `countdown_time[]`, флаги `timer.flag_1ms/10ms/100ms/1s`, счётчики кнопок, таймауты кадров COM/GPS/LoRa | только счёт и флаги |
+| `RTC WakeUp` (1 Гц) | `Timer_Tick_1s()` (`Vector_main.c`): `countdown_time_rtc[]`, мото-часы `working_hours` (в секундах), `flag_start_work`, `timer_end_data_exchange` | только счёт и флаги |
 | `TIM6_UP` | только `HAL_IncTick()` — внутренняя тайм-база HAL (тик ThreadX — SysTick от порта, 100 Гц) | — |
 
 > Порт ThreadX для Cortex-M33 маскирует критические секции через **PRIMASK**
@@ -205,7 +206,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | `audio_status.last_error` / `sai_error_code` | код `audio_err_t` и сырой `SAI.ErrorCode` (больше не смешаны в одном числе) |
 | `audio_status.loop_enabled` / `loop_index` / `loop_next_at_ms` | повтор: включён ли, какой звук, когда следующий |
 | `tasks_status` | потоки прибора: `receiver_running` / `measure_running`, `cnt_receiver_passes`, `cnt_measure_runs`, по модулям `mod[0..5]` (com/lora/ble/lte/gps/sensor) — `cnt_receive_calls`, `cnt_run_calls`, `cnt_rx_bytes`, `cnt_rx_frames`, `cnt_tx_frames`, `cnt_errors`, `last_*_ms` |
-| `sensors_status` | датчики: `bme_ok` / `lis3dh_ok` / `max17048_ok`, `temperature_c`, `humidity_pct`, `pressure_hpa`, `accel_x/y/z_g`, `orientation`, `screen_rotation`, `battery_percent_x10`, `cnt_*` |
+| `sensors_status` | диагностика шины I2C1: `cnt_init_ok`, `cnt_bme_reads`, `cnt_accel_reads`, `cnt_battery_reads`, `cnt_rotation_events`, `cnt_read_ms`, `last_read_ms`. Данные — в `Sns_Cfg_struct.Config_common`, живость чипов — маска `Config_common.Sensors_ok` (`SENSORS_OK_BME/_LIS3DH/_MAX17048`) |
 | `lcd_status` | экран: `busy`, `dma_active`, `cnt_cmd/data8/data16/bulk`, `cnt_flush_ready` (0 при растущем `cnt_bulk` = нет прерывания DMA), `cnt_dma_fail`, `cnt_wait_timeout`, `last_hal_error` |
 | `sf_dbg_dma_chunks` / `_fallback` / `_tmo` | работает ли SPI-DMA и сколько раз откатились на опрос |
 | `vlog_dbg_lines` | сколько строк ушло в лог |
@@ -283,12 +284,9 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | Источник | Частота | Кто настроил | Для чего |
 |---|---|---|---|
 | **SysTick** (приоритет 4) | **100 Гц = 10 мс** | `Core/Src/tx_initialize_low_level.S` (порт ThreadX, `SYSTEM_CLOCK = 160000000`) | **всё время приложения**: тик ядра ThreadX, `VTICK_*`, метки лога |
-| **TIM6** (`TIM6_IRQn`, приоритет 15) | 1 кГц | куб (`NVIC.TimeBase = TIM6_IRQn`), `stm32u5xx_hal_timebase_tim.c` | **только внутренняя тайм-база HAL**: `HAL_GetTick()` для таймаутов внутри драйверов HAL (`HAL_SPI_Transmit(..., 250)` и т.п.) |
-| **TIM3** (`TIM3_IRQn`, приоритет 3) | **1 кГц = 1 мс** | куб (`tim.c`) | **таймеры прибора**: `countdown_time[]` (мс), флаги `timer.flag_1ms/10ms/100ms/1s`, счётчики кнопок, таймауты кадров COM/GPS/LoRa. Обслуживает `Timer_Tick_1ms()` в `Vector_main.c` |
-| **RTC WakeUp** (`RTC_IRQn`, приоритет 3) | **1 Гц = 1 с** | `rtc.c` (USER CODE: запущен с `_IT`) | **секундные таймеры прибора**: `countdown_time_rtc[]`, мото-часы `working_hours`, `timer.flag_start_work`. Обслуживает `Timer_Tick_1s()` в `Vector_main.c` |
-
-Приложение `HAL_GetTick()`/`HAL_Delay()` **не использует вообще** — ни в
-VectorLib, ни в логе.
+| **TIM6** (`TIM6_IRQn`, приоритет 10) | 1 кГц | куб (`NVIC.TimeBase = TIM6_IRQn`, `TICK_INT_PRIORITY`), `stm32u5xx_hal_timebase_tim.c` | **только внутренняя тайм-база HAL**: `HAL_GetTick()` для таймаутов внутри драйверов HAL (`HAL_SPI_Transmit(..., 250)` и т.п.) |
+| **TIM3** (`TIM3_IRQn`, приоритет 2) | **1 кГц = 1 мс** | куб (`tim.c`) | **таймеры прибора**: `countdown_time[]` (мс), флаги `timer.flag_1ms/10ms/100ms/1s`, счётчики кнопок, таймауты кадров COM/GPS/LoRa. Обслуживает `Timer_Tick_1ms()` в `Vector_main.c` |
+| **RTC WakeUp** (`RTC_IRQn`, приоритет 0) | **1 Гц = 1 с** | куб (`.ioc`: `RTC → Wakeup Interrupt` + NVIC `RTC global interrupt`); сгенерированный `rtc.c` | **секундные таймеры прибора**: `countdown_time_rtc[]`, мото-часы `working_hours` (единица = 1 с), `timer.flag_start_work`. Обслуживает `Timer_Tick_1s()` в `Vector_main.c` |
 
 ### 7.1 Таймеры прибора (как в Avis)
 
@@ -464,13 +462,14 @@ Maximum output speed = Low. Усилитель сидит в shutdown, пока 
 **Maximum output speed = High** (сейчас Low — на 20 МГц фронты пологие).
 CS (PA4): GPIO_Output, **GPIO output level = High**, метка `CS_FLASH`.
 
-### 9.4. Приоритет тайм-базы TIM6: 15 → 5
+### 9.4. Приоритет тайм-базы TIM6 (сейчас 10)
 
-NVIC → `TIM6 global interrupt` → Preemption Priority **15 → 5**. Приложение
-HAL-тик не использует, но внутренние таймауты HAL-драйверов (SPI-обмены)
-считаются по нему; при приоритете 15 их «съедают» EXTI/SPI/GPDMA/UART (0–1)
-и остановки ядра. Для ThreadX безопасно (порт маскирует критические секции
-через PRIMASK).
+TIM6 = 10 (`TICK_INT_PRIORITY` в `stm32u5xx_hal_conf.h` и NVIC в `.ioc`).
+Приложение HAL-тик не использует, но внутренние таймауты HAL-драйверов
+(SPI-обмены) считаются по нему: пока TIM6 ниже периферийных IRQ (0–2),
+таймауты под нагрузкой растягиваются — не смертельно. Остановки ядра закрыты
+`VECTOR_DBG_FREEZE_TICK`. Если нужна точность — снизить до 5 (для ThreadX
+безопасно: порт маскирует критические секции через PRIMASK).
 
 ### 9.x. Экран, GPS, акселерометр (v17)
 
@@ -483,8 +482,8 @@ HAL-тик не использует, но внутренние таймауты
   байт уходит в `Gps_Data_Verification()`;
 * **PC11 = ACCEL_INT**: `GPIO_MODE_IT_RISING_FALLING` + `GPIO_PULLDOWN`,
   `EXTI11_IRQn` (в `main.h` есть `ACCEL_INT_EXINT_LINE LL_EXTI_LINE_11`);
-* **TIM3**: 1 кГц (Prescaler 159, Period 1000), `TIM3_IRQn` — такт таймаутов
-  кадров GPS/LoRa;
+* **TIM3**: 1 кГц (Prescaler 159, Period 1000), `TIM3_IRQn` — такт таймеров
+  прибора `Timer_Tick_1ms()` (включая таймауты кадров COM/GPS/LoRa);
 * пины экрана: PB14 `LCD_CS`, PB10 `LCD_DC`, PB12 `LCD_RST`, PC6 `LCD_LED`
   (GPIO Output; ШИМ подсветки не настроен).
 
@@ -492,7 +491,8 @@ HAL-тик не использует, но внутренние таймауты
 
 Сейчас `PC10.Mode = Half_duplex(single_wire_mode)`: приёмник слышит собственную
 передачу (эхо), линия открытый сток. В кубе: Connectivity → UART4 → Mode:
-**Asynchronous**, пины PC10 = TX, PC11 = RX; для обоих AF Push Pull, speed
+**Asynchronous**, пины PC10 = TX, **PA1 = RX** (PC11 брать нельзя — он занят
+`ACCEL_INT`/EXTI11; PA0/PA1 свободны); для обоих AF Push Pull, speed
 Low, No pull (или Pull-up на длинной линии). Код моста подстроится сам
 (`ub_transmit()` проверяет бит `HDSEL` в рантайме).
 
@@ -512,6 +512,11 @@ BUTTON3 с PB3, оставьте `SYS_JTDO-SWV` и включите SWV в Run C
 `RTC_WAKEUPCLOCK_CK_SPRE_17BITS`: CK_SPRE = 1 Гц, период = (WUT + 1) секунд.
 Нужен мелкий шаг — `RTC_WAKEUPCLOCK_RTCCLK_DIV16` (≈ 2 кГц).
 
+**Настроен в кубе** (автор): `RTC → Wakeup Interrupt` + `NVIC → RTC global
+interrupt` (приоритет 0) — `HAL_RTCEx_SetWakeUpTimer_IT` и NVIC генерирует
+куб, в `USER CODE` у `rtc.c` ничего не нужно. Период не менять: 1 с — такт
+`Timer_Tick_1s()`, секундных таймеров прибора и мото-часов `working_hours`.
+
 ### Что должно остаться в `USER CODE` (это не конфигурация периферии)
 
 `main.c`, `USER CODE BEGIN 2`:
@@ -520,8 +525,13 @@ BUTTON3 с PB3, оставьте `SYS_JTDO-SWV` и включите SWV в Run C
   Vector_Run_Board_Init();   /* freeze TIM6 под отладчиком, SD_MODE, sf_probe, selftest */
 ```
 
-`main.c`, `USER CODE BEGIN Callback 1` — пусто (TIM6 обслуживает только
-`HAL_IncTick()` выше, в сгенерированной части).
+`main.c`, `USER CODE BEGIN Callback 1` — ветка TIM3 с вызовом
+`Timer_Tick_1ms()` (TIM6 обслуживает только `HAL_IncTick()` выше, в
+сгенерированной части).
+
+`stm32u5xx_it.c` — колбэк `HAL_RTCEx_WakeUpTimerEventCallback` →
+`Timer_Tick_1s()` и приём байт в `USART*_IRQHandler` (кольца/
+`Gps_Data_Verification()`). `rtc.c` — пусто (всё настроено в кубе).
 
 `AZURE_RTOS/App/app_azure_rtos.c`, `tx_application_define`:
 

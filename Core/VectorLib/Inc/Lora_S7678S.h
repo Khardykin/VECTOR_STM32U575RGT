@@ -26,8 +26,6 @@
 #define LORA_REGION_EU868    0
 #define LORA_REGION_RU864    1
 #define LORA_MAX_CHANNELS    10
-
-#define FLASH_ADDRESS_APPKEY    (0x0803A000)
 //===========================================================================================================================
 // ТАЙМЕР ЗАНЯТОСТИ МОДЕМА (защита от "MAC TX running")
 // Тик Uart_Lora_Receive_Timer_Inc = 1 мс
