@@ -15,6 +15,12 @@ static struct {
 // Флаг события от ISR
 static volatile bool orientation_event_pending = false;
 
+// Кэш событий падения (free-fall, генератор INT2)
+static struct {
+    volatile bool pending;    // событие есть, не прочитано lis3dh_fall_event()
+    volatile uint32_t count;  // всего падений с включения
+} fall_cache = {false, 0};
+
 // Кэш данных акселерометра
 #if LIS3DH_CACHE_ACCEL_ENABLE
 static struct {
@@ -94,7 +100,37 @@ int32_t lis3dh_init(void)
         return -1;
     }
 #endif
+
+#if LIS3DH_ENABLE_FF_INIT
+    // Падение - не критично для работы: при ошибке просто не будет событий
+    (void)lis3dh_enable_free_fall(LIS3DH_FF_THRESHOLD_MG, LIS3DH_FF_DURATION_MS);
+#endif
     return 0;
+}
+
+// Детект падения (free-fall): генератор INT2, AOI=1 (AND) - событие, когда
+// ВСЕ три оси ниже порога дольше dur. Пин INT2 на МК можно не разводить:
+// флаг латчируется (LIS3DH_INT2_LATCHED) и читается опросом INT2_SRC в
+// lis3dh_update_all(); чтение INT2_SRC сбрасывает латч.
+int32_t lis3dh_enable_free_fall(uint16_t ths_mg, uint16_t dur_ms)
+{
+    uint8_t ths = (uint8_t)(ths_mg / 32);   // ±4g: шаг генератора 32 мг
+    if (ths == 0) ths = 1;
+    if (ths > 127) ths = 127;
+
+    uint8_t dur = (uint8_t)(dur_ms / 10);   // ODR 100 Гц: шаг 10 мс
+    if (dur > 127) dur = 127;
+
+    lis3dh_int2_cfg_t cfg = {0};
+    cfg.aoi  = 1;       // AND: все включённые оси ниже порога
+    cfg.xlie = 1;
+    cfg.ylie = 1;
+    cfg.zlie = 1;
+
+    lis3dh_int2_gen_conf_set(&dev_ctx, &cfg);
+    lis3dh_int2_gen_threshold_set(&dev_ctx, ths);
+    lis3dh_int2_gen_duration_set(&dev_ctx, dur);
+    return lis3dh_int2_pin_notification_mode_set(&dev_ctx, LIS3DH_INT2_LATCHED);
 }
 
 // Включение 6D с прерыванием (только ось Y)
@@ -159,6 +195,17 @@ int32_t lis3dh_update_all(void)
 			accel_cache.fresh = true;
 		}
 	}
+#endif
+
+#if LIS3DH_ENABLE_FF_INIT
+    // 1b. Падение: забираем латч INT2 (чтение INT2_SRC сбрасывает флаг IA)
+    {
+        uint8_t src2 = 0;
+        if (lis3dh_read_reg(&dev_ctx, LIS3DH_INT2_SRC, &src2, 1) == 0 && (src2 & 0x40U)) {
+            fall_cache.count++;
+            fall_cache.pending = true;
+        }
+    }
 #endif
 
     // 2. Если есть событие ориентации — обрабатываем (чтение INT1_SRC)
@@ -239,6 +286,28 @@ bool lis3dh_is_accel_cached(void)
     return accel_cache.fresh;
 #else
     return false;
+#endif
+}
+
+// Событие падения: true ОДИН раз на падение (флаг сбрасывается чтением)
+bool lis3dh_fall_event(void)
+{
+#if LIS3DH_ENABLE_FF_INIT
+    bool was = fall_cache.pending;
+    fall_cache.pending = false;
+    return was;
+#else
+    return false;
+#endif
+}
+
+// Счётчик падений с включения
+uint32_t lis3dh_get_fall_count(void)
+{
+#if LIS3DH_ENABLE_FF_INIT
+    return fall_cache.count;
+#else
+    return 0;
 #endif
 }
 #endif

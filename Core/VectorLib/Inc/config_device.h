@@ -8,6 +8,12 @@
 #ifndef VECTORLIB_INC_CONFIG_DEVICE_H_
 #define VECTORLIB_INC_CONFIG_DEVICE_H_
 
+// Бренд прибора: MIRAX=0, BACS=1. Значение хранится во внутренней flash
+// (FLASH_ADDRESS_BUILD_TYPE) и читается Init_Build_Type() при старте.
+// ВНИМАНИЕ: MIRAX_BACS_BUILD - это ПЕРЕМЕННАЯ рантайма current_build_type
+// (Config_save_read.c), а не константа: внутри #if она молча превратится в 0.
+// Использовать только в рантайм-сравнениях (if (current_build_type == MIRAX))
+// и как индекс массивов [2] (SN_Label_Prefix / Device_Label).
 #define MIRAX 0
 #define BACS 1
 #define MIRAX_BACS_BUILD	current_build_type		// 0-Mirax, 1- Bacs

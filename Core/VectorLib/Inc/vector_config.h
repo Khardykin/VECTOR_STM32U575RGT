@@ -313,10 +313,11 @@
  * VECTOR_LCD_SPI_TIMEOUT_MS таймаут блокирующей передачи и ожидания свободного
  *                           порта; по истечении порт освобождается принудительно
  *                           (счётчик lcd_status.cnt_wait_timeout).
- * VECTOR_LCD_PWM_PERIOD     период ШИМ подсветки - нужен только при
- *                           CONFIG_MODEL_LCD 1. В этом проекте ШИМ на PC6 не
- *                           настроен (в кубе GPIO_Output) - см. TODO в
- *                           backlight_set().
+ * VECTOR_LCD_PWM_PERIOD     период ШИМ подсветки - исторический макрос (Avis
+ *                           TMR8 CH3, период 249). Сейчас НЕ используется:
+ *                           ШИМ настроен в кубе (TIM8_CH1 PC6 AF3, PSC 159 /
+ *                           ARR 39 -> 25 кГц), backlight_set() масштабирует
+ *                           скважность от фактического ARR таймера.
  *
  * ЧАСТОТА SPI2: в кубе сейчас Baud Rate Prescaler = 2, то есть 80 МГц при
  * PCLK1 160 МГц. Для ST7789P3 это выше допустимого (запись ~62.5 МГц max) -
@@ -339,9 +340,11 @@
 #endif
 
 /* --- РАБОЧЕЕ: датчики на I2C1 (BME280, LIS3DH, MAX17048) -------------------
- * Чтение - sensors_read() в Vector_main.c: измеренные значения ->
- * Sns_Cfg_struct.Config_common (единственное место), живость чипов -> маска
- * Config_common.Sensors_ok, счётчики диагностики шины I2C1 -> sensors_status.
+ * Чтение - sensors_read() в Vector_main.c: конфигурационные измерения (T/H/P,
+ * батарея) -> Sns_Cfg_struct.Config_common, живость чипов -> маска
+ * Config_common.Sensors_ok; runtime-данные (оси Accel_x/y/z, статусы падения,
+ * копия Orientation/Screen_rotation) и счётчики диагностики шины I2C1 ->
+ * sensors_status (Vector_main.h).
  * Включение каждой микросхемы - CONFIG_BME / CONFIG_LIS3DH / CONFIG_MAX17048 в
  * config_device.h: при 0 драйвер не компилируется вовсе (тело файла под #if).
  *

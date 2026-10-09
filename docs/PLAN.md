@@ -42,12 +42,13 @@
 | Потоки прибора | `Src/Vector_main.c`, `Inc/vector_tasks.h` | каркас готов (v15, GPS в v16) по образцу `Avis_main.c`: поток `Receiver Task` (приём и парсинг по каждому UART) и поток `Measure Task` (периодика 1 с → `Vector_Run_Measure()` → `Ble_Run/Lora_Run/Lte_Run/Gps_Run`). Заглушки модулей — слабые (`__attribute__((weak))`): ваша реализация в файле модуля заменит их сама |
 | GPS/GNSS | `Src/Gps.c`, `Inc/Gps.h` | **приложен из другого прибора (v16), включён** (`CONFIG_GPS 1` — решение автора): USART1 (PB6/PB7), NMEA (GGA/GLL/RMC), автоопределение чипа (Allystar/LOCOSYS), координаты для LoRa-трека, команды LOCOSYS. Проверка на живом модуле — раздел 5, этап 2b |
 | Экран TFT | `Src/TFT/LCD_platform.[ch]`, `TFT.[ch]`, `TFT_indicator.[ch]` | **v17**: `LCD_platform` переведён с AT32 на HAL (SPI2 + GPDMA1 Ch8, имена функций сохранены), ST7789P3 172×320, `lcd_status`; `TFT_indicator` (2783 строки индикации Avis) пока выключен — нужны `SNS_CFG_Type`/`CALIB_CFG`/`COUNT_CHAN` |
-| Датчики I2C1 | `Src/lis3dh.c` + `Src/Lis3dh_reg/`, `Src/bme280_com.c` + `Src/BME280/`, `Src/MAX17048.c`, чтение — в `Src/Vector_main.c` | **v17/v18**: обмен через макросы `I2C_Master_Transmit/I2C_OK` (main.h), HAL внутри библиотек нет; `sensors_init()/sensors_read()` в Measure Task, состояние в `sensors_status`, поворот экрана по `ACCEL_INT` |
+| Датчики I2C1 | `Src/lis3dh.c` + `Src/Lis3dh_reg/`, `Src/bme280_com.c` + `Src/BME280/`, `Src/MAX17048.c`, чтение — в `Src/Vector_main.c` | **v17/v18/v21**: обмен через макросы `I2C_Master_Transmit/I2C_OK` (main.h), HAL внутри библиотек нет; `sensors_init()/sensors_read()` в Measure Task; в `sensors_status` — оси `Accel_x/y/z`, копия `Orientation/Screen_rotation`, статусы падения (free-fall, генератор INT2 LIS3DH, v21) и счётчики диагностики; поворот экрана по `ACCEL_INT` |
 | Графика LVGL | `Drivers/lvgl` (9.2) + UI SquareLine Studio, `Core/ui/lv_i18n`, `Core/translations/*.yml` | LVGL и UI в git **не лежат**; описание и чек-лист — `docs/LVGL.md`; поток `LVGL Task` пока заглушка |
 | Макросы и хелперы | `Inc/shared_macros.h`, `Inc/vector_macros.h` + `Src/Common/Src/vector_macros.c`, `Core/Inc/main.h` (USER CODE EM) | **v18**: HAL спрятан в макросы `main.h` (`I2C_*`, `SPI_*`, `GPIO_*`, `Uart_*`, `usart_init`), общие функции перенесённого кода (`Delay/DelayInt/GetTick/Search_text`, `TIME_DEL_1/TIME_OUT_LORA`) — в одном `vector_macros.[ch]`; биты статусов — в вашем `shared_macros.h` |
 | Кнопки | `stm32u5xx_it.c` (EXTI), `Src/Test/Src/audio_demo.c` | два слоя: продуктовые флаги `button1/2/3/button_sos` и тестовое демо плеера |
 | LoRa S7678S | `Src/Lora_S7678S.c` (2094 строки) | реализация автора: AT-обмен, классы A/C, регионы, GPS-трек, `SNS_CFG` |
 | Конфигурация прибора | `Inc/config_device.h`, `Inc/shared_types.h` | флаги сборки `CONFIG_*`, структура `SNS_CFG`, биты статусов `ST_COMMON` |
+| Конфиг/журнал (сохранение) | `Src/Config_save_read.c`, `Inc/Config_save_read.h` | **v21**: переработан под этот проект — `SNS_CFG` и журнал во внешней flash (`cfg_save/cfg_load`, `log_append` extstore), заводские данные (калибровка/бренд/AppKey) во внутренней странице 0x080FE000; загрузка при старте в `Vector_Run_Pre_Init()`, запись — только из `Vector_RunFlashMemory()` |
 | Общие включения | `Inc/Vector_main.h` | агрегатор заголовков (см. раздел 6, решение про инклуды) |
 
 UART-роли (как задумано):
@@ -78,12 +79,22 @@ UART-роли (как задумано):
 
 ## 3. Данные и состояния
 
-* **`SNS_CFG`** (`shared_types.h`): `Config_common` (State, StateErr, звук/LED,
-  батарея, мото-часы, температура/влажность/давление, серийный номер, версия
-  железа, дата производства, GPS, `PeriodTimeLora`, `Lora_Config_Flags`,
-  `Lora_freq_rx2`, `Lora_dr_rx2`, резерв), `application_language`,
-  `CRC_CONFIG`. Хранить — в странице CONFIG внешней flash (0x400000, 4 КБ),
-  область уже размечена в `sfmap.h`.
+* **`SNS_CFG`** (`shared_types.h`): `Config_common` (State, StateErr, LED,
+  батарея и пороги, мото-часы `working_hours`/`working_hours_offset`,
+  температура/влажность/давление, серийный номер, версия железа, дата
+  производства, GPS, `PeriodTimeLora`, `Lora_Config_Flags`, `Lora_freq_rx2`,
+  `Lora_dr_rx2`, `Orientation/Screen_rotation/Sensors_ok`, журнал —
+  `CurrentAddrFile/BegginAddrFile/ArchiveRecording/Archiveinterval`,
+  `Bump_interval/DataLastBumpTest/TimeLimit/TimeLimitRST/Type_lcd`, резерв),
+  `application_language`, `CRC_CONFIG`. **Хранение (v21)**: конфиг — два
+  слота CONFIG-страницы внешней flash (0x400000, `cfg_save/cfg_load`
+  extstore, CRC32 extstore + CRC16 `CRC_CONFIG`); журнал событий — кольцевая
+  область LOG 0x401000 (`log_append`/`log_next`, запись `EVENT_LOG`);
+  заводские данные (калибровка температуры, бренд `current_build_type`,
+  LoRa AppKey) — последняя страница ВНУТРЕННЕЙ flash 0x080FE000 (код
+  ограничен 1016K в `.ld`). Оси акселерометра и статусы падения — runtime,
+  только в `sensors_status`, во flash не сохраняются (в журнал попадают
+  снимком внутри `EVENT_LOG`).
 * **Статусы `ST_COMMON`** (битовое поле): блокировка звука
   (`BLOCK_SOUND`, `BLOCK_SOUND_LIMIT_CALIB`), блокировка выключения,
   блокировка калибровки, режим обмена данными, зарядка, BUMP TEST (статус и
@@ -216,8 +227,13 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
       вращения на 160 МГц
 
 **Этап 6. Журнал и сервис**
-* [ ] кольцевой журнал в области LOG (0x401000..), `extstore` уже умеет
-* [ ] чтение журнала/конфига через BLE или LoRa по команде
+* [x] кольцевой журнал в области LOG (0x401000..): `save_event()` →
+      `log_append` (v21); события «включение» и архив по `Archiveinterval`
+* [x] конфигурация `SNS_CFG` во внешней flash: `read_param/save_param` →
+      `cfg_load/cfg_save` (v21), загрузка при старте, заводской фолбэк
+* [ ] чтение журнала/конфига через BLE или LoRa по команде (`log_next`,
+      `compare_param` — каркас есть)
+* [ ] событие `TYPE_TURN_OFF` при выключении (нужен обработчик выключения)
 * [ ] версионирование прошивки и (опционально) OTA
 
 ---
@@ -246,7 +262,9 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 | i18n | Переводы в `Core/translations/*.yml` (ru-RU, en-GB), генерация `Core/update_lang.bat` → `Core/ui/lv_i18n/*`; в UI текст через `_("ключ")`. Описание — `docs/LVGL.md` |
 | Таймеры прибора | Схема автора из Avis оставлена — она рабочая и одинаковая на всех приборах, переводить на `tx_timer` смысла нет: TIM3 1 кГц → `Timer_Tick_1ms()` (декремент `countdown_time[]`, флаги `timer.flag_1ms/10ms/100ms/1s`, счётчики кнопок, таймауты кадров UART), RTC wakeup 1 с → `Timer_Tick_1s()` (декремент `countdown_time_rtc[]`, `working_hours`). Всё обслуживание переехало из `main.c`/`stm32u5xx_it.c` в `Vector_main.c` — в CubeMX-файлах осталось по одной строке вызова. Экземпляры `volatile` (пишет ISR, читают потоки). Макросы `START/TEST/RESET/END_TIMER[_RTC]` прежние, из `shared_macros.h` |
 | Борд-инит | `vector_board.[ch]` удалён: тело (`SRAM4`, заморозка `TIM6` под отладчиком, `SD_MODE`, `sf_probe`, `audio_selftest`) переехало в `Vector_Run_Board_Init()` в `Vector_main.c` — вне `#if VECTOR_TASKS_ENABLE`, чтобы работало всегда |
-| Данные датчиков | Одно место: `Sns_Cfg_struct.Config_common` (T/H/P, батарея, `Accel_x/y/z`, `Orientation`, `Screen_rotation`, маска `Sensors_ok`). Дубли из `sensors_status` убраны — там остались только счётчики диагностики шины I2C1. `sizeof(SNS_CFG)` вырос: учесть при разметке CONFIG-страницы и CRC |
+| Данные датчиков | Конфигурационные измерения (T/H/P, батарея, `Orientation`, `Screen_rotation`, маска `Sensors_ok`) — в `Sns_Cfg_struct.Config_common`. Runtime-данные (оси `Accel_x/y/z`, `fall_detected`/`cnt_fall_events`, копия ориентации/поворота) и счётчики диагностики шины I2C1 — в `sensors_status` (решение автора, v21: оси во flash не сохраняются) |
+| Хранение конфига/журнала (v21) | `SNS_CFG` и журнал — ВО ВНЕШНЕЙ flash через `extstore` (`cfg_save/cfg_load` — два слота с CRC, `log_append` — кольцо LOG); заводские данные (калибровка T, бренд, AppKey) — во ВНУТРЕННЕЙ flash, страница 0x080FE000 (`.ld` ограничен 1016K). Адресация Avis (`reg_mem`, AT45/W25) не переносилась. Мото-часы: `working_hours` — секунды сессии, `save_param()` складывает их в `working_hours_offset`, суммарный наработок = offset + working_hours |
+| Подсветка экрана (v21) | ШИМ: TIM8_CH1 (PC6, AF3), куб — PSC 159 / ARR 39 → 25 кГц. `backlight_set(%)` масштабирует скважность от фактического ARR (`__HAL_TIM_GET_AUTORELOAD`), `VECTOR_LCD_PWM_PERIOD` больше не используется |
 | Заголовки | Один `vector_macros.h` на все макросы/хелперы проекта вместо `vector_status.h` + `vector_compat.h`; API и состояние датчиков (`sensors_status`) живут в `Vector_main.h`, реализация — в `Vector_main.c` (как `Ble_Run`/`Lora_Run` в `Avis_main.c`). Биты статусов — в `shared_macros.h` автора. Новых `vector_*.h` без нужды не заводим |
 | Порядок работ (решение автора, v16) | Сначала **база**: модули прикладываем к проекту (`Gps.c`, потоки, кольца `TYPE_*`, флаги `CONFIG_* = 0`), периферию не трогаем. UART/куб/NVIC (`USART1_IRQn`, `USART_GPS`, `USART_BLE`/`USART_RF` в `main.h`) и значения `CONFIG_*` **пока не настраиваем и не включаем** — вернёмся к этому отдельным этапом |
 
@@ -405,3 +423,35 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     | `VECTOR_GPS_NAV_PERIOD_MS` | автор удалил макрос, а `Gps_Run()` на нём строился | `Gps_Run()` переведён на секундные таймеры прибора |
     | `VECTOR_TASKS_MEASURE_PERIOD_MS` | период задавал поток, хотя такт 1 с уже даёт TIM3 | макрос удалён, `Measure Task` работает по `timer.flag_1s` |
     | `working_hours += 1` в колбэке RTC | в Avis единица поля — 937.5 мкс, такт здесь — 1 с | **решение автора (v20)**: на этом приборе мото-часы в секундах, `+= 1` оставлен; при сохранении/загрузке конфига (`working_hours_offset`) единицы с Avis не смешивать |
+34. **[закрыт: v21]** Пуш с `Config_save_read.c` не собирался: файл перенесён
+    из GA/Avis почти как есть — `#include "Ga_main.h"` (нет в проекте),
+    `GetPage/GetBank`, `reg_mem`, `Save_param_memory/save_log_memory/
+    ultra_deep_power_down_memory`, `EVENT_LOG/EVENT_LOG_TYPE_2`, `SIZE_LOG`,
+    `ST_COMMON_BIT_ERR_AT45`, `BAT_*_DEF`, `TIME_RTC_LED_STATE_*`, поля
+    `SNS_CFG` (`Archiveinterval`, `Bump_interval`, `DataLastBumpTest`,
+    `CurrentAddrFile`, `Type_lcd`, `TimeLimit*`) — ничего этого не было.
+    v21: модуль переписан под extstore (конфиг/журнал — внешняя flash),
+    заводская страница — внутренняя flash (окно 64 Б, read-modify-write,
+    U5: страница 8 КБ, quadword 16 Б), недостающие поля/макросы добавлены в
+    `shared_types.h`, загрузка конфига включена в `Vector_Run_Pre_Init()`,
+    запись — только из `Vector_RunFlashMemory()`.
+35. **[закрыт: v21]** ШИМ подсветки: TIM8 настроен автором в кубе (PC6 =
+    TIM8_CH1 AF3, PSC 159 / ARR 39 → 25 кГц), но `backlight_set()` считал
+    скважность от `VECTOR_LCD_PWM_PERIOD = 249` → при percent ≥ 16 CCR
+    превышал ARR и подсветка всегда горела на 100%; `htim8` не был объявлен
+    (нет `tim.h` в `LCD_platform.c`). v21: duty от фактического ARR,
+    `#include "tim.h"`, убран `(void)duty` и устаревшие TODO-комментарии.
+36. **[закрыт: v21]** `MIRAX_BACS_BUILD` = `current_build_type` — переменная
+    рантайма, но `TFT_indicator.c` сравнивал её в `#if` (препроцессор
+    превращал неопределённый идентификатор в 0 → ветка MIRAX всегда).
+    v21: сравнение в рантайме, предупреждение в `config_device.h`.
+37. `[.ld]` `FLASH LENGTH = 1016K` (v21) защищает заводскую страницу
+    0x080FE000 от кода/констант. **CubeMX регенерирует `.ld` и вернёт 1024K**
+    — после каждой перегенерации проверять LENGTH (либо освободить страницу,
+    сдвинув адреса заводских данных, что хуже).
+38. Сохранение/чтение конфига (v21) проверено только компилятором: на железе
+    проверить — первый пуск (чистая внешняя flash → `DefaultConfig` + запись +
+    лог "config: load/CRC fail"), повторный пуск ("config: loaded",
+    `working_hours_offset` растёт), `SaveConfig=1` из отладчика → "config:
+    saved", журнал: `SaveEvent`, `ext_dbg_log_sector/_offset`, `CurrentAddrFile`.
+    `TYPE_TURN_OFF` не пишется — нет обработчика выключения (этап 6).

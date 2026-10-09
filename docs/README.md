@@ -162,3 +162,9 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 * Строки лога — только ASCII (латиница), иначе в терминале CP1251 кракозябры.
 * Внешнюю flash из прошивки — только через `extstore` (`ext_read/ext_write/
   ext_erase_sector`); образ SOUNDS целиком принадлежит программатору.
+* Конфигурация прибора и журнал событий — `Config_save_read.c` (v21):
+  `SNS_CFG` → `cfg_save/cfg_load` (два слота CONFIG-страницы, CRC),
+  журнал → `log_append` (кольцо LOG); заводские данные (калибровка/бренд/
+  AppKey) — внутренняя flash, страница 0x080FE000 (`.ld`: FLASH 1016K).
+  Писать во flash можно только из потока `Measure Task`
+  (`Vector_Run_Pre_Init` / `Vector_RunFlashMemory`).

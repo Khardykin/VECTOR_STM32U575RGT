@@ -173,10 +173,6 @@ void Timer_Tick_1s(void)
 	timer.flag_start_work = 1;
 	timer.flag_start_work_bat_sys = 1;
 
-	/* Мото-часы: решение автора - единица поля = 1 с (такт RTC wakeup ровно
-	   1 с), поэтому += 1. В Avis поле было в единицах 937.5 мкс и значение
-	   читалось из RTC (working_hours = RTC_ReadTime()); при подключении
-	   сохранения/загрузки конфига (working_hours_offset) единицы не смешивать. */
 	Sns_Cfg_struct.Config_common.working_hours += 1;
 
 	Countdown_Timer_Rtc();
@@ -265,16 +261,16 @@ void Vector_Run_Board_Init(void)
  *                       датчиков (Temperature/Humidity/Pressure), батарея,
  *                       серийный номер, параметры LoRa. Сюда пишет
  *                       bme280_measure(), отсюда читают модули обмена.
- *   Cfg_structdef_read  буфер чтения конфигурации из внешней flash (страница
- *                       CONFIG 0x400000, sfmap.h) - загрузка ещё не реализована.
+ *   Cfg_structdef_read  буфер сравнения конфигурации (compare_param читает
+ *                       сюда сохранённый конфиг из внешней flash).
  *   tempsensor_calib    калибровка температуры BME280 (VECTOR_BME_CALIBRATION 0
  *                       -> пока не используется).
  *   device_turn         прибор включён/выключен (DEVICE_TURNED).
  *
- * ВАЖНО: Sns_Cfg_struct сейчас zero-init, то есть все биты статусов сброшены.
- * Модули обмена проверяют их через TEST_STATUS_COMMON_BIT(), поэтому до
- * загрузки конфига из flash биты включения выставляются в
- * Vector_Run_Pre_Init() по флагам сборки CONFIG_*.                        */
+ * ВАЖНО: до Vector_Run_Pre_Init() Sns_Cfg_struct zero-init (статусы сброшены).
+ * Pre_Init грузит конфиг из внешней flash (read_param, CRC) либо пишет
+ * заводской (DefaultConfig + save_param); биты включения модулей обмена
+ * дополнительно выставляются по флагам сборки CONFIG_*.                   */
 SNS_CFG          Sns_Cfg_struct;
 SNS_CFG          Cfg_structdef_read;
 TEMPSENSOR_CALIB tempsensor_calib;
@@ -353,20 +349,16 @@ static void receiver_task_function(ULONG thread_input)
 #endif
 
     /* --- BLE ---------------------------------------------------------------- */
+#if CONFIG_BLE
     mod_receive_call(TASK_MOD_BLE);
     Ble_Receive();
-
+#endif
     /* --- LTE/GSM ------------------------------------------------------------ */
+#if CONFIG_G4
     mod_receive_call(TASK_MOD_LTE);
     Lte_Receive();
-
-    /* --- GPS/GNSS: приём и разбор NMEA -------------------------------------
-     * Gps_Receive() реализован в Gps.c (CONFIG_GPS включён автором). Байты из
-     * USART1_IRQHandler идут прямо в Gps_Data_Verification() (свой буфер в
-     * Gps.c, мимо колец InputBuffer). Координаты забирает LoRa-трек
-     * (Lora_UpdateGPSTrack). Guard из Avis (TURN_ON_GPS) закомментирован: бит
-     * временно ставит Vector_Run_Pre_Init() по флагам сборки - до загрузки
-     * конфига из CONFIG-страницы внешней flash.                              */
+#endif
+    /* --- GPS/GNSS: приём и разбор NMEA ------------------------------------- */
 #if CONFIG_GPS
     /* if (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GPS)) */
     {
@@ -374,10 +366,6 @@ static void receiver_task_function(ULONG thread_input)
       Gps_Receive();
     }
 #endif
-
-    /* --- сенсорный UART (каналы измерения) ---------------------------------- */
-    mod_receive_call(TASK_MOD_SENSOR);
-    Uart_Channel_Receive();
 
     /* --- сервис: soft reset, стирание flash, конец режима обмена ------------- */
     Vector_Options_System();
@@ -418,9 +406,8 @@ static void measure_task_function(ULONG thread_input)
       tasks_status.last_measure_ms = VTICK_MS();
 
       Vector_Run_Measure();
-      Vector_RunFlashMemory();
     }
-
+    Vector_RunFlashMemory();
     VTICK_SLEEP_MS(VECTOR_TASKS_MEASURE_DELAY_MS);
   }
 }
@@ -444,16 +431,42 @@ void Vector_Run_Pre_Init(void)
 	__HAL_RCC_MSIKSTOP_DISABLE();
 	__HAL_RCC_HSISTOP_DISABLE();
   //----------------------------------------------------------------------------
+  /* Конфигурация прибора - внешняя flash (extstore: два слота CONFIG-страницы
+     0x400000, CRC32 extstore + CRC16 внутри SNS_CFG). Первый пуск или битые
+     данные -> заводской конфиг и сразу сохранение. read_param также
+     восстанавливает working_hours_offset (наработок, с) и AppKey (CONFIG_LORA).
+     КОНТЕКСТ: поток (мьютекс extstore уже создан в tx_application_define). */
+  if (read_param((uint8_t *)&Sns_Cfg_struct, (uint16_t)sizeof(SNS_CFG), 0) != 0u)
+  {
+    LOG_I(VLOG_M_SYS, "config: loaded (wh_off=%u s, serial=%04x%04x)",
+          (uint32_t)Sns_Cfg_struct.Config_common.working_hours_offset,
+          (uint32_t)Sns_Cfg_struct.Config_common.SerialHi,
+          (uint32_t)Sns_Cfg_struct.Config_common.SerialLo);
+  }
+  else
+  {
+    LOG_W(VLOG_M_SYS, "config: load/CRC fail -> DefaultConfig + save");
+    DefaultConfig(&Sns_Cfg_struct);
+    // Save config
+//    save_param((uint8_t *)&Sns_Cfg_struct, (uint16_t)sizeof(SNS_CFG), 0);
+  }
+
+  /* Событие "включение" в журнал - отложенно (пишет Vector_RunFlashMemory). */
+  TypeLogEvent = TYPE_TURN_ON;
+  SaveEvent    = 1u;
+
+  /* Период архивных записей: младший байт Archiveinterval, с (как в Avis). */
+  START_TIMER_RTC(TIMER_RTC_LOG,
+                  (uint16_t)(Sns_Cfg_struct.Config_common.Archiveinterval & 0xFFu));
 
   /* Датчики на I2C1: BME280 / LIS3DH / MAX17048 (включаются CONFIG_*).
      Результат - в sensors_status.*_ok и в логе.                            */
   sensors_init();
 
-  /* Биты включения модулей обмена. Пока конфиг прибора не читается из
-     CONFIG-страницы внешней flash, выставляем их по флагам сборки - иначе
-     *_Run() ничего не делают (проверяют TEST_STATUS_COMMON_BIT). Как только
-     появится загрузка SNS_CFG (PLAN.md раздел 5, этап 2), эти строки надо
-     убрать: биты будут приходить из конфига и по BLE.                      */
+  /* Биты включения модулей обмена. Конфиг уже прочитан выше, но биты TURN_ON_*
+     в сохранённом State могут отсутствовать (первый пуск / сброс конфига),
+     поэтому выставляем их по флагам сборки - иначе *_Run() ничего не делают
+     (проверяют TEST_STATUS_COMMON_BIT). Позже источник - конфиг и команды BLE. */
 #if CONFIG_GPS
   SET_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GPS);
 #endif
@@ -468,8 +481,6 @@ void Vector_Run_Pre_Init(void)
 #endif
 
   /* TODO: по образцу Avis_Run_Pre_Init():
-     - прочитать SNS_CFG из CONFIG-страницы внешней flash (extstore: ext_read,
-       контроль CRC_CONFIG) - PLAN.md раздел 3;
      - включить питание/сброс модулей: LTE_EN, LTE_RESET, BLE_RESET, GNSS_RST;
      - инициализировать модули: Lora_Init(&Sns_Cfg_struct), Ble_Init(serial);
      - взвести статусы ST_COMMON (TURN_ON_BLE/LORA/GPS/GSM) из конфига.        */
@@ -520,16 +531,60 @@ void Vector_Run_Measure(void)
 
 /* Журнал и конфигурация во внешней flash. Аналог Avis_RunFlashMemory().
    КОНТЕКСТ: поток measure_task. Шина flash защищена мьютексом extstore
-   (ext_mtx) - брать его, а не запрещать прерывания.                          */
+   (ext_mtx) - брать его, а не запрещать прерывания.
+   TODO в этой функции будет зависание если все флаги сработают, то так как мы работаем по spi
+   то на каждом флаге будем ждать когда освободится он по бесконечному ожиданию
+   А если еще и в этот момент читается звук из памяти внешней флеш по этому же, то этот поток зависнет
+    */
 void Vector_RunFlashMemory(void)
 {
   tasks_status.cnt_flash_runs++;
 
 #if CONFIG_SAVE_PARAM_LOG
-  /* TODO: сохранить SNS_CFG при изменении (ext_write в страницу CONFIG
-     0x400000) и дописать кольцевой журнал (область LOG 0x401000, sfmap.h).
-     В Avis здесь xSemaphoreTake(xSemaphore_flash, ...) - у нас эквивалент
-     уже внутри ext_read/ext_write.                                          */
+  /* Всё письмо во внешнюю flash - ТОЛЬКО из этого потока (Avis_RunFlashMemory):
+     мьютекс extstore сериализует шину, флаги снимаются здесь же.             */
+
+  /* Отложенное событие журнала (включение/выключение/обновление параметров):
+     флаг ставят тот, кто обнаружил событие (Pre_Init, COM, BLE).             */
+  if (SaveEvent != 0u)
+  {
+    SaveEvent = 0u;
+    save_event(&Sns_Cfg_struct, TypeLogEvent);
+  }
+
+  /* Архив: запись показаний раз в Archiveinterval (младший байт, с), если
+     запись разрешена (ArchiveRecording). Таймер ведёт Countdown_Timer_Rtc(). */
+  if ((Sns_Cfg_struct.Config_common.ArchiveRecording != 0u) &&
+      (TEST_TIMER_RTC(TIMER_RTC_LOG) != 0))
+  {
+    save_event(&Sns_Cfg_struct, TYPE_READINGS);
+    RESET_TIMER_RTC(TIMER_RTC_LOG);
+    START_TIMER_RTC(TIMER_RTC_LOG,
+                    (uint16_t)(Sns_Cfg_struct.Config_common.Archiveinterval & 0xFFu));
+  }
+
+  /* Сохранение конфигурации по запросу: SaveConfig - рабочий конфиг,
+     SaveConfigDefault - записать заводской (DefaultConfig).                 */
+  if (SaveConfigDefault != 0u)
+  {
+    SaveConfigDefault = 0u;
+    DefaultConfig(&Sns_Cfg_struct);
+    save_param((uint8_t *)&Sns_Cfg_struct, (uint16_t)sizeof(SNS_CFG), 0);
+    LOG_I(VLOG_M_SYS, "config: factory defaults saved");
+  }
+  else if (SaveConfig != 0u)
+  {
+    SaveConfig = 0u;
+    save_param((uint8_t *)&Sns_Cfg_struct, (uint16_t)sizeof(SNS_CFG), 0);
+    LOG_I(VLOG_M_SYS, "config: saved");
+  }
+
+  /* Заводской конфиг в буфер сравнения (для меню/COM: "что было с завода"). */
+  if (ReadConfigDefault != 0u)
+  {
+    ReadConfigDefault = 0u;
+    DefaultConfig(&Cfg_structdef_read);
+  }
 #endif
 }
 
@@ -609,16 +664,6 @@ __attribute__((weak)) void Lte_Receive(void)
     /* TODO: парсинг ответов модема (строки AT, URC) - своя машина состояний. */
   }
 #endif
-}
-
-/* Сенсорный UART: приём данных каналов измерения.
-   В Avis - Uart_Channel_Receive(&sensor_uart[0]) по каналу; здесь подпись
-   упрощена до void(void), поменяйте на свою, когда перенесёте каналы.        */
-__attribute__((weak)) void Uart_Channel_Receive(void)
-{
-  /* TODO: приём из InputBuffer[TYPE_SENSOR] и разбор кадра датчика.
-     Порт сенсоров в кубе ещё не назначен (USART1 PB6/PB7 свободен, но
-     USART1_IRQn в NVIC не включён) - см. PLAN.md раздел 7, п.24.            */
 }
 
 /* ============================================================================
@@ -825,9 +870,9 @@ void sensors_init(void)
         (uint32_t)Sns_Cfg_struct.Config_common.Sensors_ok, sensors_status.cnt_init_ok);
 }
 
-/* Прочитать всё, что включено. Значения кладём ТОЛЬКО в
-   Sns_Cfg_struct.Config_common - единственное место данных прибора; в
-   sensors_status остаются счётчики диагностики шины.
+/* Прочитать всё, что включено. Конфигурационные измерения (T/H/P, батарея) ->
+   Sns_Cfg_struct.Config_common; runtime-данные (оси акселерометра, статусы
+   падения, копия ориентации/поворота) -> sensors_status.
    КОНТЕКСТ: поток Measure Task (раз в секунду).                              */
 void sensors_read(void)
 {
@@ -857,10 +902,27 @@ void sensors_read(void)
 
     if (lis3dh_get_cached_accel_g(&x, &y, &z))
     {
+      /* Оси - runtime-данные: только в sensors_status (во flash не идут,
+         в журнал попадают последним снимком через save_event).            */
+      sensors_status.Accel_x = x;
+      sensors_status.Accel_y = y;
+      sensors_status.Accel_z = z;
       sensors_status.cnt_accel_reads++;
     }
 
+    /* Падение (free-fall): событие копит драйвер (генератор INT2, латч),
+       забираем раз в секунду здесь. fall_detected для потребителя снимает
+       sensors_fall_event(); счётчик растёт с включения.                    */
+    if (lis3dh_fall_event())
+    {
+      sensors_status.fall_detected = 1u;
+      sensors_status.cnt_fall_events++;
+      LOG_W(VLOG_M_SYS, "sensors: FALL detected (cnt=%u)",
+            (uint32_t)sensors_status.cnt_fall_events);
+    }
+
     Sns_Cfg_struct.Config_common.Orientation = (uint8_t)lis3dh_get_orientation();
+    sensors_status.Orientation = Sns_Cfg_struct.Config_common.Orientation;
 
     /* Смена ориентации -> новый поворот экрана (0 или 2). Сам экран модуль не
        трогает: TFT_Rotation() зовёт Vector_Run_Measure().                    */
@@ -871,6 +933,7 @@ void sensors_read(void)
       if (st != Sns_Cfg_struct.Config_common.Screen_rotation)
       {
         Sns_Cfg_struct.Config_common.Screen_rotation = st;
+        sensors_status.Screen_rotation = st;   /* копия для индикации */
         sensors_status.cnt_rotation_events++;
         rotation_pending = 1u;
         LOG_I(VLOG_M_SYS, "sensors: orientation=%u -> rotation=%u",
@@ -905,6 +968,18 @@ uint8_t sensors_rotation_changed(void)
   return 1u;
 }
 
+/* Событие падения: 1 = с прошлой проверки было падение (sensors_status.
+   fall_detected), флаг сбрасывается. КОНТЕКСТ: поток.                       */
+uint8_t sensors_fall_event(void)
+{
+  if (sensors_status.fall_detected == 0u)
+  {
+    return 0u;
+  }
+  sensors_status.fall_detected = 0u;
+  return 1u;
+}
+
 /* ============================================================================
  *                                  СЛУЖЕБНОЕ
  * ============================================================================ */
@@ -931,7 +1006,6 @@ const char *task_module_name(task_module_t mod)
     case TASK_MOD_BLE:    return "ble";
     case TASK_MOD_LTE:    return "lte";
     case TASK_MOD_GPS:    return "gps";
-    case TASK_MOD_SENSOR: return "sensor";
     default:              return "?";
   }
 }

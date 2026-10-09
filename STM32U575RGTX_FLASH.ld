@@ -47,7 +47,11 @@ MEMORY
 {
   RAM	(xrw)	: ORIGIN = 0x20000000,	LENGTH = 768K
   SRAM4	(xrw)	: ORIGIN = 0x28000000,	LENGTH = 16K
-  FLASH	(rx)	: ORIGIN = 0x08000000,	LENGTH = 1024K
+  /* 1016K = 1024K - 8K: последняя страница банка 2 (0x080FE000) занята
+     заводскими данными (калибровка/бренд/AppKey, Config_save_read.c) -
+     код и константы не должны в неё попадать. ВНИМАНИЕ: CubeMX регенерирует
+     .ld - после перегенерации правку LENGTH повторить. */
+  FLASH	(rx)	: ORIGIN = 0x08000000,	LENGTH = 1016K
 }
 
 /* Sections */

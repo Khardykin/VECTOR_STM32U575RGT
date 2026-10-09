@@ -164,7 +164,16 @@ extern volatile DOWN_TIMER_RTC 		countdown_time_rtc;	 /* секундные (RTC
 #define TIME_RTC_BLE_DATA_SET			(60u)
 #define TIME_RTC_BLE_DATA_SLEEP		(30u)
 #define TIME_RTC_LORA_DATA_INIT		(3u)
+#define TIME_RTC_LORA_DATA_SET		(120u)
 #define TIME_RTC_LORA_DATA_SLEEP	(60u)
+#define TIME_RTC_LED_STATE_RUN_PULSE	(1u)	// пульс зеленого светодиода, с
+#define TIME_RTC_LED_STATE_RUN_PERIOD	(5u)	// период зеленого светодиода, с
+//--------------------------------------------------------------------------------------------------------------
+/* Пороги сигнализации батареи, мВ (Li-ion) - заводские значения DefaultConfig(). */
+#define BAT_MAX_DEF				(4200u)
+#define BAT_MIN_DEF				(3300u)
+#define BAT_LIM_1_DEF			(3500u)
+#define BAT_LIM_2_DEF			(3400u)
 //--------------------------------------------------------------------------------------------------------------
 typedef struct//
 {   
@@ -182,8 +191,9 @@ typedef struct//
   uint16_t				battery_charge_volt_lim_2;
   
   volatile  uint32_t    working_hours;
-  uint32_t              working_hours_offset;
+  uint32_t              working_hours_offset;// сдвиг часового пояса
   
+  float					Temperature_calib_offset;
   float                 Temperature;                                            // Температура
   float                 Humidity;
   float					Pressure;
@@ -198,18 +208,30 @@ typedef struct//
   uint16_t				Lora_Config_Flags;
   uint32_t				Lora_freq_rx2;
   uint16_t				Lora_dr_rx2;
-  /* --- данные датчиков: ЕДИНСТВЕННОЕ место для измеренных значений --------
+  /* --- данные датчиков --------------------------------------------------------
      BME280   -> Temperature / Humidity / Pressure (выше),
      MAX17048 -> battery_charge_percent / battery_charge_volt,
      LIS3DH   -> Orientation, Screen_rotation.
-     Дублей в sensors_status больше нет: там остались только счётчики
-     диагностики шины. Поля добавлены ДО Reserve[], поэтому sizeof(SNS_CFG)
-     вырос - учтите при разметке CONFIG-страницы внешней flash и CRC.            */
+     Оси акселерометра (Accel_x/y/z) и статусы падения живут в sensors_status_t
+     (Vector_main.h) - runtime-данные, в конфиг и во flash не сохраняются.     */
   uint8_t               Orientation;                                            // lis3dh_orientation_t
   uint8_t               Screen_rotation;                                        // 0 или 2 -> TFT_Rotation()
   uint8_t               Sensors_ok;                                             // биты: 1=BME280 2=LIS3DH 4=MAX17048
   uint8_t               Sensors_reserve;
 
+  /* --- журнал и режимы работы (использует Config_save_read.c) ---------------
+     Поля добавлены ДО Reserve[], поэтому sizeof(SNS_CFG) вырос - extstore
+     cfg_save/cfg_load хранят длину записи, совместимость проверяет CRC.        */
+  uint16_t              TimeLimit;                                              // лимит времени (Avis)
+  uint16_t              TimeLimitRST;                                           // лимит времени RST (Avis)
+  uint16_t              Bump_interval;                                          // интервал Bump test
+  uint32_t              DataLastBumpTest;                                       // дата последнего Bump test
+  uint32_t              CurrentAddrFile;                                        // журнал: логический счётчик записей
+  uint32_t              BegginAddrFile;                                         // журнал: начало доступного диапазона
+  uint8_t               ArchiveRecording;                                       // 1 = запись архива разрешена
+  uint8_t               Type_lcd;                                               // CONFIG_MODEL_LCD
+  uint16_t              Archiveinterval;                                        // (мин<<8)|с - период архива, как в Avis
+  uint16_t				current_build_type;
   uint16_t              Reserve[10];
 }SNS_CFG_Type_common; //Общая струкрутра для сенсоров
 
@@ -226,7 +248,6 @@ extern SNS_CFG Cfg_structdef_read;
 typedef struct//
 {
 	float		temperature;
-	uint16_t 	voltage_temp;
 	uint16_t 	flag;
 }TEMPSENSOR_CALIB;
 extern TEMPSENSOR_CALIB tempsensor_calib;

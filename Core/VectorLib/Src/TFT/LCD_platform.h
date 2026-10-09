@@ -34,6 +34,7 @@
 #include <stdint.h>
 #include "main.h"          /* LCD_*_Pin/_GPIO_Port, GPIO_WritePin, SPI_* */
 #include "spi.h"           /* hspi2 */
+#include "tim.h"           /* htim8: ШИМ подсветки (PC6 = TIM8_CH1, AF3) */
 #include "vector_config.h"
 
 #if VECTOR_LCD_USE_LVGL

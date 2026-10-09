@@ -185,7 +185,14 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | Экран как ресурс LVGL | `LVGL Task` (порт дисплея) и `Measure Task` (поворот) | поворот безопасен благодаря флагу порта; приоритеты 15 и 13 |
 
 Внешняя flash поделена без пересечений (`sfmap.h`): `SOUNDS 0..4 МБ` (пишет
-программатор), `CONFIG 0x400000 (4 КБ)`, `LOG 0x401000..8 МБ` (пишет прошивка).
+программатор), `CONFIG 0x400000 (4 КБ)` — конфигурация `SNS_CFG` (два слота,
+`cfg_save/cfg_load`), `LOG 0x401000..8 МБ` — кольцевой журнал событий
+(`log_append`/`log_next`); владелец обоих — `Config_save_read.c` (v21), запись
+только из потока `Measure Task` (`Vector_Run_Pre_Init` / `Vector_RunFlashMemory`).
+Внутренняя flash: последняя страница `0x080FE000` — заводские данные
+(калибровка температуры `0x080FF800`, бренд `0x080FF808`, LoRa AppKey
+`0x080FF820`), код ограничен `FLASH LENGTH = 1016K` в `.ld` (правка слетает
+при регенерации куба — PLAN.md п.37).
 
 ---
 
@@ -206,7 +213,8 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | `audio_status.last_error` / `sai_error_code` | код `audio_err_t` и сырой `SAI.ErrorCode` (больше не смешаны в одном числе) |
 | `audio_status.loop_enabled` / `loop_index` / `loop_next_at_ms` | повтор: включён ли, какой звук, когда следующий |
 | `tasks_status` | потоки прибора: `receiver_running` / `measure_running`, `cnt_receiver_passes`, `cnt_measure_runs`, по модулям `mod[0..5]` (com/lora/ble/lte/gps/sensor) — `cnt_receive_calls`, `cnt_run_calls`, `cnt_rx_bytes`, `cnt_rx_frames`, `cnt_tx_frames`, `cnt_errors`, `last_*_ms` |
-| `sensors_status` | диагностика шины I2C1: `cnt_init_ok`, `cnt_bme_reads`, `cnt_accel_reads`, `cnt_battery_reads`, `cnt_rotation_events`, `cnt_read_ms`, `last_read_ms`. Данные — в `Sns_Cfg_struct.Config_common`, живость чипов — маска `Config_common.Sensors_ok` (`SENSORS_OK_BME/_LIS3DH/_MAX17048`) |
+| `sensors_status` | оси акселерометра `Accel_x/y/z` (g), копия `Orientation/Screen_rotation`, падение: `fall_detected` (снимает `sensors_fall_event()`) и `cnt_fall_events`; диагностика шины I2C1: `cnt_init_ok`, `cnt_bme_reads`, `cnt_accel_reads`, `cnt_battery_reads`, `cnt_rotation_events`, `cnt_read_ms`, `last_read_ms`. Конфигурационные данные — в `Sns_Cfg_struct.Config_common`, живость чипов — маска `Config_common.Sensors_ok` (`SENSORS_OK_BME/_LIS3DH/_MAX17048`) |
+| `current_build_type`, `SaveConfig`, `SaveEvent`, `Sns_Cfg_struct.Config_common.working_hours[_offset]` | бренд (MIRAX/BACS из внутренней flash), флаги отложенного сохранения конфига/журнала (пишет `Vector_RunFlashMemory`), наработок: offset — накопленный, working_hours — сессия в секундах |
 | `lcd_status` | экран: `busy`, `dma_active`, `cnt_cmd/data8/data16/bulk`, `cnt_flush_ready` (0 при растущем `cnt_bulk` = нет прерывания DMA), `cnt_dma_fail`, `cnt_wait_timeout`, `last_hal_error` |
 | `sf_dbg_dma_chunks` / `_fallback` / `_tmo` | работает ли SPI-DMA и сколько раз откатились на опрос |
 | `vlog_dbg_lines` | сколько строк ушло в лог |
@@ -484,8 +492,11 @@ TIM6 = 10 (`TICK_INT_PRIORITY` в `stm32u5xx_hal_conf.h` и NVIC в `.ioc`).
   `EXTI11_IRQn` (в `main.h` есть `ACCEL_INT_EXINT_LINE LL_EXTI_LINE_11`);
 * **TIM3**: 1 кГц (Prescaler 159, Period 1000), `TIM3_IRQn` — такт таймеров
   прибора `Timer_Tick_1ms()` (включая таймауты кадров COM/GPS/LoRa);
-* пины экрана: PB14 `LCD_CS`, PB10 `LCD_DC`, PB12 `LCD_RST`, PC6 `LCD_LED`
-  (GPIO Output; ШИМ подсветки не настроен).
+* **TIM8** (v21, автор настроил в кубе): CH1 PWM, Prescaler 159 / Period 39 →
+  25 кГц — подсветка экрана; NVIC не нужен;
+* пины экрана: PB14 `LCD_CS`, PB10 `LCD_DC`, PB12 `LCD_RST`, PC6 `LCD_LED` =
+  **TIM8_CH1 (AF3)** — ШИМ подсветки, `backlight_set(%)` в `LCD_platform.c`
+  (duty считается от фактического ARR).
 
 ### 9.5. UART4: однопроводный полудуплекс → обычный асинхронный
 

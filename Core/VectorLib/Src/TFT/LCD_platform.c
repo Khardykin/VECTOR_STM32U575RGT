@@ -16,8 +16,9 @@
  *        GPDMA1_Channel8 привязан к SPI2 в кубе, Normal mode);
  *        GPDMA1_Channel8 привязан к SPI2 в HAL_SPI_MspInit, Normal mode);
  *    gpio_bits_set()/gpio_bits_reset()       -> GPIO_WritePin (макрос main.h);
- *    tmr_channel_value_set(TMR8, CH3)        -> ШИМ подсветки в этом проекте не
- *        настроен (PC6 = GPIO_Output), ветка CONFIG_MODEL_LCD 1 помечена TODO;
+ *    tmr_channel_value_set(TMR8, CH3)        -> HAL: TIM8_CH1 (PC6, AF3),
+ *        куб: PSC 159 / ARR 39 -> ШИМ 25 кГц, backlight_set() масштабирует
+ *        скважность от фактического ARR (__HAL_TIM_GET_AUTORELOAD);
  *    завершение DMA: HAL_SPI_TxCpltCallback(SPI2) -> LCD_transferCpltCallback().
  *
  *  ЧЕГО ЗДЕСЬ НЕТ И ПОЧЕМУ: HAL_SPI_ErrorCallback. В проекте он уже определён
@@ -358,29 +359,31 @@ void LCD_swap_rgb565(uint8_t *data, uint32_t len)
     }
 }
 
-/* Подсветка. CONFIG_MODEL_LCD 0 (наш случай, ST7789P3 172x320): PC6 - обычный
-   выход, поэтому просто вкл/выкл с порогом. ШИМ-ветка (CONFIG_MODEL_LCD 1) в
-   Avis крутила TMR8 CH3 - в этом проекте ШИМ на LCD_LED не настроен, поэтому
-   TODO: завести в кубе TIM+канал на PC6 и звать HAL_TIM_PWM_Start /
-   __HAL_TIM_SET_COMPARE.                                                     */
+/* Подсветка: ШИМ. PC6 = TIM8_CH1 (AF3, куб): PSC 159 / ARR 39 -> 25 кГц,
+   CCR 0..39. Скважность считается от ФАКТИЧЕСКОГО ARR таймера
+   (__HAL_TIM_GET_AUTORELOAD) - если настройки в кубе изменятся, код не
+   разъедется (старый вариант с VECTOR_LCD_PWM_PERIOD 249 давал постоянные
+   100% уже при percent >= 16, т.к. CCR не влезал в ARR 39).
+   CCR = ARR+1 -> постоянная 1 (100%). HAL_TIM_PWM_Start идемпотентен.
+   КОНТЕКСТ: поток (LVGL/индикация).                                          */
 void backlight_set(uint8_t percent)
 {
 #if (CONFIG_MODEL_LCD == 0)
+    uint32_t arr = __HAL_TIM_GET_AUTORELOAD(&htim8);
     uint32_t duty;
 
     if (percent > 100u)
     {
         percent = 100u;
     }
-    duty = ((uint32_t)(VECTOR_LCD_PWM_PERIOD + 1u) * percent) / 100u;
-    if (duty > (uint32_t)(VECTOR_LCD_PWM_PERIOD + 1u))
+    duty = ((arr + 1u) * (uint32_t)percent + 50u) / 100u;   /* с округлением */
+    if (duty > (arr + 1u))
     {
-        duty = VECTOR_LCD_PWM_PERIOD + 1u;
+        duty = arr + 1u;
     }
-    //ШИМ подсветки в кубе не настроен - см. комментарий выше.
-	HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_1);
-	__HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, duty);
-    (void)duty;
+
+    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, duty);
+    (void)HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_1);
 #endif
 }
 

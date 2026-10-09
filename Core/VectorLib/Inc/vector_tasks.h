@@ -56,7 +56,6 @@ typedef enum
   TASK_MOD_BLE,        /* BLE-модуль                                         */
   TASK_MOD_LTE,        /* сотовый модем LTE/GSM                              */
   TASK_MOD_GPS,        /* GPS/GNSS-модуль (Gps.c)                            */
-  TASK_MOD_SENSOR,     /* сенсорный UART (каналы измерения)                  */
   TASK_MOD_COUNT
 } task_module_t;
 
@@ -122,7 +121,6 @@ void Vector_Search_Temp_Start(uint16_t data);
 void command_message(void);        /* COM/UART4: разбор команд обмена         */
 void Ble_Receive(void);            /* USART3: InputBuffer[TYPE_BLE] -> парсер */
 void Lte_Receive(void);            /* модем LTE: InputBuffer[TYPE_LTE] -> парсер */
-void Uart_Channel_Receive(void);   /* сенсорный UART: InputBuffer[TYPE_SENSOR] */
 
 /* --- МОДУЛИ: обмен (поток measure_task, из Vector_Run_Measure) -------------- */
 void Ble_Run(void);

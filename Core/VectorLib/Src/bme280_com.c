@@ -137,7 +137,7 @@ int8_t bme280_measure(SNS_CFG *pSnsCfg)	/* 0 = данные обновлены, 
 
 #if VECTOR_BME_CALIBRATION
 		Calib_bme280_Temp(comp_data.temperature);
-		comp_data.temperature = comp_data.temperature + TEMPSENSOR_CALIB_TEMP_T;
+		comp_data.temperature = comp_data.temperature + pSnsCfg->Config_common.Temperature_calib_offset;
 #endif
 		pSnsCfg->Config_common.Temperature = comp_data.temperature;      /* ��C  */
 		pSnsCfg->Config_common.Humidity = comp_data.humidity;           /* %   */
@@ -160,12 +160,7 @@ int8_t bme280_measure(SNS_CFG *pSnsCfg)	/* 0 = данные обновлены, 
 #if VECTOR_BME_CALIBRATION
 void Calib_bme280_Temp(float temperature)
 {
-	uint16_t calib_v = TEMPSENSOR_CALIB_TEMP_V;
 	float calib_t = tempsensor_calib.temperature - temperature;
-	if(calib_v == 0xFFFF){
-		calib_v = 0;
-		tempsensor_calib.flag = 1;
-	}
 	if(tempsensor_calib.flag == 0){
 		return;
 	}
@@ -174,12 +169,10 @@ void Calib_bme280_Temp(float temperature)
 		calib_t = 0.0;
 	}
 
-	uint32_t calibration_payload[2];
-	calibration_payload[0] = *(uint32_t*)&calib_t; // Приведение вашей переменной calib_t
-	calibration_payload[1] = calib_v;              // Ваша переменная calib_v
+	pSnsCfg->Config_common.Temperature_calib_offset = calib_t; // Приведение вашей переменной calib_t
 
-	// Вызов функции (передаем базовый адрес и наш массив)
-	flash_write_calibration_safe(calibration_payload);
+	// Вызов флага о сохранение параметров
+	// сюда SaveConfig
 }
 #endif /* VECTOR_BME_CALIBRATION */
 

@@ -52,28 +52,32 @@
 
 #include "buffer.h"
 
+#include "Config_save_read.h"
+
 #include "audio_demo.h"
 #include "audio_player.h"
 #include "vector_tasks.h"
 
 
-#define FLASH_ADDRESS_START_BOOTLOADER  (0x08000000)	// Адресс основной программы
-#define FLASH_ADDRESS_STOP_BOOTLOADER   (0x08005000)  	// Конец памяти stm
-#define FLASH_PAGE_SIZE                 (2048)
-
-#define FLASH_ADDRESS_APPKEY    		(0x0803A000)
-#define FLASH_ADDRESS_CALIB_TEMP_T     	(0x080FF800)
-#define FLASH_ADDRESS_CALIB_TEMP_V     	(FLASH_ADDRESS_CALIB_TEMP_T + 4)
-#define FLASH_ADDRESS_BUILD_TYPE    	(FLASH_ADDRESS_CALIB_TEMP_T + 8)
-
-#define TEMPSENSOR_CALIB_TEMP_T     	(*(float*) FLASH_ADDRESS_CALIB_TEMP_T)
-#define TEMPSENSOR_CALIB_TEMP_V     	(*(uint32_t*) FLASH_ADDRESS_CALIB_TEMP_V)
+/* Карта ВНУТРЕННЕЙ flash. Заводские данные - последняя страница банка 2
+   (0x080FE000..0x080FFFFF, 8 КБ): линкерный скрипт ограничивает код 1016K,
+   поэтому страница не занята прошивкой (STM32U575RGTX_FLASH.ld - правка
+   слетает при регенерации куба, проверить!). Конфигурация SNS_CFG и журнал -
+   во ВНЕШНЕЙ flash (extstore/sfmap.h: CONFIG 0x400000, LOG 0x401000).
+   Страницу 8 КБ NOR стирает целиком, пишет по 16 байт, поэтому запись
+   заводских полей идёт через RAM-окно 64 Б (Internal_Flash_Write).        */
+#define FLASH_ADDRESS_START_BOOTLOADER  (0x08000000)	// Начало основной программы (бутлоадера пока нет)
+#define FLASH_ADDRESS_STOP_BOOTLOADER   (0x08005000)  	// Резерв: граница бутлоадера, когда появится
 
 /* --- датчики на I2C1: BME280 (0x76), LIS3DH (0x19), MAX17048 (0x36) --------
  * Владелец шины - поток Measure Task: чтение только из sensors_read(), поэтому
  * мьютекс не нужен. Микросхемы выключаются CONFIG_BME / CONFIG_LIS3DH /
  * CONFIG_MAX17048 (тело драйверов закрыто этими флагами).
- * Всё состояние - ОДНА структура sensors_status (как audio_status).          */
+ * Всё состояние - ОДНА структура sensors_status (как audio_status):
+ * счётчики диагностики шины + runtime-данные датчиков, которые НЕ хранятся
+ * в конфигурации (оси акселерометра, статусы падения, копия ориентации/
+ * поворота экрана). Измеренные значения, входящие в конфиг/журнал (T/H/P,
+ * батарея), - в Sns_Cfg_struct.Config_common.                               */
 typedef struct
 {
   volatile uint32_t cnt_init_ok;        /* сколько модулей поднялось         */
@@ -83,6 +87,22 @@ typedef struct
   volatile uint32_t cnt_rotation_events;/* событий смены ориентации          */
   volatile uint32_t cnt_read_ms;        /* длительность последнего чтения, мс*/
   volatile uint32_t last_read_ms;       /* метка последнего sensors_read()   */
+
+  /* LIS3DH: последние оси, g (+-4g, HR 12 бит). Runtime-данные: во flash не
+     сохраняются, читаются LVGL/COM-модулем напрямую, без I2C.              */
+  volatile float    Accel_x;
+  volatile float    Accel_y;
+  volatile float    Accel_z;
+
+  /* Ориентация и поворот экрана - копия Config_common (источник истины там,
+     поле сохраняется в конфиге); здесь - быстрый доступ для индикации.     */
+  volatile uint8_t  Orientation;        /* lis3dh_orientation_t              */
+  volatile uint8_t  Screen_rotation;    /* 0 или 2 -> TFT_Rotation()         */
+
+  /* Падение (free-fall, генератор INT2 LIS3DH, латч): fall_detected ставит
+     sensors_read(), снимает sensors_fall_event(); счётчик - с включения.   */
+  volatile uint8_t  fall_detected;
+  volatile uint32_t cnt_fall_events;
 } sensors_status_t;
 
 extern volatile sensors_status_t sensors_status;
@@ -96,6 +116,7 @@ extern volatile sensors_status_t sensors_status;
 void    sensors_init(void);             /* из Vector_Run_Pre_Init (один раз) */
 void    sensors_read(void);             /* из Vector_Run_Measure (1 с)       */
 uint8_t sensors_rotation_changed(void);
+uint8_t sensors_fall_event(void);       /* 1 = было падение, флаг сбрасывается */
 
 /* --- такты прибора --------------------------------------------------------
  * Timer_Tick_1ms() - из TIM3 (1 кГц, HAL_TIM_PeriodElapsedCallback в main.c):

@@ -1710,11 +1710,13 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
     // --- 2. Заводской номер прибора (всегда отображается) ---
     // Инициализация флага формата на этапе компиляции
     uint8_t is_7_digits = 0; // 0: %08d, 1: %07d
-#if (MIRAX_BACS_BUILD == MIRAX)
+    // Бренд - переменная рантайма (flash), в #if её сравнивать нельзя
+    if (current_build_type == MIRAX)
+    {
     #if ((DEVICE_NUMBER == Device2_Pro) || (DEVICE_NUMBER == Device2_Pro_1) || (DEVICE_NUMBER == Device3_Pro))
         is_7_digits = 1;
     #endif
-#endif
+    }
     uint32_t serial = ((uint32_t)pSnsCfg->Config_common.SerialHi << 16) | pSnsCfg->Config_common.SerialLo;
     char sn_buffer[24];
     strcpy(sn_buffer, (char*)SN_Label_Prefix[MIRAX_BACS_BUILD]);
