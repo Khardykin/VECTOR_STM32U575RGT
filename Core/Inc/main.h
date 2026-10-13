@@ -104,14 +104,19 @@ void Uart_SetBaudrate(UART_HandleTypeDef *huart, uint32_t baud);
 #define SET_ON(x)   		LL_GPIO_SetOutputPin(x##_GPIO_Port, x##_Pin);
 #define SET_TGL(x)			LL_GPIO_TogglePin(x##_GPIO_Port, x##_Pin);
 
-#define USART_COM			(huart4)
-#define USART_DEBUG			(huart4)
+#define USART_COM			(huart3)
+#define USART_DEBUG			(huart3)
+//#define USART_BLE			(huart3)
 
 
 #define BUTTON_1_EXTI_LINE 	LL_EXTI_LINE_1
 #define BUTTON_2_EXTI_LINE 	LL_EXTI_LINE_2
 #define BUTTON_3_EXTI_LINE 	LL_EXTI_LINE_3
 #define ACCEL_INT_EXINT_LINE LL_EXTI_LINE_11
+/* v28: совместимость со стилем Avis/SPL - error_status/SUCCESS/ERROR нужны
+   vector_macros.c (RTC_WriteTime, подход автора). В HAL U5 типа ErrorStatus
+   нет (только HAL_StatusTypeDef), определяем здесь (как в старом SPL).      */
+typedef enum { ERROR = 0, SUCCESS = !ERROR } ErrorStatus;
 #define error_status 		ErrorStatus
 #define I2C_OK				HAL_OK
 /* USER CODE END EM */
@@ -138,10 +143,6 @@ void Error_Handler(void);
 #define USART2_RX_LTE_GPIO_Port GPIOA
 #define CS_FLASH_Pin GPIO_PIN_4
 #define CS_FLASH_GPIO_Port GPIOA
-#define USART3_TX_BLE_Pin GPIO_PIN_4
-#define USART3_TX_BLE_GPIO_Port GPIOC
-#define USART3_RX_BLE_Pin GPIO_PIN_5
-#define USART3_RX_BLE_GPIO_Port GPIOC
 #define STATE_LED_Pin GPIO_PIN_0
 #define STATE_LED_GPIO_Port GPIOB
 #define BUTTON_1_Pin GPIO_PIN_1
@@ -170,6 +171,8 @@ void Error_Handler(void);
 #define ALARM_LED_2_GPIO_Port GPIOA
 #define VIBRO_Pin GPIO_PIN_15
 #define VIBRO_GPIO_Port GPIOA
+#define USART3_TX_BLE_Pin GPIO_PIN_10
+#define USART3_TX_BLE_GPIO_Port GPIOC
 #define ACCEL_INT_Pin GPIO_PIN_11
 #define ACCEL_INT_GPIO_Port GPIOC
 #define BLE_RESET_Pin GPIO_PIN_12

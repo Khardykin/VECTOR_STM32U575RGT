@@ -76,6 +76,7 @@ extern "C" {
 #define VLOG_M_FLASH   0x00000002u  /* spiflash/extstore: чтение/запись/стирание */
 #define VLOG_M_AUDIO   0x00000004u  /* плеер: старт/стоп/ошибки звука          */
 #define VLOG_M_TASKS   0x00000008u  /* потоки прибора: приём/измерения     */
+#define VLOG_M_COM     0x00000010u  /* обмен с внешними модулями: BLE/COM/LoRa (v27) */
 #define VLOG_M_ALL     0xFFFFFFFFu
 
 #if VECTOR_LOG_ENABLE

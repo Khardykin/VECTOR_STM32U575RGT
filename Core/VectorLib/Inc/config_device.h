@@ -17,6 +17,11 @@
 #define MIRAX 0
 #define BACS 1
 #define MIRAX_BACS_BUILD	current_build_type		// 0-Mirax, 1- Bacs
+// Последняя страница внутренней flash (8 КБ): хранит бренд прибора (полуслово
+// MIRAX/BACS), читает Init_Build_Type() (Config_save_read.c) при старте -
+// аналог Avis. Страница зарезервирована линкером: LENGTH = 1016K в
+// STM32U575RGTX_FLASH.ld (после перегенерации CubeMX правку LENGTH повторить).
+#define FLASH_ADDRESS_BUILD_TYPE	0x080FE000
 
 //Конфигурация
 #define Dev1     		(6) //
@@ -31,7 +36,7 @@
 #endif
 //===========================================================================================================================
 #define DEVICE_NUMBER_COM				(DEVICE_NUMBER + DEVICE_NUMBER_MODIF)
-#define BLE_DEBUG 1
+#define BLE_DEBUG 0
 #define LORA_DEBUG 0
 #define TEST_PROG						1
 

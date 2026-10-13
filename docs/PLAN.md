@@ -48,7 +48,7 @@
 | Кнопки | `stm32u5xx_it.c` (EXTI), `Src/Test/Src/audio_demo.c` | два слоя: продуктовые флаги `button1/2/3/button_sos` и тестовое демо плеера |
 | LoRa S7678S | `Src/Lora_S7678S.c` (2094 строки) | реализация автора: AT-обмен, классы A/C, регионы, GPS-трек, `SNS_CFG` |
 | Конфигурация прибора | `Inc/config_device.h`, `Inc/shared_types.h` | флаги сборки `CONFIG_*`, структура `SNS_CFG`, биты статусов `ST_COMMON` |
-| Конфиг/журнал (сохранение) | `Src/Config_save_read.c`, `Inc/Config_save_read.h` | **v21**: переработан под этот проект — `SNS_CFG` и журнал во внешней flash (`cfg_save/cfg_load`, `log_append` extstore), заводские данные (калибровка/бренд/AppKey) во внутренней странице 0x080FE000; загрузка при старте в `Vector_Run_Pre_Init()`, запись — только из `Vector_RunFlashMemory()`. **v23**: области с явным `addr` — рабочий конфиг 0x400000 (`SaveConfig`), заводской 0x401000 (`SaveConfigDefault` пишет текущий, `ReadConfigDefault` — сброс к заводским в рабочий `Sns_Cfg_struct`), журнал с 0x402000 |
+| Конфиг/журнал (сохранение) | `Src/Config_save_read.c`, `Inc/Config_save_read.h` | **v21**: переработан под этот проект — `SNS_CFG` и журнал во внешней flash (`cfg_save/cfg_load`, `log_append` extstore), заводские данные (калибровка/бренд/AppKey) во внутренней странице 0x080FE000; загрузка при старте в `Vector_Run_Pre_Init()`, запись — только из `Vector_RunFlashMemory()`. **v23**: области с явным `addr` — рабочий конфиг 0x400000 (`SaveConfig`), заводской 0x401000 (`SaveConfigDefault` пишет текущий, `ReadConfigDefault` — сброс к заводским в рабочий `Sns_Cfg_struct`), журнал с 0x402000. **v25**: журнал ПЕРЕНЕСЁН из extstore сюда — кольцо слотов 64 Б (0x7FFF), `log_read(ptr)` + `log_find_by_time()`; `EVENT_LOG.Reserve[19]` добивает слот до 64 Б |
 | Общие включения | `Inc/Vector_main.h` | агрегатор заголовков (см. раздел 6, решение про инклуды) |
 
 UART-роли (как задумано):
@@ -79,23 +79,36 @@ UART-роли (как задумано):
 
 ## 3. Данные и состояния
 
-* **`SNS_CFG`** (`shared_types.h`): `Config_common` (State, StateErr, LED,
-  батарея и пороги, часы `working_hours` (секунды) и смещение
-  `working_hours_offset` (v24: offset — НЕ часы),
-  температура/влажность/давление, серийный номер, версия железа, дата
-  производства, GPS, `PeriodTimeLora`, `Lora_Config_Flags`, `Lora_freq_rx2`,
-  `Lora_dr_rx2`, `Orientation/Screen_rotation/Sensors_ok`, журнал —
-  `CurrentAddrFile/BegginAddrFile/ArchiveRecording/Archiveinterval`, резерв;
-  в v23 автор убрал `Bump_interval/DataLastBumpTest/TimeLimit/
-  TimeLimitRST/Type_lcd` и добавил типы каналов `SNS_Dev_Type/
-  SNS_DevChan_Type`),
-  `application_language`, `CRC_CONFIG`. **Хранение (v21, области v23)**:
+* **`SNS_CFG`** (`shared_types.h`, структура v25 — автор разделил блоки):
+  `Config_common` (State, StateErr, LED-периоды, ПОРОГИ батареи
+  `battery_charge_volt_max/min/lim_1/lim_2`, серийный номер, версия железа,
+  дата производства, GPS, `PeriodTimeLora`, `Lora_Config_Flags`,
+  `Lora_freq_rx2`, `Lora_dr_rx2`, `current_build_type`, резерв);
+  `Config_archive` (`SNS_Archive_Type`: указатели кольца журнала
+  `CurrentAddrFile`/`BegginAddrFile`, `ArchiveRecording`, `Archiveinterval`);
+  `Working_data` (`SNS_Working_Type`: часы `working_hours` — ВРЕМЯ в секундах,
+  и `working_hours_offset` — СМЕЩЕНИЕ, v24: offset НЕ часы);
+  `application_language`, `CRC_CONFIG`. ИЗМЕРЕННЫЕ ДАННЫЕ (T/H/P, батарея,
+  ориентация/поворот, `Sensors_ok`, калибровочное смещение) в v25 ПЕРЕЕХАЛИ
+  из `SNS_CFG` в `sensors_status` — во flash остаётся только то, что
+  действительно конфигурация. В v23 автор убрал `Bump_interval/
+  DataLastBumpTest/TimeLimit/TimeLimitRST/Type_lcd` и добавил типы каналов
+  `SNS_Dev_Type/SNS_DevChan_Type` (+ экземпляр `Connected_device`, v25).
+  **Хранение (v21, области v23)**:
   рабочий конфиг — страница внешней flash 0x400000 `SF_CONFIG_BASE`,
   заводской конфиг — страница 0x401000 `SF_CONFIG_DEFAULT` (`cfg_save/
   cfg_load` extstore с явным `addr`, CRC32 extstore + CRC16 `CRC_CONFIG`;
   записи добавляются в страницу без стирания, свежая = максимальный seq);
-  журнал событий — кольцевая область LOG 0x402000..8 МБ (`log_append`/
-  `log_next`, запись `EVENT_LOG`);
+  журнал событий — КОЛЬЦЕВАЯ область LOG 0x402000..8 МБ (v25, схема автора):
+  слоты фиксированной длины 64 байта = `sizeof(EVENT_LOG)` (per-record
+  заголовок `LOG_REC_HDR` упразднён — длина одинаковая), кольцо 0x8000
+  (32768) слотов = 2 МБ, позиция в памяти = указатель & 0x7FFF; указатели
+  `CurrentAddrFile`/`BegginAddrFile` монотонно растут и хранятся в
+  `Config_archive` (в flash попадают вместе с конфигом); переполнение —
+  стирание сектора и сдвиг начала на число записей в секторе (64 — чётное,
+  сектор делится нацело); API `Config_save_read.c`: `save_event()`,
+  `log_read(ptr)`, `log_find_by_time(t_from,t_to)` (бинпоиск по
+  `Event_log.working_hours`);
   заводские данные (калибровка температуры, бренд `current_build_type`,
   LoRa AppKey) — последняя страница ВНУТРЕННЕЙ flash 0x080FE000 (код
   ограничен 1016K в `.ld`). Оси акселерометра и статусы падения — runtime,
@@ -167,12 +180,32 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 * [x] Плеер: стриминг, громкость, повтор, watchdog, лог частоты SAI
 * [x] Убраны: мост UART4↔USART2, слой «состояний» плеера
 
-**Этап 1. Транспорт BLE**
-* [ ] `CONFIG_BLE 1`, определить `USART_BLE` в `main.h`
-* [ ] приём USART3 → `InputBuffer[TYPE_BLE]` (сейчас вызов вырезан флагом)
-* [ ] детект конца кадра: IDLE-линия (`UART_IT_IDLE` + `__HAL_UART_CLEAR_IDLEFLAG`)
-      или таймаут межбайтового интервала
-* [ ] поток-парсер BLE: кольцо → кадр → обработчик — каркас готов (v15): `Ble_Receive()` в `Vector_main.c` (слабая заглушка, кольцо уже вычитывается под `CONFIG_BLE`)
+**Этап 1. Транспорт BLE** — мы ХОЗЯИН своего модуля MK01, как Avis (v27, отмена решения v26)
+* [x] определить `USART_BLE` в `main.h` (v26: `huart3`, PC4/PC5 — PLAN п.13 закрыт)
+* [x] приём USART3 → `InputBuffer[TYPE_BLE]` — работает в `stm32u5xx_it.c` под `CONFIG_BLE`
+* [x] ~~детект конца кадра: терминатор `0x0D` + таймаут тишины~~ — v27: НЕ НУЖНО,
+      обмен синхронный (Ble_TransmitReceive ждёт ответ ≤35 мс + 5 мс, как в Avis)
+* [x] **порт Ble_mk01.c (мастерская сторона) — `Src/Ble_vector.c` + `Inc/Ble_vector.h`
+      (v27, замечание автора п.2: «полностью копируешь весь функционал, кроме
+      ADVMSDDATASET, которую заменяем обычным запросом ADVMSDDATAGET, и на
+      которую нам отвечают структурой. И так периодически опрашиваем»)**:
+      `Ble_Init(serial)` = AT→AT→`BLE_InitName` (ADVBLENAMESET: метка + %04d%04d)→
+      BLEADDR?→период 300→мощность 8→старт; `Ble_TransmitReceive` 4 попытки,
+      OK/ERROR, 3 серии ошибок → `Ble_flag_err`; `Ble_MsdDataGet()` — опрос
+      принятых данных (ответ hex → `str_ble_data_set_t` → `Ble_ApplyConnectedDevice`
+      → `Connected_device`); `Ble_MsdDataSleep/AdvStart/AdvPeriodms/AdvPower/
+      SystemOff/DeInit/SystemDFU` — один в один Avis; `Ble_Run()` — скелет
+      Avis (INIT 2 с / SET 60 с / SLEEP 30 с таймеры, `ST_COMMON_BIT_ERR_BLE`)
+* [x] кольцо `TYPE_BLE` читает ТОЛЬКО `Ble_TransmitReceive` (публичный
+      `Ble_Receive()` — пустой: в Avis Receiver Task BLE не обслуживает)
+* [x] счётчики: `ble_status` (tx/ok/error/noanswer/unknown/datasets/init/err)
+      + `tasks_status.mod[TASK_MOD_BLE]`; хост-тест 9 сценариев пройден
+* [ ] `CONFIG_BLE 1` — включать после проверки на живом модуле (формат ответа
+      `ADVMSDDATAGET` предварительный: протокол будет дополняться, автор)
+* [ ] дополнения протокола (автор): точный wire-формат ответа `ADVMSDDATAGET`
+      (сейчас: эхо 2 байта + hex структуры + «OK» — как у BLEADDR? в Avis),
+      метка имени `BLE_Label[0]` = "VEC" — предварительная, дискретность/
+      коэффициент концентрации отправителя (в `ConcentrationVal` пока raw u16)
 * [ ] счётчик потерь при переполнении кольца (сейчас байты теряются молча) — ставить в ISR по возврату `add_to_buffer()`; место под счётчик: `tasks_status.mod[].cnt_errors`
 
 **Этап 2. Транспорт LoRa**
@@ -206,16 +239,39 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 
 **Этап 3. Мост и статусы**
 * [ ] таблица «статус → индекс звука» и «статус → LED»
-* [ ] BLE-кадр → LoRa-пакет (порт, DR, класс A/C), LoRa → BLE-ответ
+* [x] BLE-данные → LoRa v4 пакет (v28): `Ble_telemetry`/`Connected_device` →
+      контейнерные блоки (PPE/BLEBeacons) и секция AVIS (`SUB_TYPE_GAS`);
+      downlink `Message` → `Lora_Message` (New/`Lora_MessageShown()`) для дисплея;
+      проверено хост-тестом `test_lora_v4` (побайтовая сверка с v4)
+* [ ] LoRa → BLE-ответ (не требуется протоколом v1: downlink адресует трекер;
+      порт/DR/класс A/C — в `Lora_Init`, зашиты v3-логикой)
 * [ ] учёт `ST_COMMON_BIT_BLOCK_SOUND`, `BLOCK_SOUND_LIMIT_CALIB`,
       `DATA_EXCHANGE`, `TURN_ON_BLE/LORA/GPS/GSM`, `TURN_OFF`
 * [ ] приоритеты: аварийный статус важнее информационного (очередь звуков)
 
 **Этап 4. Кнопки (продуктовая логика)**
-* [ ] инкремент `button_count` (сейчас только обнуление) — удобно в TIM3 1 кГц
-* [ ] короткое/длинное/удержание, антидребезг в таймере, а не в ISR
+* [x] инкремент `button_count` — в `Timer_Tick_1ms()` (TIM3 1 кГц = мс), EXTI ставит
+      `button_flag`/обнуляет счёт; отпускание гасит флаг (`stm32u5xx_it.c`)
+* [x] короткое/длинное/двойное/удержание + антидребезг в таймере, не в ISR —
+      `Src/Menu_vector.c` (v26): декодер жестов по образцу `Button_1/2/3_Menu`
+      из Avis_Menu_2 (`GEST_SHORT/LONG/DOUBLE/SHORT_LONG/FAKE`, LONG срабатывает
+      до отпускания), пороги — `VECTOR_MENU_PRESS_SHORT_MS`/`_LONG_MS`/`_DOUBLE_MS`
+* [x] основа меню (v26; v27): машина экранов `screen_t` (Start/HeadMain/Measurements/
+      Menu/TestSound — по имеющимся экспортам SquareLine), `Menu_GoTo`,
+      авто-возврат на главный по `TIMER_RTC_MAIN_RESET`, `dirty_data` → `SaveConfig=1`;
+      отрисовка — weak `Menu_Draw()` (подставит LVGL-порт). v27 по замечаниям
+      автора: хук `Menu_EnterScreen()` УДАЛЁН (п.1 — как `LCD_Fill_Template`
+      в Avis, экран перерисовывается целиком каждый цикл, `lv_screen_load`
+      порт сделает внутри `Menu_Draw()` при смене screen); приоритет жестов
+      ПОСТОЯННЫЙ B1>B2>B3 (п.3); `Menu_Run()` переехал из Measure Task в поток
+      LVGL Task по `timer.flag_100ms` через `Vector_Run_Indication()` — аналог
+      `indication_task_function` из Avis_main.c (п.5). Состав экранов/пунктов/
+      статусов ещё не определён (автор) — расширяется в `Menu_vector.h` +
+      `menu_navigate()`
 * [ ] `button_sos` — зафиксировать, что это та же BUTTON1
-* [ ] `VECTOR_AUDIO_DEMO_KEYS 0` — демо-кнопки отдаются рабочему коду
+* [ ] `VECTOR_AUDIO_DEMO_KEYS 0` — демо-кнопки отдаются рабочему коду (сейчас демо
+      плеера и `Menu_vector` читают одни и те же `button1/2/3`: при включённом демо
+      нажатие листает звуки И ходит по меню)
 
 **Этап 5. Сон и питание**
 * [ ] `CONFIG_SLEEP`: Stop2 (RAM сохраняется) или Standby (меньше ток, RAM
@@ -234,12 +290,14 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
       вращения на 160 МГц
 
 **Этап 6. Журнал и сервис**
-* [x] кольцевой журнал в области LOG (0x402000.., v23): `save_event()` →
-      `log_append` (v21); события «включение» и архив по `Archiveinterval`
+* [x] кольцевой журнал в области LOG (0x402000..): `save_event()` (v25 — слот
+      64 Б, кольцо 0x7FFF, указатели в `Config_archive`); события «включение»
+      и архив по `Archiveinterval`
 * [x] конфигурация `SNS_CFG` во внешней flash: `read_param/save_param` →
       `cfg_load/cfg_save` (v21), загрузка при старте, заводской фолбэк
-* [ ] чтение журнала/конфига через BLE или LoRa по команде (`log_next`,
-      `compare_param` — каркас есть)
+* [ ] чтение журнала/конфига через BLE или LoRa по команде: `log_read(ptr)` и
+      `log_find_by_time(t_from,t_to)` готовы (v25), `compare_param` — каркас;
+      осталось развести протокол команд
 * [ ] событие `TYPE_TURN_OFF` при выключении (нужен обработчик выключения)
 * [ ] версионирование прошивки и (опционально) OTA
 
@@ -273,6 +331,11 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 | Хранение конфига/журнала (v21) | `SNS_CFG` и журнал — ВО ВНЕШНЕЙ flash через `extstore` (`cfg_save/cfg_load` — два слота с CRC, `log_append` — кольцо LOG); заводские данные (калибровка T, бренд, AppKey) — во ВНУТРЕННЕЙ flash, страница 0x080FE000 (`.ld` ограничен 1016K). Адресация Avis (`reg_mem`, AT45/W25) не переносилась. Часы (уточнение автора, v24): `working_hours` — САМО ВРЕМЯ в секундах (`volatile`, +1 каждый такт `Timer_Tick_1s()` от RTC 1 Гц), `working_hours_offset` — СМЕЩЕНИЕ (не часы); в журнал `save_event()` пишет сумму offset + working_hours. (С v23 области и адреса — в строке «Области конфига (v23)» ниже) |
 | Шина flash и звук (v22) | «Окно тишины» вместо `TX_WAIT_FOREVER` (решение автора): `Vector_RunFlashMemory()` заходит во внешнюю flash только когда звук молчит (`audio_is_busy()==0` — доигран или пауза повтора 500 мс), иначе флаги живут и повторяются каждый проход (50 мс); звук всегда доигрывает до конца, форс-стирания сквозь звук нет. В `extstore`: чтения ждут шину ограниченно (`VECTOR_EXT_LOCK_READ_MS`=250 мс), записи — try-lock (`VECTOR_EXT_LOCK_WRITE_MS`=0) с кодом `EXT_BUSY (-2)`; стирания под звук не стартуют и изнутри `extstore` (защита гонки старта с кнопки), счётчики `ext_dbg_busy`/`ext_dbg_erase_defer`; `ext_mtx` с `TX_INHERIT` (Audio 10 не ждёт, пока Receiver 12 вытесняет Measure 13). Записи последовательные (опрос, без DMA). `save_param/save_event` → `int`, флаги гасятся только по успеху, жёсткая ошибка → `cnt_flash_errors`; `compare_param` пишет журнал отложенно через `SaveEvent` (поток приёма flash не трогает) |
 | Области конфига (v23) | Решение автора: у `cfg_save/cfg_load/save_param/read_param` явный адрес области `uint32_t addr` (НЕ `uint16_t` — 0x400000 в 16 бит не помещается); ДВЕ config-страницы (`sfmap.h`): `SF_CONFIG_BASE 0x400000` — рабочий конфиг (загрузка при старте, флаг `SaveConfig`), `SF_CONFIG_DEFAULT 0x401000` — заводской (флаг `SaveConfigDefault` пишет туда ТЕКУЩИЙ конфиг, `ReadConfigDefault` — СБРОС К ЗАВОДСКИМ: читает область через буфер `Cfg_structdef_read` и при валидном CRC копирует в рабочий `Sns_Cfg_struct`, пустая/битая область → рабочий конфиг не тронут; закрепление сброса во flash — отдельным `SaveConfig`); журнал сдвинут на `0x402000`. «Дефолтный» флаг — это ОБЛАСТЬ ПАМЯТИ заводских настроек, а не запись дефолтов при первом пуске (та остаётся в рабочей области). Флаг `ext_ready` удалён (решение автора): порядок `ext_init()` → `audio_init()` → потоки фиксирован, звук и обращения к конфигу возникают только по событиям; до `ext_init()` `tx_mutex_get` на нулевом мьютексе вернёт ошибку штатно. Журнал единый: единичные события (`SaveEvent`) + периодический архив (`TIMER_RTC_LOG`, `ArchiveRecording==1`) — оба через `save_event()`; из `SNS_CFG` убраны `TimeLimit/TimeLimitRST/Bump_interval/DataLastBumpTest/Type_lcd`, добавлены `SNS_Dev_Type/SNS_DevChan_Type` |
+| Журнал-кольцо и данные (v25) | Схема автора: журнал — слоты ФИКСИРОВАННОЙ длины 64 Б (`sizeof(EVENT_LOG)`, `LOG_REC_HDR` не нужен), кольцо на 0x7FFF (маска указателя), указатели `CurrentAddrFile`/`BegginAddrFile` — в `SNS_CFG.Config_archive` (растут монотонно, в памяти — по маске); переполнение: стирание сектора + сдвиг начала на ЧИСЛО ЗАПИСЕЙ В СЕКТОРЕ (64 — чётное/кратное, сектор делится нацело); чтение по номеру `log_read(ptr)` и поиск по времени `log_find_by_time(t_from,t_to)` → номера указателей (время = `Event_log.working_hours`, бинпоиск). Разделение данных: измеренное — в `sensors_status`, сохраняемое — в `SNS_CFG` (`Config_archive`/`Working_data`). Часы: `working_hours` при включении берётся ИЗ РЕЗЕРВНОГО РЕГИСТРА RTC BKP0 ПОСЛЕ чтения конфига; `Timer_Tick_1s()` зеркалит счётчик в BKP0 каждую секунду (DBP открыт в `Vector_Run_Board_Init()`); offset — смещение, не часы |
+| BLE-периферия и основа меню (v26) — **ОТМЕНЕНО в v27, см. след. строку** | Роли поменялись относительно `Ble_mk01` (docs/): там MCU был МАСТЕРОМ своего модуля и пушил данные (`AT+ADVMSDDATASET=`), у нас мастер — Avis, а VECTOR отвечает. `Ble_vector.c/h` (`CONFIG_BLE`): неблокирующая строковая машина по кольцу `TYPE_BLE` (терминатор `0x0D`, страховка — таймаут тишины `VECTOR_BLE_FRAME_TMO_MS` в `Ble_Run()`), таблица команд `ble_cmds[]` (дополняется одной строкой): `ADVMSDDATAGET` → `str_ble_vector_data_t` hex-строкой + `OK`, `ADVMSDDATASET=<hex>` → `str_ble_data_set_t` (формат Ble_mk01 байт-в-байт) → `Ble_ApplyConnectedDevice()` → `Connected_device` (`SNS_Dev_Type`: dev_id/версии/заряд + `Sensor[]`: `num_formula_gas`, `ConcentrationVal` = raw u16 LE, `StateErr`, `Setting`; общий `StateErr` = OR по каналам), `MODINFO?`, прочее → `ERROR`. Ответы: `[данные + 0x0D] [«OK»|«ERROR» + 0x0D]` — формат предварительный, протокол будет дополняться (автор). `Menu_vector.c/h` (`CONFIG_DISPLAY`): основа слоя меню — `screen_t` по экранам SquareLine, жесты кнопок 1/2/3 как в `Button_1/2/3_Menu` (Avis_Menu_2), роли B1=вход/назад, B2=вниз, B3=вверх, авто-возврат `TIMER_RTC_MAIN_RESET`, `dirty_data`→`SaveConfig`, weak-хуки `Menu_Draw()`/`Menu_EnterScreen()` под LVGL-порт. Вызовы: `Menu_Init()` в `Pre_Init`, `Menu_Run()` каждый проход `measure_task` (50 мс — LONG 1.5 с и окно DOUBLE 400 мс требуют частого опроса). Проверено хост-тестами: BLE 10/10 (пинг, DATAGET-содержимое, DATASET→Connected_device, битый hex, переполнение строки, таймаут кадра, выключенный модуль), меню — жесты/навигация/авто-возврат/dirty→SaveConfig |
+| BLE и меню — исправления по замечаниям автора (v27) | **(1)** `Menu_EnterScreen` удалён: как `LCD_Fill_Template`/`DisplayIndication` в Avis, экран перерисовывается ЦЕЛИКОМ каждый цикл — слабое `Menu_Draw()`, `lv_screen_load` при смене screen сделает порт внутри него. **(2)** BLE — роли НЕ менялись: полный порт `Ble_mk01.c` (мастерская сторона своего модуля: AT/ADVBLENAMESET/BLEADDR?/ADVPERIODMS/ADVPOWER/ADVSTART/SLEEP/SYSTEMOFF/DFU/MODINFO?, 4 попытки, OK/ERROR, 3 серии → flag_err), вместо `ADVMSDDATASET` — периодический запрос `ADVMSDDATAGET` (`Ble_Run`, SET-таймер 60 с), ответ hex → `str_ble_data_set_t` (64 байта с паддингом внутреннего struct — ОДИН В ОДИН сборка Avis) → `Connected_device`; кольцо TYPE_BLE читает только `Ble_TransmitReceive`, публичный `Ble_Receive()` пустой. **(3)** Приоритет жестов постоянный: B1 > B2 > B3 (LONG > SHORT внутри кнопки), единая else-if цепочка на экран. **(4)** Указатели архива `CurrentAddrFile/BegginAddrFile` сохраняются после КАЖДОЙ записи журнала ОТДЕЛЬНОЙ страницей-кольцом `SF_LOG_PTR` 0x602000 (запись 16 Б {seq,cur,beg,crc16,pad}, 256 шт на стирание, свежая = max seq; аналог `SaveCurrentAddrFile/ReadCurrentAddrFile` Avis) — конфиг из-за двух слов не перезаписывается; стирание только в «окне тишины» (EXT_BUSY → указатели ждут в RAM). **(5)** Меню/индикация переехали из Measure Task в поток LVGL Task (`app_azure_rtos.c`) по образцу `indication_task_function` Avis: `timer.flag_100ms` → `Vector_Run_Indication()` (switch device_turn → `Menu_Run()`), затем `lv_timer_handler()` при `TFT_Initialized`, цикл 10 мс. Побочно: `Init_Build_Type()`/`current_build_type` (бренд из последней страницы внутренней flash, линкер уже резервирует 1016K) — закрыта висячая ссылка `TFT_indicator.c`; сброс к заводским теперь как в Avis закрепляется `SaveConfig=1` + `ST_COMMON_BIT_DATA_EXCHANGE`. Хост-тесты: menu (жесты/приоритет/indication), ble (9 сценариев: init/DATAGET/sleep/ошибки/таймауты/DeInit), logptr (кольцо указателей: append/wrap/busy/CRC) — все прошли |
+| LoRa v4 + BLE-протокол v1 + календарный RTC (v28) | **(1) LoRa**: апгрейд v3→v4 по `docs/Mirax-Lora-protocol-v4.md` БЕЗ переименования функций (дополнение к рабочему коду): `TYPE_DYNAMIC` = `ContainerMask`(13 бит) + контейнерные блоки (Battery/GPS/GPSTrack/TimeRef/**ControlLora16**/**Environment**/**Motion**/**PPE**/**BLEBeacons**/**контейнерный EventLog**/GPSHistory/ConfigAck/**MsgAck**) + `SubCount` и секции под-устройств (`SubID+SubMask`); газовые данные (Sensors/канальный EventLog/заряд) переехали в секцию AVIS (`SUB_TYPE_GAS`, SubID 1) — источник `Connected_device`/`Ble_telemetry` (по BLE), НЕ каналы `SNS_CFG` (у трекера газовых сенсоров нет); концентрации — pass-through (отправитель уже масштабировал). `ControlLora` 8→16 бит (+`EVACUATION` бит 8; защита SOS\|CURRENT_C маска `0x00A0`; ACK-маска `0x0137`). `TYPE_STATIC` v4: +`radio_cfg_t` (ground truth), +`PPEEnabledMask`/`ppe_descr_t`, +`sub_descr_t` с `CfgLen/Cfg` (самоописываемо). Downlink: блок Control 4 Б (Mask/Value u16), +блок `Message` (CP1251, ≤237 симв.) → `Lora_Message` (идемпотентность по MsgSeq, квитирование MsgAck битом 12). ACK/TURN_OFF: статус u16. Контейнерный EventLog — типизированные 10-байтовые записи (падение/поза/SOS/СИЗ; коды EventType предварительные), якорь TimeRef/GPS общий для всех журналов; исправлен LE-порядок маркера «нет фикса» (было 0x0080, стало 0x8000). Буферы UART: receive 256→512, transmit 400→560 (hex-downlink с Message). Дополнения, чтобы `CONFIG_LORA=1` вообще собирался: макрос `LORA_UART_Init`, `TIME_RTC_LORA_DATA_SLEEP_AFTER_DL`, weak `Get_Conversion_factor_rf` (1.0), `deveui_com`, убрана мина Avis `#define TYPE_LORA (TYPE_RF)` из `buffer.h` (TYPE_RF в enum нет — макрос затенял TYPE_LORA). **(2) BLE-протокол v1** (новый `docs/Mirax-Ble-protocol-v1.md`, стиль LoRa-дока): Header-байт (тип<<4\|версия); legacy-пакет Avis (0x02, 6+5N) принимается КАК ЕСТЬ — `str_ble_data_set_t` приведена к РЕАЛЬНОМУ формату `Ble_mk01.h` (v27-версия с u16-полями была неверной, 64 Б вместо 41); новые пакеты: BEACONS 0x11 (Count + 4Б-записи = `ble_beacon_t` LoRa v4), PPE 0x21 (Count + 6Б: тип/серийник/заряд/RSSI/надето), SUBDEV 0x31 (с серийником — задел новой прошивки AVIS), AGG 0xF1 (BlockMask + блоки — «всё одним пакетом»); лимит пакета 256 Б (автор), UART-буфер 520 (hex); диспетчер `Ble_ParsePacket` → `Connected_device` + `Ble_telemetry` (`shared_types.h`, вне CONFIG_* — LoRa читает даже при CONFIG_BLE=0; свежесть TTL 5 мин). **(3) Часы**: подход автора (коммит «6») — календарный HAL RTC ↔ Unix-секунды (`mktime`/`gmtime`, AN4759) вместо BKP0; v28-исправления: база года ±100 (HAL 0..99 от 2000, `tm_year` от 1900 — иначе 1926 вместо 2026), порядок Time→Date и на чтение, и на запись (RM0456: теневые регистры), контроль ошибок HAL (возврат 0/-1), совместимость `ErrorStatus/SUCCESS` в `main.h`; `HAL_PWR_EnableBkUpAccess` на U5 корректен (правка автора подтверждена по заголовкам ST — функция в PWR-модуле, не Ex). TZ newlib = UTC (setenv не вызывать); `time_t` 32 бит — 2038 (как и у AT32). **(4) Единицы BME280**: `BME280_FLOAT_ENABLE` НЕ определён (`.cproject`) → int32-драйвер: `Temperature` = °C×100, `Pressure` = гПа×10, `Humidity` = %×1024 (комментарии врали) — журнал исправлен (было повторное ×100 → переполнение int16), LoRa Environment конвертирует по факту; индикации (`TFT_indicator.c`) понадобятся /100 и /1024 — TODO автора. Хост-тесты: `test_lora_v4` (7 сценариев, побайтово по v4), `test_ble` (13 сценариев протокола v1), menu/logptr — регрессия |
+| Часы в RTC BKP0 и сервис (v26; часы в v28 заменены календарным RTC — см. строку v28) | Автор заменил зеркало BKP0 из ISR на Avis-функции `RTC_ReadTime()/RTC_WriteTime()` (реализованы в `vector_macros.c` поверх HAL_RTCEx_BKGet/SetRegister(BKP0) — на U5 нет 32-битного счётчика RTC как на AT32): `Timer_Tick_1s()` только `+1`, сверку и запись раз в секунду делает `Vector_Options_System()` (Receiver Task, `flag_start_work_bat_sys`), чтение при старте — `Pre_Init` после конфига; DBP открыт в `Board_Init`. Там же: `SoftResetProgram` (+ `TIMER_RTC_SOFT_RESET_PROGRAM`) → `save_event_type_2(TYPE_FW_UPDATE)` (пока = `save_event` + bounded-ретрай; второй формат журнала — после переноса каналов) → стоп TIM3 → `NVIC_SystemReset()`; `Avis_Battery_System()` — weak-заглушка (перенести из Avis). Блок-схема проекта — `docs/ARCHITECTURE.md` + `architecture.svg` |
 | Часы и сброс к заводским (v24) | Уточнение автора: `working_hours_offset` — СМЕЩЕНИЕ, а не часы; ВРЕМЯ — `Config_common.working_hours` (`volatile`, +1 каждую секунду из `Timer_Tick_1s()`, RTC wakeup 1 Гц; сохраняется/грузится вместе с `SNS_CFG`). Сброс к заводским (`ReadConfigDefault`) ЧАСЫ СОХРАНЯЕТ: `working_hours` переносится при копировании структуры, остальное (включая offset) заменяется заводским; потеря ≤1 с из-за гонки с RTC-ISR допустима. Журнал: `Event_log.working_hours` = offset + working_hours |
 | Подсветка экрана (v21) | ШИМ: TIM8_CH1 (PC6, AF3), куб — PSC 159 / ARR 39 → 25 кГц. `backlight_set(%)` масштабирует скважность от фактического ARR (`__HAL_TIM_GET_AUTORELOAD`), `VECTOR_LCD_PWM_PERIOD` больше не используется |
 | Заголовки | Один `vector_macros.h` на все макросы/хелперы проекта вместо `vector_status.h` + `vector_compat.h`; API и состояние датчиков (`sensors_status`) живут в `Vector_main.h`, реализация — в `Vector_main.c` (как `Ble_Run`/`Lora_Run` в `Avis_main.c`). Биты статусов — в `shared_macros.h` автора. Новых `vector_*.h` без нужды не заводим |
@@ -549,3 +612,103 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     если вылезут новые ошибки (пины куба, HAL), прислать лог.
     (в) `task_module_name()` не знал про добавленный автором `TASK_MOD_SENSOR`
     (ветка возвращала "?") — добавлен case "sensor" (v24).
+45. **v25 (пункты 1-3 автора: кольцо журнала, данные/часы, чтение по времени)**
+    реализовано: журнал — слоты 64 Б (`sizeof(EVENT_LOG)`, assert в
+    `Config_save_read.c`), кольцо 0x8000 по маске 0x7FFF, указатели в
+    `Config_archive.CurrentAddrFile/BegginAddrFile`; переполнение — стирание
+    сектора + сдвиг начала на 64 записи; `log_read(ptr)` и
+    `log_find_by_time(t_from,t_to,&ptr_from,&ptr_to)` (бинпоиск по
+    `Event_log.working_hours`); измеренные данные перенесены автором из
+    `SNS_CFG` в `sensors_status` — все обращения по коду перенаправлены
+    (Vector_main/bme280_com/Lora_S7678S/TFT_indicator); часы при включении —
+    из RTC BKP0 после чтения конфига, `Timer_Tick_1s()` зеркалит счётчик в
+    BKP0 (DBP открыт в `Board_Init`); попутно: `Battery_Init()` вызывается из
+    `Pre_Init` (guard исправлен CONFIG_BME→CONFIG_MAX17048), дубль полей
+    `Orientation/Screen_rotation` в `sensors_status_t` убран, экземпляр
+    `Connected_device` определён, `TYPE_LOG_PARAM_UPDATE_0` в `compare_param`
+    заменён на `TYPE_LOG_PARAM_NOP` (enum-значения удалены автором).
+    Сброс к заводским (ReadConfigDefault) сохраняет не только часы (v24), но и
+    указатели кольца CurrentAddrFile/BegginAddrFile (v25): журнал — история, а
+    не настройка; заводские указатели отмотали бы кольцо (вплоть до
+    Beggin > Current и поломки инварианта стираний).
+    Допущения/ограничения (подтвердить автору): «регистр RTC» = резервный
+    регистр BKP0 (не календарь); время монотонно только при живой VBAT (после
+    полной потери питания BKP0=0 — часы с нуля, порядок времени в старом
+    журнале может нарушиться); журнал старого формата (сектора 'LOGS' v21-v24)
+    несовместим — кольцо стартует по указателям конфига, мусор старого
+    формата стирается проверкой «слот пуст» на границе сектора.
+    На железе: `ArchiveRecording=1` → записи `log: rec N`; `log_read` из
+    отладчика по номеру; `log_find_by_time` надиапазоне; переполнение кольца →
+    `BegginAddrFile += 64`; часы переживают перезагрузку (VBAT); `SaveEvent`
+    по-прежнему пишется только в окно тишины.
+46. **[закрыт: v26]** Пуш `95581e4` не собирался: `Config_common.working_hours`
+    (×3 — поле в `Working_data`), `RTC_ReadTime/RTC_WriteTime`,
+    `save_event_type_2`, `Avis_Battery_System`, `SoftResetProgram` — не
+    определены нигде. v26: функции часов реализованы в `vector_macros.c`
+    (BKP0, см. §6 «Часы в RTC BKP0 и сервис»), `save_event_type_2` — обёртка
+    над `save_event` с bounded-ретраем (зовётся перед NVIC_SystemReset из
+    потока приёма — осознанное исключение из правила «flash пишет только
+    Measure Task»), `Avis_Battery_System` — weak-заглушка, `SoftResetProgram`
+    — экземпляр в `Vector_main.c` (взводить будет COM/BLE-модуль ВМЕСТЕ с
+    `START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, N)`). На железе: выставить
+    `SoftResetProgram=1` + таймер → перезагрузка с записью TYPE_FW_UPDATE;
+    часы переживают NVIC_Reset и питание при живой VBAT (BKP0).
+47. **v26 — ОТМЕНЕНО в v27** (ответная сторона BLE не понадобилась: мы, как и
+    Avis, хозяин своего модуля — см. п.48 и строку v27 в §6). Из открытого
+    остались: `CONFIG_BLE` = 0 до проверки на живом модуле; `ConcentrationVal`
+    пишется raw (дискретность отправителя неизвестна); состав экранов/пунктов
+    меню не определён; `VECTOR_AUDIO_DEMO_KEYS 1` конфликтует с меню — для
+    продукта поставить 0.
+48. **v27 — порт Ble_mk01 + страница указателей + поток индикации, открытые
+    вопросы**: правки по пяти замечаниям автора (строка v27 в §6).
+    Открытые вопросы автору:
+    (а) wire-формат ответа `ADVMSDDATAGET` — сейчас принято как у `BLEADDR?`:
+    2 байта эха + hex-строка структуры (64 байта = 128 hex) + «OK»; если модуль
+    отвечает иначе — поправить `Ble_ReadAnswer()` (одно место);
+    (б) метка имени модуля `BLE_Label[0]` = "VEC" — предварительная (в Avis:
+    "MIRAX"/"22.");
+    (в) полярность `BLE_RESET` (PC12) в `Ble_SystemOff`/`Ble_DeInit` — проверить
+    на железе (скопирована схема Avis: SET_OFF → 50 мс → SET_ON);
+    (г) указатели архива теперь живут в `SF_LOG_PTR` (0x602000) — в конфиге
+    `Config_archive.CurrentAddrFile/BegginAddrFile` остаются рабочей копией;
+    при чтении конфига на старте страница указателей приоритетнее
+    (`log_ptr_load` после `read_param`, как `ReadCurrentAddrFile` в Avis);
+    (д) `Init_Build_Type()` читает полуслово бренда из `FLASH_ADDRESS_BUILD_TYPE`
+    0x080FE000 (последняя страница, линкер LENGTH=1016K) — запись бренда при
+    производстве пока не реализована (пусто = MIRAX);
+    (е) стек потока LVGL Task 4096 — при подключении LVGL поднять до 8–16 КБ.
+    На железе: `ble_status`/`menu_status`/`log_ptr_dbg_saves/defers` в
+    Expressions; эхо-кейс AT → OK; DATAGET-опрос раз в `TIME_RTC_BLE_DATA_SET`
+    (60 с); жесты → `cnt_gestures[0..2]`, приоритет B1 в SCREEN_MENU.
+49. **v28 — LoRa v4 + BLE-протокол v1 + календарный RTC, открытые вопросы**:
+    (а) **Avis-Lora-protocol-v3.md** — автор предлагал прислать: сверить карту
+    дискретности Setting-байта (биты 2..3; предварительно 0→1, 1→10, 2→100,
+    3→1000 — нужна только для мёртвой зоны O₂ 20.85..20.95) и код кислорода
+    `LORA_GAS_ID_O2 = 68` (взят из примера v4 п.8.2);
+    (б) `TYPE_STATIC.DeviceID` — сейчас `DEVICE_NUMBER` (как в v3-коде автора);
+    по v4 это «заводской идентификатор трекера» — кандидат `SerialLo`, решение
+    за автором;
+    (в) заделы без источника: `AirQualityIndex` (шлём 0), `ActivityLevel`/
+    `MOTION_BIT_IMPACT`/`MOTION_BIT_INACTIVE` (шлём 0), `Radio.TxPower`
+    (нет AT-геттера, шлём 0), `SUB_TYPE_PULSE` (пульсометр не подключается);
+    (г) провод `ADVMSDDATAGET` — прежнее допущение (2 байта эха + hex + OK);
+    скан/агрегация маяков и СИЗ — на стороне прошивки MK01 (протокол v1
+    рассчитан на это; если модуль отдаёт по одному устройству — MCU копит
+    списки сам, структура пакетов не меняется); UUID инфраструктуры — значение
+    назначается при монтаже;
+    (д) потребители v4-новинок НЕ подключены: показ `Lora_Message` на экране
+    (New/`Lora_MessageShown()`, CP1251→шрифт), звуковая/экранная реакция на
+    `EVACUATION` (бит 8 ControlLora16) — за индикацией/меню;
+    (е) `TFT_indicator.c` — единицы BME280: показ температуры/влажности нужно
+    делить на 100/1024 (int32-драйвер; см. строку v28 в §6);
+    (ж) `CONFIG_LORA` по-прежнему 0: порт UART4 конфликтует с логом (п.25/27),
+    `USART_RF` не определён — включение после решения по порту;
+    (з) часы: 32-битный `time_t` newlib — переполнение в 2038; `mktime` трактует
+    struct tm как локальное время — TZ в проекте НЕ задавать (newlib default =
+    UTC, симметрично `gmtime`);
+    (и) хост-проверки v28: `test_lora_v4` (динамический/статический кадры
+    побайтово, Message/MsgAck, Control16/EVACUATION/защита SOS, контейнерный
+    EventLog+ECHO, RTC round-trip, ACK/TURN_OFF), `test_ble` (legacy Avis 6+5N,
+    BEACONS/PPE/SUBDEV/AGG, чужие версии, ошибки/таймауты) — ВСЕ ЗЕЛЁНЫЕ;
+    синтаксис всех затронутых файлов проверен в тени CONFIG_BLE=1+CONFIG_LORA=1
+    и в дефолтной сборке.

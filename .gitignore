@@ -1,6 +1,7 @@
 /Debug/
 /Drivers/*
 !/Drivers/ui_Vector/
+!/Drivers/lv_conf.h
 /Middlewares/
 *.o
 *.su

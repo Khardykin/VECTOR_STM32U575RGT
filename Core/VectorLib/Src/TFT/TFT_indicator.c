@@ -1487,9 +1487,9 @@ uint16_t LCD_Fill_Template(SNS_CFG *pSnsCfg)
 	sprintf(str_lcd, "GPS %.5f , %.5f",	Latitude, Longitude);
 #else
 	sprintf(str_lcd, info_format[APPLANG],
-			(int32_t)Sns_Cfg_struct.Config_common.Temperature,
-			(int32_t)Sns_Cfg_struct.Config_common.Humidity,
-			(int32_t)Sns_Cfg_struct.Config_common.Pressure);
+			(int32_t)sensors_status.Temperature,
+			(int32_t)sensors_status.Humidity,
+			(int32_t)sensors_status.Pressure);
 //	float x,y,z;
 //	lis3dh_get_cached_accel_g(&x,&y,&z);
 //		sprintf(str_lcd,"%.2f %.2f %.2f", x, y, z);
@@ -1893,17 +1893,17 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
 
     // --- 5.1. Температура, давление и влажность ---
     snprintf(env_temp_str, sizeof(env_temp_str), "%d °С",
-             (int)pSnsCfg->Config_common.Temperature);
+             (int)sensors_status.Temperature);
     labels[total_count] = env_labels[APPLANG][0]; values[total_count++] = env_temp_str;
 
 
     snprintf(env_press_str, sizeof(env_press_str), "%d mmHg",
-             (int)pSnsCfg->Config_common.Pressure);
+             (int)sensors_status.Pressure);
     labels[total_count] = env_labels[APPLANG][1]; values[total_count++] = env_press_str;
 
 
     snprintf(env_hum_str, sizeof(env_hum_str), "%d %%",
-             (int)pSnsCfg->Config_common.Humidity);
+             (int)sensors_status.Humidity);
     labels[total_count] = env_labels[APPLANG][2]; values[total_count++] = env_hum_str;
 
     // --- 6. Расчет страниц ---

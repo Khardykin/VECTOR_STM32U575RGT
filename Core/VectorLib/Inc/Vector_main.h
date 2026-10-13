@@ -57,6 +57,8 @@
 #include "audio_demo.h"
 #include "audio_player.h"
 #include "vector_tasks.h"
+#include "Ble_vector.h"     /* BLE-модуль MK01: мастерская сторона, порт Ble_mk01 (CONFIG_BLE, v27) */
+#include "Menu_vector.h"    /* основа слоя меню: экраны + жесты кнопок (CONFIG_DISPLAY, v26) */
 
 
 /* Карта ВНУТРЕННЕЙ flash. Заводские данные - последняя страница банка 2
@@ -95,8 +97,8 @@ typedef struct
   volatile float    Accel_y;
   volatile float    Accel_z;
 
-  /* Ориентация и поворот экрана - копия Config_common (источник истины там,
-     поле сохраняется в конфиге); здесь - быстрый доступ для индикации.     */
+  /* Ориентация и поворот экрана - источник истины ЗДЕСЬ (v25: из SNS_CFG
+     перенесены сюда); Screen_rotation читает TFT_Rotation() в Measure Task. */
   volatile uint8_t  Orientation;        /* lis3dh_orientation_t              */
   volatile uint8_t  Screen_rotation;    /* 0 или 2 -> TFT_Rotation()         */
 
@@ -105,32 +107,56 @@ typedef struct
   volatile uint8_t  fall_detected;
   volatile uint32_t cnt_fall_events;
 
-	uint16_t   battery_charge_percent;                                 // Заряд батареи в процентах
-	uint16_t   battery_charge_volt;                                    // Заряд батареи в вольтах
-
-	uint8_t    	Orientation;                                            // lis3dh_orientation_t
-	uint8_t     Screen_rotation;                                        // 0 или 2 -> TFT_Rotation()
-	uint8_t     Sensors_ok;                                             // биты: 1=BME280 2=LIS3DH 4=MAX17048
-	uint8_t     Sensors_reserve;
-	float		Temperature_calib_offset;
-	float       Temperature;                                            // Температура
-	float       Humidity;
-	float		Pressure;
+  /* --- ИЗМЕРЕННЫЕ ДАННЫЕ (v25, решение автора: всё СЧИТАННОЕ живёт здесь,
+     в SNS_CFG остаётся только то, что сохраняется в конфигурацию).
+     Orientation/Screen_rotation - выше (единственный экземпляр, v25: дубль
+     из пула автора убран - член структуры объявлялся дважды).            */
+  volatile uint16_t battery_charge_percent; /* MAX17048: заряд, %            */
+  volatile uint16_t battery_charge_volt;    /* MAX17048: напряжение, мВ      */
+  volatile uint8_t  Sensors_ok;             /* биты: 1=BME280 2=LIS3DH 4=MAX17048 */
+  volatile uint8_t  Sensors_reserve;
+  volatile float    Temperature_calib_offset; /* поправка калибровки, °C     */
+  volatile float    Temperature;            /* BME280 int32-драйвер: °C×100 (Bosch comp_data). LoRa v4 Environment: /10 -> °C×10. Индикация: /100 */
+  volatile float    Humidity;               /* BME280 int32-драйвер: %×1024 (Bosch). LoRa v4: /1024 -> %. Индикация: /1024 */
+  volatile float    Pressure;               /* BME280 int32 (Па×100)/1000 = гПа×10 - СРАЗУ формат LoRa v4 Environment.Pressure (u16) */
 
 } sensors_status_t;
 
 extern volatile sensors_status_t sensors_status;
 
-/* Биты Sns_Cfg_struct.Config_common.Sensors_ok - какие микросхемы ответили
-   при инициализации (выставляет sensors_init()).                          */
+/* Биты sensors_status.Sensors_ok (v25: маска переехала из Config_common) -
+   какие микросхемы ответили при инициализации (выставляет sensors_init()). */
 #define SENSORS_OK_BME        (1u)
 #define SENSORS_OK_LIS3DH     (2u)
 #define SENSORS_OK_MAX17048   (4u)
 
 void    sensors_init(void);             /* из Vector_Run_Pre_Init (один раз) */
+void    Battery_Init(void);             /* MAX17048: quickStart + лимиты напряжения
+                                           от BAT_MIN/BAT_MAX конфига (v25); зовёт
+                                           Vector_Run_Pre_Init после чтения конфига */
 void    sensors_read(void);             /* из Vector_Run_Measure (1 с)       */
 uint8_t sensors_rotation_changed(void);
 uint8_t sensors_fall_event(void);       /* 1 = было падение, флаг сбрасывается */
+
+/* --- сервис (v26, по образцу Avis) ------------------------------------------
+ * SoftResetProgram: 1 = команда мягкой перезагрузки прошивки (взводит COM/
+ *   BLE-модуль ВМЕСТЕ с START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, N));
+ *   отрабатывает Vector_Options_System(): событие TYPE_FW_UPDATE в журнал ->
+ *   стоп TIM3 -> NVIC_SystemReset(). Экземпляр - Vector_main.c.
+ * Avis_Battery_System(): секундное обслуживание батареи/зарядки (weak-
+ *   заглушка в Vector_main.c - перенести машину состояний из Avis).          */
+extern uint8_t SoftResetProgram;
+void Avis_Battery_System(void);
+
+/* --- v28: общие данные модулей обмена --------------------------------------
+ * deveui_com[8]: копия DevEUI LoRa-модуля для COM/LTE-протокола (как в Avis);
+ *   заполняет Lora_InitDeveui() (Lora_S7678S.c), экземпляр - Vector_main.c.
+ * Get_Conversion_factor_rf(chan): коэффициент пересчёта концентрации для RF
+ *   (в Avis - таблица conversion_factor_rf[] из Avis_Menu_Functionality.c);
+ *   weak-заглушка Vector_main.c возвращает 1.0 - данные AVIS приходят по BLE
+ *   уже масштабированными (pass-through в LoRa v4), порт таблицы - TODO автор. */
+extern uint8_t deveui_com[8];
+float Get_Conversion_factor_rf(uint8_t chan);
 
 /* --- такты прибора --------------------------------------------------------
  * Timer_Tick_1ms() - из TIM3 (1 кГц, HAL_TIM_PeriodElapsedCallback в main.c):

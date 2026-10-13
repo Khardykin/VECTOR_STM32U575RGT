@@ -112,10 +112,11 @@
  * измерений вместе с датчиками и *_Run() (бывшие TODO в extstore.c и
  * Vector_main.c), поэтому все ожидания ограничены (схема «окно тишины», v22):
  *   VECTOR_EXT_LOCK_READ_MS  - сколько читателю (ext_read плеера, cfg_load,
- *                              log_next) разрешено ждать шину, мс. 250 мс
+ *                              log_read/log_find_by_time журнала) разрешено
+ *                              ждать шину, мс. 250 мс
  *                              покрывают худшее стирание сектора (~100 мс);
  *                              плееру ждать допустимо - других дел у потока нет.
- *   VECTOR_EXT_LOCK_WRITE_MS - писателю (log_append/cfg_save/ext_write/
+ *   VECTOR_EXT_LOCK_WRITE_MS - писателю (save_event-кольцо/cfg_save/ext_write/
  *                              ext_erase_sector): 0 = чистый try-lock, занято ->
  *                              EXT_BUSY (-2) сразу, вызывающий повторит позже.
  *                              Vector_RunFlashMemory() к тому же заходит во
@@ -319,6 +320,54 @@
 #define VECTOR_TASKS_MEASURE_DELAY_MS    50u
 #endif
 
+/* --- BLE: мастерская сторона модуля MK01 (Ble_vector.c, v27) ---------------
+ * v27 (замечание автора п.2): роли НЕ менялись - как и Avis, мы ХОЗЯИН своего
+ * BLE-модуля (порт Ble_mk01.c: AT/ADVBLENAMESET/BLEADDR?/ADVPERIODMS/
+ * ADVPOWER/ADVSTART/SLEEP/SYSTEMOFF/DFU/MODINFO?). Отличие одно: вместо пуша
+ * своих данных (ADVMSDDATASET) - периодический ЗАПРОС принятых данных
+ * ADVMSDDATAGET (Ble_Run по TIMER_RTC_BLE_DATA_SET = 60 с); ответ модуля -
+ * hex-структура str_ble_data_set_t (данные отправителя, прибора Avis) ->
+ * Connected_device. Тайминги обмена (BLE_WAIT_UART_TIMEOUT/DELAY, повторы) -
+ * в Ble_vector.h, все как в Avis.
+ * v26-переключатели VECTOR_BLE_FRAME_TMO_MS / VECTOR_BLE_MAX_LINE /
+ * VECTOR_BLE_DEV_ID УДАЛЕНЫ: неблокирующая строковая машина больше не нужна
+ * (обмен синхронный, команды фиксированные), а dev_id - поле принимаемой
+ * структуры, а не наша настройка.                                            */
+
+/* --- Основа меню (Menu_vector.c, v26; v27) ----------------------------------
+ * Жесты кнопок декодируются из button_count (счёт в TIM3 1 кГц = мс,
+ * ставит EXTI) по образцу Button_1/2/3_Menu из Avis_Menu_2.c:
+ *   SHORT  - нажатие дольше антидребезга, отпущено до LONG;
+ *   LONG   - удержание >= VECTOR_MENU_PRESS_LONG_MS (срабатывает ДО отпускания);
+ *   DOUBLE - два SHORT с интервалом < VECTOR_MENU_DOUBLE_MS;
+ *   SHORT_LONG - SHORT, затем LONG быстрее DOUBLE-окна;
+ *   FAKE   - слишком короткое (дребезг).
+ * Авто-возврат на главный экран: любой жест перезапускает TIMER_RTC_MAIN_RESET
+ * (секундный таймер прибора), по его expiry Menu_Run() возвращает SCREEN_MAIN.
+ * v27: приоритет жестов ПОСТОЯННЫЙ - Button1 > Button2 > Button3 (автор, п.3);
+ * Menu_Run() вызывается из потока LVGL Task по timer.flag_100ms через
+ * Vector_Run_Indication() (аналог indication_task_function из Avis_main.c,
+ * автор п.5), НЕ из Measure Task; хука Menu_EnterScreen нет (п.1) - экран
+ * перерисовывается целиком каждый цикл, weak Menu_Draw() заменит LVGL-порт.
+ * Экраны/статусы пока НЕ определены (автор) - enum screen_t расширяется в
+ * Menu_vector.h.                                                             */
+#ifndef VECTOR_MENU_PRESS_SHORT_MS
+#define VECTOR_MENU_PRESS_SHORT_MS  50u
+#endif
+#ifndef VECTOR_MENU_PRESS_LONG_MS
+#define VECTOR_MENU_PRESS_LONG_MS   1500u
+#endif
+#ifndef VECTOR_MENU_DOUBLE_MS
+#define VECTOR_MENU_DOUBLE_MS       400u
+#endif
+#ifndef VECTOR_MENU_AUTO_RETURN_S
+#define VECTOR_MENU_AUTO_RETURN_S   30u
+#endif
+#ifndef VECTOR_MENU_ITEMS
+#define VECTOR_MENU_ITEMS           4u   /* пунктов в SCREEN_MENU (заглушка: по
+                                            числу экранов SquareLine после MAIN) */
+#endif
+
 /* --- РАБОЧЕЕ: экран TFT (ST7789P3 172x320, SPI2 + GPDMA1 Channel8) ---------
  * Драйвер - Core/VectorLib/Src/TFT/LCD_platform.c (v17 переведён с AT32 на HAL,
  * названия функций сохранены). Периферию задаёт CubeMX: SPI2 8 бит Simplex TX,
@@ -366,7 +415,7 @@
 /* --- РАБОЧЕЕ: датчики на I2C1 (BME280, LIS3DH, MAX17048) -------------------
  * Чтение - sensors_read() в Vector_main.c: конфигурационные измерения (T/H/P,
  * батарея) -> Sns_Cfg_struct.Config_common, живость чипов -> маска
- * Config_common.Sensors_ok; runtime-данные (оси Accel_x/y/z, статусы падения,
+ * sensors_status.Sensors_ok (v25); runtime-данные (оси Accel_x/y/z, статусы падения,
  * копия Orientation/Screen_rotation) и счётчики диагностики шины I2C1 ->
  * sensors_status (Vector_main.h).
  * Включение каждой микросхемы - CONFIG_BME / CONFIG_LIS3DH / CONFIG_MAX17048 в
@@ -374,7 +423,7 @@
  *
  * VECTOR_SCREEN_ROTATION   1 = при смене 6D-ориентации LIS3DH (прерывание
  *                          ACCEL_INT, PC11) Measure Task вызывает
- *                          TFT_Rotation(Config_common.Screen_rotation).
+ *                          TFT_Rotation(sensors_status.Screen_rotation) (v25).
  *                          0 = ориентация считается, экран не крутится.
  * VECTOR_BME_CALIBRATION   1 = калибровка температуры BME280 с записью поправки
  *                          во flash (Calib_bme280_Temp из Avis). Сейчас 0:

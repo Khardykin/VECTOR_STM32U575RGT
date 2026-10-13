@@ -101,37 +101,37 @@ enum ST_GA_ERR
 //Для общего статусного байта ошибок, биты статуса ошибок
 enum ST_COMMON_ERR
 {
-  ST_COMMON_BIT_ERR_CALIB_INTERVAL = 0,                                         // бит 0 - Время калибровки(err) +
-  ST_COMMON_BIT_ERR_BUMP_INTERVAL,                                              // бит 1 - Время BUMP TEST(err) +
-  ST_COMMON_BIT_CRITICAL_LOW_BATTERY,                                           // бит 2 - Критично низкий заряд аккумулятора(err) +
-  ST_COMMON_BIT_ERR_NOP_1,                                                      // бит 3 -
-  ST_COMMON_BIT_ERR_STS4,                                                       // бит 4 - Ошибка микросхемы температуры
-  ST_COMMON_BIT_ERR_BLE,                                                      	// бит 5 - Ошибка микросхемы BLE
+ST_COMMON_BIT_ERR_CALIB_INTERVAL = 0,                            // бит 0 - Время калибровки(err) +
+  ST_COMMON_BIT_ERR_BUMP_INTERVAL,                                   // бит 1 - Время BUMP TEST(err) +
+  ST_COMMON_BIT_CRITICAL_LOW_BATTERY,                                  // бит 2 - Критично низкий заряд аккумулятора(err) +
+  ST_COMMON_BIT_ERR_NOP_1,                                  // бит 3 -
+  ST_COMMON_BIT_ERR_STS4,                                    // бит 4 - Ошибка микросхемы температуры
+  ST_COMMON_BIT_ERR_BLE,                                     	// бит 5 - Ошибка микросхемы BLE
   ST_COMMON_BIT_ERR_GPS,                                                      	// бит 6 - Ошибка микросхемы GPS
-  ST_COMMON_BIT_ERR_GSM,                                                      	// бит 7 - Ошибка микросхемы GSM
+  ST_COMMON_BIT_ERR_GSM,                                      	// бит 7 - Ошибка микросхемы GSM
   ST_COMMON_BIT_ERR_LORA,                                                      	// бит 8 - Ошибка микросхемы LORA
-  ST_COMMON_BIT_ERR_LCD, 														// бит 9 - Ошибкак LCD
-  ST_COMMON_BIT_CRITICAL_BATTERY,												// бит 10 - Критическое состояние батареи +
-  ST_COMMON_BIT_DEPAS,															// бит 11 - Статус депасивации
-  ST_COMMON_BIT_ERR_NOP_2,		           										// бит 12 -
+  ST_COMMON_BIT_ERR_LCD, 										// бит 9 - Ошибкак LCD
+  ST_COMMON_BIT_CRITICAL_BATTERY,									// бит 10 - Критическое состояние батареи +
+  ST_COMMON_BIT_DEPAS,												// бит 11 - Статус депасивации
+  ST_COMMON_BIT_ERR_NOP_2,		           					// бит 12 -
 };
 //--------------------------------------------------------------------------------------------------------------
 enum ST_COMMON
 {
-  ST_COMMON_BIT_BLOCK_SOUND = 0,                                                // бит 0  - Блокировка звука +
-  ST_COMMON_BIT_BLOCK_SOUND_LIMIT_CALIB,                                        // бит 1  - Блокировка звука до следующего включения прибора/перезагрузки
-  ST_COMMON_BIT_BLOCK_TURN_OFF,                                                 // бит 2  - Блокировка выключения прибора вне док станции +
-  ST_COMMON_BIT_BLOCK_CALIB,                                                    // бит 3  - Блокировка калибровки через меню +
-  ST_COMMON_BIT_NOP_1,                                                   		// бит 4  -
-  ST_COMMON_BIT_DATA_EXCHANGE,                                                  // бит 5  - Режим обмена данными +
-  ST_COMMON_BIT_BAT_CHARGE,                                                     // бит 6  - Режим зарядки устройства +
-  ST_COMMON_BIT_BUMP_TEST,                                                      // бит 7  - BUMP TEST(статус) +
-  ST_COMMON_BIT_BUMP_TEST_RUN,                                                  // бит 8  - Старт BUMP TEST +
-  ST_COMMON_BIT_TURN_LCD_UNIT,                                                  // бит 9  - Отображение единицы измерения
+  ST_COMMON_BIT_BLOCK_SOUND = 0,                           // бит 0  - Блокировка звука +
+  ST_COMMON_BIT_BLOCK_SOUND_LIMIT_CALIB,                      // бит 1  - Блокировка звука до следующего включения прибора/перезагрузки
+  ST_COMMON_BIT_BLOCK_TURN_OFF,                                    // бит 2  - Блокировка выключения прибора вне док станции +
+  ST_COMMON_BIT_BLOCK_CALIB,                                  // бит 3  - Блокировка калибровки через меню +
+  ST_COMMON_BIT_NOP_1,                                      		// бит 4  -
+  ST_COMMON_BIT_DATA_EXCHANGE,                                // бит 5  - Режим обмена данными +
+  ST_COMMON_BIT_BAT_CHARGE,                                         // бит 6  - Режим зарядки устройства +
+  ST_COMMON_BIT_NOP_2,                                        // бит 7  -
+  ST_COMMON_BIT_NOP_3,                                                  	// бит 8  -
+  ST_COMMON_BIT_TURN_LCD_UNIT,                                 // бит 9  - Отображение единицы измерения
   ST_COMMON_BIT_TURN_ON_BLE,                                                    // бит 10 - Включение BLE
   ST_COMMON_BIT_TURN_STATE_RUN_LED,                                             // бит 11 - Включение green run led
   ST_COMMON_BIT_TURN_TEST_SOUND, 												// бит 12 - Тест звука
-  ST_COMMON_BIT_TURN_ON_GPS,                                                    // бит 13 - Включение GPS
+  ST_COMMON_BIT_TURN_ON_GPS,                           // бит 13 - Включение GPS
   ST_COMMON_BIT_TURN_ON_GSM,                                                    // бит 14 - Включение GSM
   ST_COMMON_BIT_TURN_ON_LORA,                                                   // бит 15 - Включение LORA
   ST_COMMON_BIT_TURN_OFF = 31,                                                  // бит 31 - Прибор выключен(Не ведутся логи в режиме выключения)+
@@ -184,6 +184,9 @@ extern volatile DOWN_TIMER_RTC 		countdown_time_rtc;	 /* секундные (RTC
 #define TIME_RTC_LORA_DATA_INIT		(3u)
 #define TIME_RTC_LORA_DATA_SET		(120u)
 #define TIME_RTC_LORA_DATA_SLEEP	(60u)
+/* Держать питание/приём после принятого downlink (mac rx), с: окно RX2 +
+   запас; Lora_Receive() взводит TIMER_RTC_LORA_DATA_SLEEP этим значением (v28). */
+#define TIME_RTC_LORA_DATA_SLEEP_AFTER_DL	(10u)
 #define TIME_RTC_LED_STATE_RUN_PULSE	(1u)	// пульс зеленого светодиода, с
 #define TIME_RTC_LED_STATE_RUN_PERIOD	(5u)	// период зеленого светодиода, с
 //--------------------------------------------------------------------------------------------------------------
@@ -226,23 +229,68 @@ typedef struct//
 }SNS_Dev_Type;
 extern SNS_Dev_Type		Connected_device;
 
+//--------------------------------------------------------------------------------------------------------------
+/* v28: ТЕЛЕМЕТРИЯ BLE-ОКРУЖЕНИЯ - хранилище данных, которые BLE-модуль читает
+   из эфира и которые затем уходят в КОНТЕЙНЕРНЫЕ блоки LoRa v4
+   (Mirax-Lora-protocol-v4.md пп. 4.6-4.7) и в TYPE_STATIC (п. 6):
+   - beacons[]  -> блок BLEBeacons (бит 8 ContainerMask): видимые маяки нашей
+     инфраструктуры (ShortID из рекламы + RSSI + состояние заряда); раскладка
+     ble_beacon_t БАЙТ-В-БАЙТ как ble_beacon_t LoRa v4 (4 байта);
+   - ppe[]      -> блок PPE (бит 7): единицы СИЗ (тип/серийник для TYPE_STATIC,
+     присутствие и заряд для динамики);
+   - gas_*      -> секция под-устройства AVIS (SUB_TYPE_GAS): признак "данные
+     свежие" и серийник (0 = legacy-пакет Avis без серийника).
+   Заполняет Ble_vector.c (CONFIG_BLE), читает Lora_S7678S.c (CONFIG_LORA) -
+   поэтому типы/экземпляр живут ЗДЕСЬ, вне обоих CONFIG. Экземпляр -
+   Vector_main.c. Свежесть: потребитель сравнивает *_ms (GetTick, мс) с
+   BLE_TELEMETRY_TTL_MS. Протокол BLE - docs/Mirax-Ble-protocol-v1.md.       */
+#define BLE_BEACONS_MAX		(16u)	// маяков в хранителе (ограничение блока LoRa)
+#define BLE_PPE_MAX			(8u)	// единиц СИЗ (LoRa v4: PresenceMask 8 бит)
+#define BLE_TELEMETRY_TTL_MS	(300000u)	// 5 мин: данные старше - не свежие
+
+typedef struct
+{
+	uint16_t	ShortID;	// короткий ID маяка из рекламы (minor/instance)
+	int8_t		Rssi;		// уровень сигнала, дБм
+	uint8_t		Battery;	// заряд маяка: 0 разряжен, 1 предупреждение, 2 норма
+} __attribute__ ((__packed__)) ble_beacon_t;	// 4 байта = ble_beacon_t LoRa v4
+
+typedef struct
+{
+	uint8_t		PpeType;	// тип СИЗ (LoRa v4 приложение: 0 каска, 1 привязь...)
+	uint16_t	Serial;		// заводской идентификатор единицы (для TYPE_STATIC)
+	uint8_t		Charge;		// заряд: 0 разряжен, 1 предупреждение, 2 норма
+	int8_t		Rssi;		// уровень сигнала, дБм
+	uint8_t		Present;	// 1 = метка видна сейчас (присутствует/надета)
+} __attribute__ ((__packed__)) ble_ppe_item_t;
+
+typedef struct
+{
+	ble_beacon_t	beacons[BLE_BEACONS_MAX];	// видимые маяки (пакет BLE_PKT_BEACONS)
+	uint8_t			beacon_count;
+	uint32_t		beacon_ms;					// GetTick() последнего обновления
+	ble_ppe_item_t	ppe[BLE_PPE_MAX];			// единицы СИЗ (пакет BLE_PKT_PPE)
+	uint8_t			ppe_count;
+	uint32_t		ppe_ms;
+	uint8_t			gas_online;					// 1 = AVIS подключён/данные свежие
+	uint32_t		gas_ms;						// GetTick() последнего пакета AVIS
+	uint16_t		gas_serial;					// серийник AVIS (0 = legacy, TODO)
+} BLE_TELEMETRY;
+extern BLE_TELEMETRY		Ble_telemetry;
+
 typedef struct//
 {
-	/* --- журнал и режимы работы (использует Config_save_read.c) */
-	uint32_t              CurrentAddrFile;                                        // журнал: логический счётчик записей
-	uint32_t              BegginAddrFile;                                         // журнал: начало доступного диапазона
-	uint8_t               ArchiveRecording;                                       // 1 = запись архива разрешена
-	uint16_t              Archiveinterval;                                        // (мин<<8)|с - период архива, как в Avis
+	/* --- журнал (использует Config_save_read.c) */
+	uint32_t            CurrentAddrFile;                                        // журнал: логический счётчик записей
+	uint32_t            BegginAddrFile;                                         // журнал: начало доступного диапазона
+	uint8_t             ArchiveRecording;                                       // 1 = запись архива разрешена
+	uint16_t            Archiveinterval;                                        // (мин<<8)|с - период архива, как в Avis
 }SNS_Archive_Type;
 
 typedef struct//
 {
 	  volatile  uint32_t    working_hours;      // ЧАСЫ (время), секунды: +1 каждый секундный такт
-	                                            // (Timer_Tick_1s от RTC); сохраняются/грузятся вместе
-	                                            // с SNS_CFG; при сбросе к заводским СОХРАНЯЮТСЯ (v24)
-	  uint32_t              working_hours_offset;// сдвиг часового пояса (уточнение автора v24: это
-	                                            // СМЕЩЕНИЕ, а не часы; в журнал Event_log.working_hours
-	                                            // пишется как offset + working_hours)
+	  uint32_t              working_hours_offset;// сдвиг часового пояса СМЕЩЕНИЕ, а не часы
 }SNS_Working_Type;
 
 typedef struct//
