@@ -168,7 +168,9 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 * Конфигурация прибора и журнал событий — `Config_save_read.c` (v21):
   `SNS_CFG` → `cfg_save/cfg_load` (страница с несколькими копиями записей,
   CRC; v23 — явный `addr` области: рабочий конфиг 0x400000, заводской
-  0x401000), журнал → `log_append` (кольцо LOG 0x402000..); заводские данные
+  0x401000), журнал → кольцо LOG 0x402000.. (v25: слоты 64 Б, указатели
+  `Config_archive.CurrentAddrFile/BegginAddrFile`, `log_read`/
+  `log_find_by_time`); заводские данные
   (калибровка/бренд/AppKey) — внутренняя flash, страница 0x080FE000
   (`.ld`: FLASH 1016K).
   Писать во flash можно только из потока `Measure Task`

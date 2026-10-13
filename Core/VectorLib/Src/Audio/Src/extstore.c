@@ -1,7 +1,8 @@
 /**
   ******************************************************************************
   * @file    extstore.c
-  * @brief   Потокобезопасный доступ к внешней flash + конфиг + журнал
+  * @brief   Потокобезопасный доступ к внешней flash + конфиг (журнал - v25
+  *          в Config_save_read.c поверх сырых ext_read/ext_write/ext_erase)
   *
   *          Все публичные функции берут мьютекс на всё время операции,
   *          включая стирание: SPI-шина одна, чип допускает одну операцию
@@ -41,8 +42,6 @@ static TX_MUTEX ext_mtx;
 #endif
 #define EXT_READ_RETRY_DELAY_MS  2u   /* дать halt'у отладчика пройти */
 
-volatile uint32_t ext_dbg_log_sector = 0;
-volatile uint32_t ext_dbg_log_offset = 0;
 volatile uint32_t ext_dbg_cfg_seq    = 0;
 volatile uint32_t ext_dbg_busy       = 0;   /* шина занята при попытке lock_ms */
 volatile uint32_t ext_dbg_erase_defer = 0;  /* стирание отложено: звучал звук  */
@@ -80,7 +79,7 @@ static void     wr16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_
    *_Run()) на всё время чужой операции - бывшие TODO здесь и в
    Vector_RunFlashMemory(). Политики (vector_config.h):
      ms == 0 -> TX_NO_WAIT, чистый try-lock: занято = сразу возврат EXT_BUSY;
-     ms >  0 -> ждать до VTICK_MS2TICKS(ms) (чтения: плеер/cfg_load/log_next).
+     ms >  0 -> ждать до VTICK_MS2TICKS(ms) (чтения: плеер/cfg_load/log_read журнала).
    Отдельного флага «extstore готов» нет (решение автора): порядок инициализации
    фиксирован - ext_init() создаёт мьютекс в tx_application_define() ДО
    audio_init()/load_image() и до потоков, а звук и обращения к конфигу/журналу
@@ -371,253 +370,31 @@ int cfg_save(const void *data, uint16_t len, uint32_t addr)
   return rc;
 }
 
-/* ================================================================ журнал ==
- * Сектор: [u32 magic 'LOGS'][u32 seq_sector] далее записи подряд:
- *         [u16 len][u16 pad][u32 crc][данные]
- * Заполнен до конца -> следующий сектор стирается, seq + 1.
+/* ============================================================ журнал (v25) ==
+ * КОЛЬЦЕВОЙ ЖУРНАЛ ПЕРЕНЕСЁН в Config_save_read.c (схема автора, v25):
+ * записи ФИКСИРОВАННОЙ длины (EVENT_LOG = 64 байта, слот), без заголовков
+ * LOG_REC_HDR/magic; кольцо на 0x8000 слотов, позиция в памяти = указатель
+ * & 0x7FFF; указатели CurrentAddrFile/BegginAddrFile живут в SNS_CFG
+ * (Config_archive) и сохраняются вместе с конфигом. extstore даёт журналу
+ * только сырые операции: ext_read / ext_write / ext_erase_sector (последняя
+ * уже содержит отсрочку стирания под звучащий звук).
  */
-#define LOG_HDR       8u
-#define LOG_REC_HDR   8u
-#define LOG_MAGIC     0x53474F4Cu   /* 'LOGS' */
-#define LOG_MAX_DATA  (SF_SECTOR_SIZE - LOG_HDR - LOG_REC_HDR)
-
-static uint32_t log_sector = 0;    /* индекс текущего сектора                */
-static uint32_t log_off    = LOG_HDR;   /* смещение следующей записи         */
-static uint32_t log_seq    = 0;
-
-/* Адрес i-го сектора журнала. */
-static uint32_t log_addr(uint32_t i) { return SF_LOG_BASE + i * SF_SECTOR_SIZE; }
-
-/* Прочитать заголовок сектора журнала (magic 'LOGS' + seq).
-   Возврат: 1 = сектор валиден (*seq = его номер), 0 = пустой/чужой.        */
-static int log_peek_hdr(uint32_t i, uint32_t *seq)
-{
-  uint8_t h[LOG_HDR];
-  if (sf_read(log_addr(i), h, sizeof h) != HAL_OK) { return 0; }
-  if (rd32(h) != LOG_MAGIC) { return 0; }
-  *seq = rd32(h + 4);
-  return 1;
-}
-
-/* ищет конец записей в секторе i: первое смещение, где len == 0xFFFF */
-/* Найти конец записей в секторе i: первое смещение, где длина = 0xFFFF
-   (стёртая flash). Возврат: смещение под следующую запись.                 */
-static uint32_t log_scan_end(uint32_t i)
-{
-  uint32_t off = LOG_HDR;
-  while (off + LOG_REC_HDR <= SF_SECTOR_SIZE)
-  {
-    uint8_t rh[LOG_REC_HDR];
-    uint16_t len;
-    if (sf_read(log_addr(i) + off, rh, sizeof rh) != HAL_OK) { break; }
-    len = rd16(rh);
-    if ((len == 0xFFFFu) || (len > LOG_MAX_DATA)) { break; }
-    off += LOG_REC_HDR + len;
-    if (off > SF_SECTOR_SIZE) { off = SF_SECTOR_SIZE; break; }
-  }
-  return off;
-}
-
-/* Сделать сектор i текущим: стереть, записать magic+seq, сбросить курсор.
-   Возврат: 0 = ok, -1 = ошибка стирания/записи.                            */
-static int log_open_sector(uint32_t i, uint32_t seq)
-{
-  uint8_t h[LOG_HDR];
-  if (sf_sector_erase(log_addr(i)) != HAL_OK) { return -1; }
-  wr32(h, LOG_MAGIC);
-  wr32(h + 4, seq);
-  if (sf_program(log_addr(i), h, sizeof h) != HAL_OK) { return -1; }
-  log_sector = i;
-  log_off    = LOG_HDR;
-  log_seq    = seq;
-  ext_dbg_log_sector = i;
-  ext_dbg_log_offset = log_off;
-  return 0;
-}
-
-/* Дописать запись в журнал. Если текущий сектор полон - автоматически
-   открывается следующий по кругу (со стиранием, ~100 мс под мьютексом).
-   Шина занята -> EXT_BUSY (try-lock). Ротация сектора НЕ начинается под
-   звучащий звук -> тоже EXT_BUSY (отложить в окно тишины: пауза повтора
-   500 мс или конец звука; запись уйдёт на следующем проходе вызывающего).
-   Возврат: 0 = ok, EXT_BUSY = повторить позже, -1 = ошибка/слишком длинно. */
-int log_append(const void *data, uint16_t len)
-{
-  int rc = -1;
-  if (len > LOG_MAX_DATA) { return -1; }
-
-  if (lock_ms(VECTOR_EXT_LOCK_WRITE_MS) != 0) { return EXT_BUSY; }
-  if (log_off + LOG_REC_HDR + len > SF_SECTOR_SIZE)
-  {
-    /* текущий сектор полон -> следующий по кругу */
-    if (!erase_allowed())
-    {
-      unlock();
-      ext_dbg_erase_defer++;
-      return EXT_BUSY;          /* звук: ротация в следующее окно тишины */
-    }
-    if (log_open_sector((log_sector + 1u) % SF_LOG_SECTORS, log_seq + 1u) != 0)
-    {
-      unlock();
-      return -1;
-    }
-  }
-  {
-    uint8_t rh[LOG_REC_HDR];
-    wr16(rh, len);
-    wr16(rh + 2, 0);
-    wr32(rh + 4, crc32((const uint8_t *)data, len));
-    if (sf_program(log_addr(log_sector) + log_off, rh, sizeof rh) == HAL_OK)
-    {
-      if (sf_program(log_addr(log_sector) + log_off + LOG_REC_HDR,
-                     (const uint8_t *)data, len) == HAL_OK)
-      {
-        log_off += LOG_REC_HDR + len;
-        ext_dbg_log_offset = log_off;
-        rc = 0;
-        LOG_I(VLOG_M_FLASH, "log append %u b -> sec %u off %u", (uint32_t)len,
-              log_sector, log_off);
-      }
-    }
-  }
-  unlock();
-  return rc;
-}
-
-/* курсор: (sector << 13) | offset */
-/* Итератор журнала от старого к новому. *handle - курсор (0 = начать с самого
-   старого доступного). Возврат: 0 = запись выдана, 1 = обход завершён
-   (курсор сброшен), EXT_BUSY = шину не дождались (курсор НЕ тронут,
-   повторить вызов), -1 = ошибка чтения, -2 = запись не влезла в буфер.     */
-int log_next(uint32_t *handle, void *data, uint16_t max_len, uint16_t *out_len)
-{
-  uint32_t cur, sector, off;
-  int rc = 1;
-
-  if (lock_ms(VECTOR_EXT_LOCK_READ_MS) != 0) { return EXT_BUSY; }
-  cur = *handle;
-  if (cur == 0u)
-  {
-    /* старт с самого старого доступного: следующий после текущего */
-    sector = (log_sector + 1u) % SF_LOG_SECTORS;
-    off = LOG_HDR;
-    /* пропускаем пустые (нестёртые/стёртые без magic) сектора */
-    while (sector != log_sector)
-    {
-      uint32_t s;
-      if (log_peek_hdr(sector, &s)) { break; }
-      sector = (sector + 1u) % SF_LOG_SECTORS;
-    }
-    if (sector == log_sector) { off = LOG_HDR; }   /* журнал пуст: начнём с текущего */
-  }
-  else
-  {
-    sector = (cur >> 13) & 0x7FFFFu;
-    off    = cur & 0x1FFFu;
-  }
-
-  while (rc == 1)
-  {
-    uint8_t rh[LOG_REC_HDR];
-    uint16_t len;
-    uint32_t limit = (sector == log_sector) ? log_off : SF_SECTOR_SIZE;
-
-    if (off + LOG_REC_HDR > limit)
-    {
-      if (sector == log_sector) { break; }             /* дошли до конца нового */
-      sector = (sector + 1u) % SF_LOG_SECTORS;
-      off = LOG_HDR;
-      continue;
-    }
-    if (sf_read(log_addr(sector) + off, rh, sizeof rh) != HAL_OK) { rc = -1; break; }
-    len = rd16(rh);
-    if ((len == 0xFFFFu) || (len > LOG_MAX_DATA))
-    {
-      if (sector == log_sector) { break; }
-      sector = (sector + 1u) % SF_LOG_SECTORS;
-      off = LOG_HDR;
-      continue;
-    }
-    if (off + LOG_REC_HDR + len > limit)
-    {
-      if (sector == log_sector) { break; }
-      sector = (sector + 1u) % SF_LOG_SECTORS;
-      off = LOG_HDR;
-      continue;
-    }
-    /* валидная запись */
-    if (len <= max_len)
-    {
-      if (sf_read(log_addr(sector) + off + LOG_REC_HDR, (uint8_t *)data, len) == HAL_OK)
-      {
-        uint32_t c = crc32((const uint8_t *)data, len);
-        if (c == rd32(rh + 4))
-        {
-          if (out_len) { *out_len = len; }
-          off += LOG_REC_HDR + len;
-          *handle = (sector << 13) | off;
-          rc = 0;
-          break;
-        }
-      }
-      rc = -1;
-      break;
-    }
-    rc = -3;   /* запись длиннее буфера вызывающего (курсор за ней сдвинут) */
-    off += LOG_REC_HDR + len;
-    *handle = (sector << 13) | off;
-    break;
-  }
-
-  if (rc == 1) { *handle = 0u; }   /* обход завершён - сброс курсора */
-  unlock();
-  return rc;
-}
 
 /* =============================================================== init ===== */
 /* Инициализация хранилища. КОНТЕКСТ: tx_application_define(), ДО audio_init()
-   и до потоков. Делает три вещи:
-     1) мьютекс шины flash;
+   и до потоков. Делает две вещи:
+     1) мьютекс шины flash (TX_INHERIT);
      2) семафор SPI-DMA (sf_dma_init) - создаётся до потоков, а спать на нём
-        начнут только потоки: до старта планировщика sf_read() ходит опросом;
-     3) сканирование журнала: ищет сектор с максимальным seq и ставит курсор
-        записи в его конец; журнал пуст - открывает сектор 0.
-   Здесь же возможны стирание и много мелких чтений по SPI (сотни мс),
-   поэтому ext_init() и вызывается до планировщика.                          */
+        начнут только потоки: до старта планировщика sf_read() ходит опросом.
+   Журнал (v25) сканирования при старте НЕ требует: его указатели
+   CurrentAddrFile/BegginAddrFile живут в SNS_CFG.Config_archive и
+   восстанавливаются вместе с конфигурацией в Vector_Run_Pre_Init().        */
 void ext_init(void)
 {
-  uint32_t i, best = 0xFFFFFFFFu, best_seq = 0;
-
   /* TX_INHERIT: пока Audio Player (10) ждёт шину, владелец-писатель (13/12)
      временно поднимается до 10 и освобождает мьютекс быстрее - Receiver (12)
      не растягивает удержание (инверсия приоритетов). Вложенных взятий
      мьютексов в проекте нет, наследование безопасно.                        */
   (void)tx_mutex_create(&ext_mtx, "sf bus", TX_INHERIT);
   sf_dma_init();          /* семафор для DMA-чтений spiflash.c */
-
-  /* найти самый свежий сектор журнала */
-  for (i = 0; i < SF_LOG_SECTORS; i++)
-  {
-    uint32_t s;
-    if (log_peek_hdr(i, &s) && (best == 0xFFFFFFFFu || (int32_t)(s - best_seq) > 0))
-    {
-      best = i; best_seq = s;
-    }
-  }
-  if (best == 0xFFFFFFFFu)
-  {
-    (void)log_open_sector(0, 1u);
-  }
-  else
-  {
-    log_sector = best;
-    log_seq    = best_seq;
-    log_off    = log_scan_end(best);
-    if (log_off >= SF_SECTOR_SIZE)   /* сектор полон - перейдём на следующий */
-    {
-      (void)log_open_sector((best + 1u) % SF_LOG_SECTORS, best_seq + 1u);
-    }
-    ext_dbg_log_sector = log_sector;
-    ext_dbg_log_offset = log_off;
-  }
 }

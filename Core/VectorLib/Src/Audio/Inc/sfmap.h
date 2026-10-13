@@ -62,7 +62,13 @@ extern "C" {
 #define SF_CONFIG_DEFAULT   0x00401000u     /* заводской конфиг, 4 КБ         */
 #define SF_CONFIG_DEFAULT_SIZE 0x00001000u
 
-/* --- LOG: кольцевой журнал ------------------------------------------------ */
+/* --- LOG: кольцевой журнал (v25, схема автора) ------------------------------
+ * Слоты фиксированной длины 64 байта (sizeof(EVENT_LOG)); кольцо 0x8000
+ * (32768) слотов = 2 МБ от начала области, позиция = указатель & 0x7FFF.
+ * Указатели CurrentAddrFile/BegginAddrFile - в SNS_CFG.Config_archive
+ * (сохраняются с конфигом). Владелец кольца - Config_save_read.c; extstore
+ * даёт только сырые ext_read/ext_write/ext_erase_sector. Хвост области
+ * (~2 МБ) - резерв.                                                          */
 #define SF_LOG_BASE         0x00402000u
 #define SF_LOG_SIZE         (SF_CHIP_SIZE - SF_LOG_BASE)   /* ~3.99 МБ        */
 #define SF_LOG_SECTORS      (SF_LOG_SIZE / 4096u)

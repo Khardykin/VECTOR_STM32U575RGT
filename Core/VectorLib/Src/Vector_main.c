@@ -174,7 +174,15 @@ void Timer_Tick_1s(void)
 	timer.flag_start_work = 1;
 	timer.flag_start_work_bat_sys = 1;
 
-	Sns_Cfg_struct.Config_common.working_hours += 1;
+	Sns_Cfg_struct.Working_data.working_hours += 1;
+
+	/* v25 (решение автора): каждую секунду дублируем часы в резервный
+	   регистр RTC BKP0 - при включении Pre_Init берёт working_hours ОТТУДА
+	   (регистр живёт от VBAT и переживает сброс питания). Запись BKP -
+	   одна операция с регистром, DBP открыт в Vector_Run_Board_Init().
+	   КОНТЕКСТ: прерывание.                                                 */
+	HAL_RTCEx_BKSetRegister(&hrtc, RTC_BKP_DR0,
+	                        Sns_Cfg_struct.Working_data.working_hours);
 
 	Countdown_Timer_Rtc();
 
@@ -212,6 +220,12 @@ void Vector_Run_Board_Init(void)
         это bus fault. Включаем до первого использования. Для сна потом не
         забыть биты SRAM4PD/SRAM4PDS.                                        */
   __HAL_RCC_SRAM4_CLK_ENABLE();
+
+  /* 0b. Разрешить доступ к резервным регистрам RTC (снять DBP): с v25 там
+        живёт счётчик часов working_hours (BKP0): Timer_Tick_1s() пишет его
+        каждую секунду, Vector_Run_Pre_Init() читает при старте после конфига.
+        КОНТЕКСТ: до RTOS.                                                  */
+  HAL_PWREx_EnableBkUpAccess();
 
 #if VECTOR_DBG_FREEZE_TICK
   /* Остановка тайм-базы HAL (TIM6), пока ядро стоит на брейкпоинте: иначе
@@ -279,6 +293,11 @@ SNS_CFG          Sns_Cfg_struct;
 SNS_CFG          Cfg_structdef_read;
 TEMPSENSOR_CALIB tempsensor_calib;
 DEVICE_TURNED    device_turn = DEVICE_TURNED_ON;
+SNS_Dev_Type     Connected_device;   /* свод подключённого устройства (каналы
+                                        Sensor[COUNT_CHAN] + статусы/батарея/
+                                        версии); extern - shared_types.h (v25),
+                                        экземпляр пока никем не заполняется -
+                                        резерв под модули измерения          */
 
 static TX_THREAD receiver_task_handler;
 static TX_THREAD measure_task_handler;
@@ -459,7 +478,7 @@ void Vector_Run_Pre_Init(void)
   if (read_param((uint8_t *)&Sns_Cfg_struct, (uint16_t)sizeof(SNS_CFG), SF_CONFIG_BASE) != 0u)
   {
     LOG_I(VLOG_M_SYS, "config: loaded (wh_off=%u s, serial=%04x%04x)",
-          (uint32_t)Sns_Cfg_struct.Config_common.working_hours_offset,
+          (uint32_t)Sns_Cfg_struct.Working_data.working_hours_offset,
           (uint32_t)Sns_Cfg_struct.Config_common.SerialHi,
           (uint32_t)Sns_Cfg_struct.Config_common.SerialLo);
   }
@@ -471,16 +490,27 @@ void Vector_Run_Pre_Init(void)
 //    save_param((uint8_t *)&Sns_Cfg_struct, (uint16_t)sizeof(SNS_CFG), SF_CONFIG_BASE);
   }
 
+  /* ЧАСЫ (решение автора, v25): истинный источник working_hours - резервный
+     регистр RTC BKP0 (живёт от VBAT); читается ПОСЛЕ конфигурации и
+     перекрывает значение из flash. BKP = 0 (села VBAT/первый пуск) - часы
+     стартуют с нуля.                                                        */
+  Sns_Cfg_struct.Working_data.working_hours =
+      HAL_RTCEx_BKGetRegister(&hrtc, RTC_BKP_DR0);
+
   /* Событие "включение" в журнал - отложенно (пишет Vector_RunFlashMemory). */
   TypeLogEvent = TYPE_TURN_ON;
   SaveEvent    = 1u;
 
   /* Период архивных записей: младший байт Archiveinterval, с (как в Avis). */
   START_TIMER_RTC(TIMER_RTC_LOG,
-                  (uint16_t)(Sns_Cfg_struct.Config_common.Archiveinterval & 0xFFu));
+                  (uint16_t)(Sns_Cfg_struct.Config_archive.Archiveinterval & 0xFFu));
 
   /* Датчики на I2C1: BME280 / LIS3DH / MAX17048 (включаются CONFIG_*).
      Результат - в sensors_status.*_ok и в логе.                            */
+  /* MAX17048: quickStart + лимиты напряжения от BAT_MIN/BAT_MAX конфига
+     (автор, v25) - до sensors_init(), конфиг к этому моменту прочитан.     */
+  Battery_Init();
+
   sensors_init();
 
   /* Биты включения модулей обмена. Конфиг уже прочитан выше, но биты TURN_ON_*
@@ -529,7 +559,7 @@ void Vector_Run_Measure(void)
 #if (CONFIG_TYPE_LCD_TFT && VECTOR_SCREEN_ROTATION)
   if (sensors_rotation_changed() != 0u)
   {
-    TFT_Rotation(Sns_Cfg_struct.Config_common.Screen_rotation);
+    TFT_Rotation(sensors_status.Screen_rotation);   /* v25: из sensors_status */
   }
 #endif
 
@@ -581,7 +611,7 @@ void Vector_RunFlashMemory(void)
   if (audio_is_busy() != 0u)
   {
     if ((SaveEvent != 0u) || (SaveConfig != 0u) || (SaveConfigDefault != 0u) ||
-        ((Sns_Cfg_struct.Config_common.ArchiveRecording != 0u) &&
+        ((Sns_Cfg_struct.Config_archive.ArchiveRecording != 0u) &&
          (TEST_TIMER_RTC(TIMER_RTC_LOG) != 0)))
     {
       tasks_status.cnt_flash_defers++;   /* есть что писать - ждём окно */
@@ -590,7 +620,8 @@ void Vector_RunFlashMemory(void)
   }
 
   /* ЕДИНЫЙ журнал (кольцо LOG) содержит записи ДВУХ видов - обе идут через
-     save_event() -> log_append() (уточнение автора, v23):
+     save_event() -> слот кольца LOG 64 байта (v25: указатели CurrentAddrFile/
+     BegginAddrFile в Config_archive, маска 0x7FFF - см. Config_save_read.c):
        а) ЕДИНИЧНЫЕ СОБЫТИЯ - этот блок: флаг SaveEvent/TypeLogEvent ставят
           те, кто обнаружил событие (Pre_Init - TYPE_TURN_ON, обработчик
           выключения - TYPE_TURN_OFF, COM/BLE - TYPE_LOG_PARAM_UPDATE_*),
@@ -624,7 +655,7 @@ void Vector_RunFlashMemory(void)
 
   /* Архив: запись показаний раз в Archiveinterval (младший байт, с), если
      запись разрешена (ArchiveRecording). Таймер ведёт Countdown_Timer_Rtc(). */
-  if ((Sns_Cfg_struct.Config_common.ArchiveRecording != 0u) &&
+  if ((Sns_Cfg_struct.Config_archive.ArchiveRecording != 0u) &&
       (TEST_TIMER_RTC(TIMER_RTC_LOG) != 0))
   {
     int rc = save_event(&Sns_Cfg_struct, TYPE_READINGS);
@@ -638,7 +669,7 @@ void Vector_RunFlashMemory(void)
       if (rc != 0) { tasks_status.cnt_flash_errors++; }
       RESET_TIMER_RTC(TIMER_RTC_LOG);
       START_TIMER_RTC(TIMER_RTC_LOG,
-                      (uint16_t)(Sns_Cfg_struct.Config_common.Archiveinterval & 0xFFu));
+                      (uint16_t)(Sns_Cfg_struct.Config_archive.Archiveinterval & 0xFFu));
     }
   }
 
@@ -703,14 +734,23 @@ void Vector_RunFlashMemory(void)
                    SF_CONFIG_DEFAULT) != 0u)
     {
       /* Часы при сбросе СОХРАНЯЕМ (уточнение автора, v24): время - это
-         Config_common.working_hours (секунды, +1/с из Timer_Tick_1s),
+         Working_data.working_hours (секунды, +1/с из Timer_Tick_1s),
          заводская область его затирать не должна. working_hours_offset -
          СМЕЩЕНИЕ (не часы), оно заменяется вместе с остальным конфигом.
-         Потеря ≤1 с из-за гонки с RTC-ISR здесь допустима.                 */
-      uint32_t wh = Sns_Cfg_struct.Config_common.working_hours;
+         Потеря ≤1 с из-за гонки с RTC-ISR здесь допустима.
+         Указатели КОЛЬЦА ЖУРНАЛА (v25) сохраняем по той же логике: журнал -
+         история, а не настройка; заводские CurrentAddrFile/BegginAddrFile
+         отмотали бы кольцо (вплоть до Beggin > Current и поломки инварианта
+         стираний).                                                          */
+      uint32_t wh  = Sns_Cfg_struct.Working_data.working_hours;
+      uint32_t cur = Sns_Cfg_struct.Config_archive.CurrentAddrFile;
+      uint32_t beg = Sns_Cfg_struct.Config_archive.BegginAddrFile;
       Sns_Cfg_struct = Cfg_structdef_read;
-      Sns_Cfg_struct.Config_common.working_hours = wh;
-      LOG_I(VLOG_M_SYS, "config: factory defaults restored (wh=%u s kept)", wh);
+      Sns_Cfg_struct.Working_data.working_hours     = wh;
+      Sns_Cfg_struct.Config_archive.CurrentAddrFile = cur;
+      Sns_Cfg_struct.Config_archive.BegginAddrFile  = beg;
+      LOG_I(VLOG_M_SYS, "config: factory defaults restored (wh=%u s, log %u..%u kept)",
+            wh, beg, cur);
     }
     else
     {
@@ -737,7 +777,7 @@ void Vector_Options_System(void)
 // Функция инициализации батареи (вызывать при старте системы)
 void Battery_Init(void)
 {
-#if  (CONFIG_BME)
+#if (CONFIG_MAX17048)   /* v25: было CONFIG_BME - опечатка: код внутри про MAX17048 */
     if (max17048_init()) {
         max17048_quickStart();
 
@@ -974,18 +1014,18 @@ volatile sensors_status_t sensors_status = {0};
 static volatile uint8_t rotation_pending = 0u;
 
 /* Поднять все включённые конфигурацией датчики. Результат - биты
-   Config_common.Sensors_ok, счётчик sensors_status.cnt_init_ok и лог.
+   sensors_status.Sensors_ok (v25), счётчик sensors_status.cnt_init_ok и лог.
    КОНТЕКСТ: поток Measure Task (из Vector_Run_Pre_Init).                     */
 void sensors_init(void)
 {
-  Sns_Cfg_struct.Config_common.Sensors_ok = 0u;
+  sensors_status.Sensors_ok = 0u;
   sensors_status.cnt_init_ok = 0u;
 
 #if CONFIG_BME
   /* BME280: адрес 0x76, normal mode, osr_t x8, фильтр 2 (bme280_init_com). */
   if (bme280_init_com() == 0)
   {
-    Sns_Cfg_struct.Config_common.Sensors_ok |= SENSORS_OK_BME;
+    sensors_status.Sensors_ok |= SENSORS_OK_BME;
     sensors_status.cnt_init_ok++;
     LOG_I(VLOG_M_SYS, "sensors: BME280 ok (I2C1 0x76)");
   }
@@ -1001,7 +1041,7 @@ void sensors_init(void)
      (lis3dh_init сам настраивает прерывание - LIS3DH_ENABLE_6D_INIT).        */
   if (lis3dh_init() == 0)
   {
-    Sns_Cfg_struct.Config_common.Sensors_ok |= SENSORS_OK_LIS3DH;
+    sensors_status.Sensors_ok |= SENSORS_OK_LIS3DH;
     sensors_status.cnt_init_ok++;
     LOG_I(VLOG_M_SYS, "sensors: LIS3DH ok (I2C1 0x19), 6D th=%u deg",
           (uint32_t)LIS3DH_6D_THRESHOLD_DEG);
@@ -1015,7 +1055,7 @@ void sensors_init(void)
 #if CONFIG_MAX17048
   if (max17048_init())
   {
-    Sns_Cfg_struct.Config_common.Sensors_ok |= SENSORS_OK_MAX17048;
+    sensors_status.Sensors_ok |= SENSORS_OK_MAX17048;
     sensors_status.cnt_init_ok++;
     LOG_I(VLOG_M_SYS, "sensors: MAX17048 ok (I2C1 0x36)");
   }
@@ -1026,22 +1066,22 @@ void sensors_init(void)
 #endif
 
   LOG_I(VLOG_M_SYS, "sensors: init done, alive mask=%u (%u of 3)",
-        (uint32_t)Sns_Cfg_struct.Config_common.Sensors_ok, sensors_status.cnt_init_ok);
+        (uint32_t)sensors_status.Sensors_ok, sensors_status.cnt_init_ok);
 }
 
-/* Прочитать всё, что включено. Конфигурационные измерения (T/H/P, батарея) ->
-   Sns_Cfg_struct.Config_common; runtime-данные (оси акселерометра, статусы
-   падения, копия ориентации/поворота) -> sensors_status.
+/* Прочитать всё, что включено. ВСЕ измеренные данные (T/H/P, батарея, оси,
+   ориентация/поворот, падение) -> sensors_status (v25, решение автора:
+   в SNS_CFG остаётся только то, что сохраняется в конфигурацию).
    КОНТЕКСТ: поток Measure Task (раз в секунду).                              */
 void sensors_read(void)
 {
   uint32_t t0 = VTICK_MS();
 
 #if CONFIG_BME
-  if ((Sns_Cfg_struct.Config_common.Sensors_ok & SENSORS_OK_BME) != 0u)
+  if ((sensors_status.Sensors_ok & SENSORS_OK_BME) != 0u)
   {
     /* 0 = данные обновлены (модуль сам пишет Temperature/Humidity/Pressure в
-       Config_common), 1 = измерение не готово, <0 = ошибка шины.             */
+       sensors_status, v25), 1 = измерение не готово, <0 = ошибка шины.       */
     if (bme280_measure(&Sns_Cfg_struct) == 0)
     {
       sensors_status.cnt_bme_reads++;
@@ -1051,7 +1091,7 @@ void sensors_read(void)
 #endif
 
 #if CONFIG_LIS3DH
-  if ((Sns_Cfg_struct.Config_common.Sensors_ok & SENSORS_OK_LIS3DH) != 0u)
+  if ((sensors_status.Sensors_ok & SENSORS_OK_LIS3DH) != 0u)
   {
     float x = 0.0f, y = 0.0f, z = 0.0f;
 
@@ -1080,8 +1120,7 @@ void sensors_read(void)
             (uint32_t)sensors_status.cnt_fall_events);
     }
 
-    Sns_Cfg_struct.Config_common.Orientation = (uint8_t)lis3dh_get_orientation();
-    sensors_status.Orientation = Sns_Cfg_struct.Config_common.Orientation;
+    sensors_status.Orientation = (uint8_t)lis3dh_get_orientation();  /* v25: источник истины - sensors_status */
 
     /* Смена ориентации -> новый поворот экрана (0 или 2). Сам экран модуль не
        трогает: TFT_Rotation() зовёт Vector_Run_Measure().                    */
@@ -1089,24 +1128,23 @@ void sensors_read(void)
     {
       uint8_t st = lis3dh_get_rotation_state();
 
-      if (st != Sns_Cfg_struct.Config_common.Screen_rotation)
+      if (st != sensors_status.Screen_rotation)
       {
-        Sns_Cfg_struct.Config_common.Screen_rotation = st;
-        sensors_status.Screen_rotation = st;   /* копия для индикации */
+        sensors_status.Screen_rotation = st;   /* v25: единственный владелец */
         sensors_status.cnt_rotation_events++;
         rotation_pending = 1u;
         LOG_I(VLOG_M_SYS, "sensors: orientation=%u -> rotation=%u",
-              (uint32_t)Sns_Cfg_struct.Config_common.Orientation, (uint32_t)st);
+              (uint32_t)sensors_status.Orientation, (uint32_t)st);
       }
     }
   }
 #endif
 
 #if CONFIG_MAX17048
-  if ((Sns_Cfg_struct.Config_common.Sensors_ok & SENSORS_OK_MAX17048) != 0u)
+  if ((sensors_status.Sensors_ok & SENSORS_OK_MAX17048) != 0u)
   {
-    Sns_Cfg_struct.Config_common.battery_charge_percent = (uint16_t)max17048_cellPercent();
-    Sns_Cfg_struct.Config_common.battery_charge_volt    = (uint16_t)(max17048_cellVoltage());
+    sensors_status.battery_charge_percent = (uint16_t)max17048_cellPercent();
+    sensors_status.battery_charge_volt    = (uint16_t)(max17048_cellVoltage());
     sensors_status.cnt_battery_reads++;
   }
 #endif
@@ -1116,7 +1154,7 @@ void sensors_read(void)
 }
 
 /* Событие смены ориентации: 1 = надо применить новый поворот
-   (Config_common.Screen_rotation), флаг сбрасывается. КОНТЕКСТ: поток.       */
+   (sensors_status.Screen_rotation), флаг сбрасывается. КОНТЕКСТ: поток.      */
 uint8_t sensors_rotation_changed(void)
 {
   if (rotation_pending == 0u)

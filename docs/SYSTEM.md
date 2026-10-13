@@ -50,8 +50,9 @@ Audio/Inc, Audio/Src
   audio_beep.[ch]          аварийный писк (const PCM 44.1 кГц во внутренней flash)
 Src/Vector_main.c          ПОТОКИ ПРИБОРА: receiver_task (приём/парсинг UART), measure_task,
                            Vector_Run_Measure/Pre_Init, датчики I2C1 (sensors_init/read), SNS_CFG
-Src/Config_save_read.c     конфиг и журнал событий (v21/v23): save_param/read_param с адресом
-Inc/Config_save_read.h       области (sfmap.h), save_event/compare_param/DefaultConfig, флаги
+Src/Config_save_read.c     конфиг и КОЛЬЦЕВОЙ журнал (v21/v23/v25): save_param/read_param с
+Inc/Config_save_read.h       адресом области (sfmap.h), save_event (слот 64 Б), log_read(ptr),
+                           log_find_by_time(диапазон), compare_param/DefaultConfig, флаги
                            SaveConfig/SaveConfigDefault/ReadConfigDefault/SaveEvent/TypeLogEvent
 Src/Gps.c                  GPS/GNSS: NMEA (GLL/GGA/RMC), автоопределение чипа, координаты для LoRa
 Src/Lora_S7678S.c          LoRa S7678S: AT-драйвер, машина состояний, payload uplink/downlink
@@ -165,7 +166,7 @@ main()
 | `EXTI11` (`ACCEL_INT`, PC11) | `lis3dh_irq_handler()` — только флаг; фронт переключается `LL_EXTI_*Trig_0_31` | да |
 | `SPI2` + `GPDMA1_Channel8` | выдача кадра на экран → `HAL_SPI_TxCpltCallback` → `LCD_transferCpltCallback()` → `lv_display_flush_ready(disp)` | да |
 | `TIM3_UP` (1 кГц) | `Timer_Tick_1ms()` (`Vector_main.c`): `countdown_time[]`, флаги `timer.flag_1ms/10ms/100ms/1s`, счётчики кнопок, таймауты кадров COM/GPS/LoRa | только счёт и флаги |
-| `RTC WakeUp` (1 Гц) | `Timer_Tick_1s()` (`Vector_main.c`): `countdown_time_rtc[]`, часы `working_hours` (время в секундах; `working_hours_offset` — смещение, его ISR не трогает), `flag_start_work`, `timer_end_data_exchange` | только счёт и флаги |
+| `RTC WakeUp` (1 Гц) | `Timer_Tick_1s()` (`Vector_main.c`): `countdown_time_rtc[]`, часы `Working_data.working_hours` (+ зеркало в RTC BKP0 каждую секунду, v25; `working_hours_offset` — смещение, его ISR не трогает), `flag_start_work`, `timer_end_data_exchange` | только счёт и флаги |
 | `TIM6_UP` | только `HAL_IncTick()` — внутренняя тайм-база HAL (тик ThreadX — SysTick от порта, 100 Гц) | — |
 
 > Порт ThreadX для Cortex-M33 маскирует критические секции через **PRIMASK**
@@ -230,10 +231,20 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 (`cfg_save/cfg_load` с явным `addr`, v23), `CONFIG_DEFAULT 0x401000 (4 КБ)` —
 ЗАВОДСКАЯ конфигурация (флаг `SaveConfigDefault` пишет туда текущий конфиг,
 `ReadConfigDefault` — сброс к заводским: читает её через буфер
-`Cfg_structdef_read` и при валидном CRC копирует в рабочий `Sns_Cfg_struct`;
-пустая/битая область → конфиг не тронут, закрепление сброса — отдельным
-`SaveConfig`), `LOG 0x402000..8 МБ` — кольцевой журнал событий
-(`log_append`/`log_next`); владелец обоих — `Config_save_read.c` (v21), запись
+`Cfg_structdef_read` и при валидном CRC копирует в рабочий `Sns_Cfg_struct`,
+СОХРАНЯЯ часы `Working_data.working_hours` (v24) и указатели кольца журнала
+`Config_archive.CurrentAddrFile/BegginAddrFile` (v25 — журнал история, а не
+настройка); пустая/битая область → конфиг не тронут, закрепление сброса —
+отдельным `SaveConfig`), `LOG 0x402000..8 МБ` — КОЛЬЦЕВОЙ журнал событий (v25, схема автора): слоты
+фиксированной длины 64 байта (= `sizeof(EVENT_LOG)`, без per-record заголовка),
+кольцо 0x8000 (32768) слотов = 2 МБ, позиция в памяти = указатель & 0x7FFF;
+указатели `Config_archive.CurrentAddrFile` (следующая запись) и
+`Config_archive.BegginAddrFile` (самая старая) живут в `SNS_CFG` и сохраняются
+вместе с конфигом; переполнение — стирание сектора, начало сдвигается на 64
+записи (чётное, сектор делится нацело); API — `save_event()` / `log_read(ptr)`
+/ `log_find_by_time(t_from,t_to)` (бинпоиск по времени записи), всё в
+`Config_save_read.c`; `extstore` даёт журналу только сырые
+`ext_read/ext_write/ext_erase_sector`. Владелец конфигов — `Config_save_read.c` (v21), запись
 только из потока `Measure Task` (`Vector_Run_Pre_Init` / `Vector_RunFlashMemory`)
 и только в «окно тишины» — пока звучит звук, `Vector_RunFlashMemory()` не пишет,
 а стирания откладываются и внутри `extstore` (v22; `compare_param()` событие не
@@ -265,11 +276,13 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | `audio_status.last_error` / `sai_error_code` | код `audio_err_t` и сырой `SAI.ErrorCode` (больше не смешаны в одном числе) |
 | `audio_status.loop_enabled` / `loop_index` / `loop_next_at_ms` | повтор: включён ли, какой звук, когда следующий |
 | `tasks_status` | потоки прибора: `receiver_running` / `measure_running`, `cnt_receiver_passes`, `cnt_measure_runs`, `cnt_flash_runs` / `cnt_flash_defers` / `cnt_flash_errors` (записи во flash / отложено до окна тишины или `EXT_BUSY` / жёсткие ошибки), по модулям `mod[0..5]` (com/lora/ble/lte/gps/sensor) — `cnt_receive_calls`, `cnt_run_calls`, `cnt_rx_bytes`, `cnt_rx_frames`, `cnt_tx_frames`, `cnt_errors`, `last_*_ms` |
-| `sensors_status` | оси акселерометра `Accel_x/y/z` (g), копия `Orientation/Screen_rotation`, падение: `fall_detected` (снимает `sensors_fall_event()`) и `cnt_fall_events`; диагностика шины I2C1: `cnt_init_ok`, `cnt_bme_reads`, `cnt_accel_reads`, `cnt_battery_reads`, `cnt_rotation_events`, `cnt_read_ms`, `last_read_ms`. Конфигурационные данные — в `Sns_Cfg_struct.Config_common`, живость чипов — маска `Config_common.Sensors_ok` (`SENSORS_OK_BME/_LIS3DH/_MAX17048`) |
+| `sensors_status` | ВСЕ ИЗМЕРЕННЫЕ ДАННЫЕ (v25, решение автора — в `SNS_CFG` остаётся только сохраняемое в конфиг): `Temperature/Humidity/Pressure` (BME280), `battery_charge_percent/volt` (MAX17048), `Orientation/Screen_rotation` (LIS3DH 6D), `Temperature_calib_offset`, оси `Accel_x/y/z` (g), падение `fall_detected`/`cnt_fall_events`, живость чипов — маска `Sensors_ok` (`SENSORS_OK_BME/_LIS3DH/_MAX17048`), диагностика I2C1: `cnt_init_ok`, `cnt_bme_reads`, `cnt_accel_reads`, `cnt_battery_reads`, `cnt_rotation_events`, `cnt_read_ms`, `last_read_ms` |
 | `current_build_type`, `SaveConfig`, `SaveConfigDefault`, `ReadConfigDefault`, `SaveEvent`, `Sns_Cfg_struct.Config_common.working_hours[_offset]` | бренд (MIRAX/BACS из внутренней flash), флаги отложенных операций с внешней flash (снимает `Vector_RunFlashMemory` в окно тишины, v23): `SaveConfig` — рабочий конфиг в 0x400000, `SaveConfigDefault` — текущий конфиг в заводскую область 0x401000, `ReadConfigDefault` — сброс к заводским (0x401000 → рабочий), `SaveEvent` — событие журнала; часы: `working_hours` — время в секундах (+1/с от RTC), `working_hours_offset` — смещение (не часы, v24); сброс к заводским часы сохраняет |
 | `lcd_status` | экран: `busy`, `dma_active`, `cnt_cmd/data8/data16/bulk`, `cnt_flush_ready` (0 при растущем `cnt_bulk` = нет прерывания DMA), `cnt_dma_fail`, `cnt_wait_timeout`, `last_hal_error` |
 | `sf_dbg_dma_chunks` / `_fallback` / `_tmo` | работает ли SPI-DMA и сколько раз откатились на опрос |
 | `ext_dbg_busy` / `ext_dbg_erase_defer` | шина была занята при попытке взять `ext_mtx` (try-lock/bounded) / стираний отложено, потому что звучал звук (v22) |
+| `Sns_Cfg_struct.Config_archive.CurrentAddrFile` / `BegginAddrFile` | указатели кольца журнала (v25): следующая запись / самая старая доступная; разница = число записей (ёмкость 32704) |
+| `Sns_Cfg_struct.Working_data.working_hours` и RTC `BKP0` | часы (с): тикают от RTC wakeup, каждую секунду дублируются в резервный регистр BKP0, при старте читаются ОТТУДА (v25) |
 | `vlog_dbg_lines` | сколько строк ушло в лог |
 
 ---

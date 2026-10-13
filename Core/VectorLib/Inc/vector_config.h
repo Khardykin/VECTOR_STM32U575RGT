@@ -112,10 +112,11 @@
  * измерений вместе с датчиками и *_Run() (бывшие TODO в extstore.c и
  * Vector_main.c), поэтому все ожидания ограничены (схема «окно тишины», v22):
  *   VECTOR_EXT_LOCK_READ_MS  - сколько читателю (ext_read плеера, cfg_load,
- *                              log_next) разрешено ждать шину, мс. 250 мс
+ *                              log_read/log_find_by_time журнала) разрешено
+ *                              ждать шину, мс. 250 мс
  *                              покрывают худшее стирание сектора (~100 мс);
  *                              плееру ждать допустимо - других дел у потока нет.
- *   VECTOR_EXT_LOCK_WRITE_MS - писателю (log_append/cfg_save/ext_write/
+ *   VECTOR_EXT_LOCK_WRITE_MS - писателю (save_event-кольцо/cfg_save/ext_write/
  *                              ext_erase_sector): 0 = чистый try-lock, занято ->
  *                              EXT_BUSY (-2) сразу, вызывающий повторит позже.
  *                              Vector_RunFlashMemory() к тому же заходит во
@@ -366,7 +367,7 @@
 /* --- РАБОЧЕЕ: датчики на I2C1 (BME280, LIS3DH, MAX17048) -------------------
  * Чтение - sensors_read() в Vector_main.c: конфигурационные измерения (T/H/P,
  * батарея) -> Sns_Cfg_struct.Config_common, живость чипов -> маска
- * Config_common.Sensors_ok; runtime-данные (оси Accel_x/y/z, статусы падения,
+ * sensors_status.Sensors_ok (v25); runtime-данные (оси Accel_x/y/z, статусы падения,
  * копия Orientation/Screen_rotation) и счётчики диагностики шины I2C1 ->
  * sensors_status (Vector_main.h).
  * Включение каждой микросхемы - CONFIG_BME / CONFIG_LIS3DH / CONFIG_MAX17048 в
@@ -374,7 +375,7 @@
  *
  * VECTOR_SCREEN_ROTATION   1 = при смене 6D-ориентации LIS3DH (прерывание
  *                          ACCEL_INT, PC11) Measure Task вызывает
- *                          TFT_Rotation(Config_common.Screen_rotation).
+ *                          TFT_Rotation(sensors_status.Screen_rotation) (v25).
  *                          0 = ориентация считается, экран не крутится.
  * VECTOR_BME_CALIBRATION   1 = калибровка температуры BME280 с записью поправки
  *                          во flash (Calib_bme280_Temp из Avis). Сейчас 0:

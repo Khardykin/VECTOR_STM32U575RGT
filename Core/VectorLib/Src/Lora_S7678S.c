@@ -695,7 +695,7 @@ uint8_t test_state_alarm_flag_lora(SNS_CFG *Cfg_struct)
             // Пишем в EventLog ТОЛЬКО если связь потеряна
             if (state_err_changed && LORA_TEST_FLAG(LORA_FLAG_CONNECTION_LOST) && (event_log.count < EVENT_LOG_MAX_RECORDS)) {
                 event_log_record_t *new_event = &event_log.records[event_log.count];
-                new_event->unix_time = (uint32_t)Cfg_struct->Config_common.working_hours;
+                new_event->unix_time = (uint32_t)Cfg_struct->Working_data.working_hours;
 #if CONFIG_GPS
                 new_event->lat = gps_last_valid_lat;
                 new_event->lon = gps_last_valid_lon;
@@ -955,7 +955,7 @@ static void Lora_Control_States_Update(str_lora_data_get_t *rx_data, uint32_t po
     // 7. Time (Бит 6 FieldMask) — Синхронизация RTC прибора
     if (rx_data->FieldMask & FIELD_MASK_DL_TIME) {
         // Обновляем системное время прибора полученным от сервера Unix-временем
-        Sns_Cfg_struct.Config_common.working_hours = rx_data->UnixTime;
+        Sns_Cfg_struct.Working_data.working_hours = rx_data->UnixTime;
     }
 
     // ==========================================================================================
@@ -1055,7 +1055,7 @@ static void Lora_CompleteDataSet(SNS_CFG *Cfg_struct, str_lora_data_set_t *data_
         anchor_lon  = event_anchor.lon;
         if (anchor_lat != 0 || anchor_lon != 0) has_anchor_gps = true;
     } else {
-        anchor_time = (uint32_t)Cfg_struct->Config_common.working_hours; // ВАШЕ ВРЕМЯ
+        anchor_time = (uint32_t)Cfg_struct->Working_data.working_hours; // ВАШЕ ВРЕМЯ
 #if CONFIG_GPS
         anchor_lat = gps_last_valid_lat;
         anchor_lon = gps_last_valid_lon;
@@ -1065,7 +1065,7 @@ static void Lora_CompleteDataSet(SNS_CFG *Cfg_struct, str_lora_data_set_t *data_
 
     // БИТ 0: Battery
     field_mask |= FIELD_MASK_BATTERY;
-    buf[offset++] = Cfg_struct->Config_common.battery_charge_percent;
+    buf[offset++] = sensors_status.battery_charge_percent;
 
     // БИТ 1: GPS (Якорь или живой)
     if (has_anchor_gps && ((offset + 8) <= max_payload)) {
@@ -1402,7 +1402,7 @@ void Lora_DataSet(SNS_CFG *Cfg_struct)
         // ФИКСАЦИЯ ANCHOR ПЕРЕД ОТПРАВКОЙ (если есть история)
         // ========================================================================
         if (!LORA_TEST_FLAG(LORA_FLAG_CONNECTION_LOST) || (!event_anchor.is_valid)) {
-            event_anchor.unix_time = (uint32_t)Cfg_struct->Config_common.working_hours;
+            event_anchor.unix_time = (uint32_t)Cfg_struct->Working_data.working_hours;
 #if CONFIG_GPS
         	if (gps_last_valid_lat != 0 || gps_last_valid_lon != 0) {
         		event_anchor.is_valid = true;
@@ -1425,7 +1425,7 @@ void Lora_DataSet(SNS_CFG *Cfg_struct)
 
 #if CONFIG_GPS
         if (LORA_TEST_FLAG(LORA_FLAG_CONNECTION_LOST) && event_anchor.is_valid) {
-            uint32_t current_time = (uint32_t)Cfg_struct->Config_common.working_hours;
+            uint32_t current_time = (uint32_t)Cfg_struct->Working_data.working_hours;
             bool should_add = false;
 
             uint16_t period_lora_sec = (Sns_Cfg_struct.Config_common.PeriodTimeLora & 0xFF) * 10;

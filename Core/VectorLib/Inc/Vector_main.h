@@ -95,8 +95,8 @@ typedef struct
   volatile float    Accel_y;
   volatile float    Accel_z;
 
-  /* Ориентация и поворот экрана - копия Config_common (источник истины там,
-     поле сохраняется в конфиге); здесь - быстрый доступ для индикации.     */
+  /* Ориентация и поворот экрана - источник истины ЗДЕСЬ (v25: из SNS_CFG
+     перенесены сюда); Screen_rotation читает TFT_Rotation() в Measure Task. */
   volatile uint8_t  Orientation;        /* lis3dh_orientation_t              */
   volatile uint8_t  Screen_rotation;    /* 0 или 2 -> TFT_Rotation()         */
 
@@ -105,29 +105,33 @@ typedef struct
   volatile uint8_t  fall_detected;
   volatile uint32_t cnt_fall_events;
 
-	uint16_t   battery_charge_percent;                                 // Заряд батареи в процентах
-	uint16_t   battery_charge_volt;                                    // Заряд батареи в вольтах
-
-	uint8_t    	Orientation;                                            // lis3dh_orientation_t
-	uint8_t     Screen_rotation;                                        // 0 или 2 -> TFT_Rotation()
-	uint8_t     Sensors_ok;                                             // биты: 1=BME280 2=LIS3DH 4=MAX17048
-	uint8_t     Sensors_reserve;
-	float		Temperature_calib_offset;
-	float       Temperature;                                            // Температура
-	float       Humidity;
-	float		Pressure;
+  /* --- ИЗМЕРЕННЫЕ ДАННЫЕ (v25, решение автора: всё СЧИТАННОЕ живёт здесь,
+     в SNS_CFG остаётся только то, что сохраняется в конфигурацию).
+     Orientation/Screen_rotation - выше (единственный экземпляр, v25: дубль
+     из пула автора убран - член структуры объявлялся дважды).            */
+  volatile uint16_t battery_charge_percent; /* MAX17048: заряд, %            */
+  volatile uint16_t battery_charge_volt;    /* MAX17048: напряжение, мВ      */
+  volatile uint8_t  Sensors_ok;             /* биты: 1=BME280 2=LIS3DH 4=MAX17048 */
+  volatile uint8_t  Sensors_reserve;
+  volatile float    Temperature_calib_offset; /* поправка калибровки, °C     */
+  volatile float    Temperature;            /* BME280, °C                    */
+  volatile float    Humidity;               /* BME280, %                     */
+  volatile float    Pressure;               /* BME280 (автор v25: Па/1000)   */
 
 } sensors_status_t;
 
 extern volatile sensors_status_t sensors_status;
 
-/* Биты Sns_Cfg_struct.Config_common.Sensors_ok - какие микросхемы ответили
-   при инициализации (выставляет sensors_init()).                          */
+/* Биты sensors_status.Sensors_ok (v25: маска переехала из Config_common) -
+   какие микросхемы ответили при инициализации (выставляет sensors_init()). */
 #define SENSORS_OK_BME        (1u)
 #define SENSORS_OK_LIS3DH     (2u)
 #define SENSORS_OK_MAX17048   (4u)
 
 void    sensors_init(void);             /* из Vector_Run_Pre_Init (один раз) */
+void    Battery_Init(void);             /* MAX17048: quickStart + лимиты напряжения
+                                           от BAT_MIN/BAT_MAX конфига (v25); зовёт
+                                           Vector_Run_Pre_Init после чтения конфига */
 void    sensors_read(void);             /* из Vector_Run_Measure (1 с)       */
 uint8_t sensors_rotation_changed(void);
 uint8_t sensors_fall_event(void);       /* 1 = было падение, флаг сбрасывается */

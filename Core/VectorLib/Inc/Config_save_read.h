@@ -21,9 +21,12 @@ typedef enum {
 	TYPE_LOG_PARAM_NOP = 0x08,
 }TYPE_LOG;
 
-/* Запись журнала событий - то, что save_event() кладёт в log_append().
-   Поля берутся из SNS_CFG и sensors_status на момент записи. Reserve - под
-   каналы измерения, когда будут перенесены (как в Avis).                    */
+/* Запись журнала событий = СЛОТ кольца LOG фиксированной длины 64 байта
+   (схема автора, v25: длина одинаковая у всех записей, поэтому per-record
+   заголовок LOG_REC_HDR не нужен; assert sizeof == 64 в Config_save_read.c).
+   Поля берутся из SNS_CFG и sensors_status на момент записи; working_hours -
+   ВРЕМЯ записи (ключ поиска log_find_by_time). Reserve - под каналы
+   измерения, когда будут перенесены (как в Avis).                           */
 typedef struct
 {
 	uint16_t Type_log;				// TYPE_LOG
@@ -34,8 +37,8 @@ typedef struct
 	uint32_t working_hours;			// суммарное время, с (offset + working_hours конфига, v24)
 	uint16_t battery_charge_percent;
 	uint16_t battery_charge_volt;	// мВ
-	int16_t  temperature;			// Temperature * 100
-	uint16_t Reserve[8];
+	int16_t  temperature;			// sensors_status.Temperature * 100
+	uint16_t Reserve[19];			// добивает слот до РОВНО 64 байт (v25)
 }EVENT_LOG;
 
 //===========================================================================================================================
@@ -50,9 +53,29 @@ typedef struct
 extern int      save_param(uint8_t * RamData, uint16_t len, uint32_t addr);     // Сохранение параметров
 extern uint8_t  read_param(uint8_t * RamData, uint16_t len, uint32_t addr);     // Чтение параметров (1 = CRC верен)
 //--------------------------------------------------------------------------------------------------------------
-// Журнал событий (внешняя flash, log_append). save_event - немедленная запись;
-// отложенную делает Vector_RunFlashMemory() по флагам SaveEvent/TypeLogEvent.
+// КОЛЬЦЕВОЙ ЖУРНАЛ (схема автора, v25): область LOG (sfmap.h) поделена на
+// слоты по 64 байта (= sizeof(EVENT_LOG), assert в .c); кольцо 0x8000 (32768)
+// слотов, позиция в памяти = указатель & LOG_RING_MASK (0x7FFF). Указатели -
+// в SNS_CFG.Config_archive: CurrentAddrFile (куда писать следующую) и
+// BegginAddrFile (самая старая доступная), оба монотонно растут и
+// сохраняются вместе с конфигом. Переполнение: сектор под новую запись
+// стирается, BegginAddrFile сдвигается на число записей в секторе (64 -
+// чётное, сектор делится нацело). Ёмкость кольца = 32768 - 64 = 32704 записи.
+// save_event - запись слота; отложенную делает Vector_RunFlashMemory() по
+// флагам SaveEvent/TypeLogEvent и по архивному таймеру (TIMER_RTC_LOG).
 extern int      save_event(SNS_CFG *pSnsCfg, TYPE_LOG type_log);
+// Чтение записи ПО НОМЕРУ УКАЗАТЕЛЯ: ptr в диапазоне [BegginAddrFile,
+// CurrentAddrFile). Возврат: 0 = ok, 1 = ptr вне доступного диапазона,
+// -1 = ошибка шины (EXT_BUSY транзитом). КОНТЕКСТ: поток.
+extern int      log_read(SNS_CFG *pSnsCfg, uint32_t ptr, EVENT_LOG *out);
+// Поиск ближайших записей ПО ДИАПАЗОНУ ВРЕМЕНИ (Event_log.working_hours, с;
+// журнал упорядочен по времени -> бинпоиск): *ptr_from = первая запись с
+// временем >= t_from (если таких нет - последняя), *ptr_to = последняя с
+// временем <= t_to (если таких нет - первая). Возврат: 0 = диапазон найден
+// (ptr_from <= ptr_to), 1 = точного попадания нет (указатели = ближайшие),
+// 2 = журнал пуст, -1 = ошибка шины (EXT_BUSY транзитом). КОНТЕКСТ: поток.
+extern int      log_find_by_time(SNS_CFG *pSnsCfg, uint32_t t_from, uint32_t t_to,
+                                 uint32_t *ptr_from, uint32_t *ptr_to);
 //--------------------------------------------------------------------------------------------------------------
 // Сравнение текущего конфига с сохранённым (после приёма новых параметров)
 extern void     compare_param(SNS_CFG *pSnsCfgread, SNS_CFG *pSnsCfgCur);

@@ -48,7 +48,7 @@
 | Кнопки | `stm32u5xx_it.c` (EXTI), `Src/Test/Src/audio_demo.c` | два слоя: продуктовые флаги `button1/2/3/button_sos` и тестовое демо плеера |
 | LoRa S7678S | `Src/Lora_S7678S.c` (2094 строки) | реализация автора: AT-обмен, классы A/C, регионы, GPS-трек, `SNS_CFG` |
 | Конфигурация прибора | `Inc/config_device.h`, `Inc/shared_types.h` | флаги сборки `CONFIG_*`, структура `SNS_CFG`, биты статусов `ST_COMMON` |
-| Конфиг/журнал (сохранение) | `Src/Config_save_read.c`, `Inc/Config_save_read.h` | **v21**: переработан под этот проект — `SNS_CFG` и журнал во внешней flash (`cfg_save/cfg_load`, `log_append` extstore), заводские данные (калибровка/бренд/AppKey) во внутренней странице 0x080FE000; загрузка при старте в `Vector_Run_Pre_Init()`, запись — только из `Vector_RunFlashMemory()`. **v23**: области с явным `addr` — рабочий конфиг 0x400000 (`SaveConfig`), заводской 0x401000 (`SaveConfigDefault` пишет текущий, `ReadConfigDefault` — сброс к заводским в рабочий `Sns_Cfg_struct`), журнал с 0x402000 |
+| Конфиг/журнал (сохранение) | `Src/Config_save_read.c`, `Inc/Config_save_read.h` | **v21**: переработан под этот проект — `SNS_CFG` и журнал во внешней flash (`cfg_save/cfg_load`, `log_append` extstore), заводские данные (калибровка/бренд/AppKey) во внутренней странице 0x080FE000; загрузка при старте в `Vector_Run_Pre_Init()`, запись — только из `Vector_RunFlashMemory()`. **v23**: области с явным `addr` — рабочий конфиг 0x400000 (`SaveConfig`), заводской 0x401000 (`SaveConfigDefault` пишет текущий, `ReadConfigDefault` — сброс к заводским в рабочий `Sns_Cfg_struct`), журнал с 0x402000. **v25**: журнал ПЕРЕНЕСЁН из extstore сюда — кольцо слотов 64 Б (0x7FFF), `log_read(ptr)` + `log_find_by_time()`; `EVENT_LOG.Reserve[19]` добивает слот до 64 Б |
 | Общие включения | `Inc/Vector_main.h` | агрегатор заголовков (см. раздел 6, решение про инклуды) |
 
 UART-роли (как задумано):
@@ -79,23 +79,36 @@ UART-роли (как задумано):
 
 ## 3. Данные и состояния
 
-* **`SNS_CFG`** (`shared_types.h`): `Config_common` (State, StateErr, LED,
-  батарея и пороги, часы `working_hours` (секунды) и смещение
-  `working_hours_offset` (v24: offset — НЕ часы),
-  температура/влажность/давление, серийный номер, версия железа, дата
-  производства, GPS, `PeriodTimeLora`, `Lora_Config_Flags`, `Lora_freq_rx2`,
-  `Lora_dr_rx2`, `Orientation/Screen_rotation/Sensors_ok`, журнал —
-  `CurrentAddrFile/BegginAddrFile/ArchiveRecording/Archiveinterval`, резерв;
-  в v23 автор убрал `Bump_interval/DataLastBumpTest/TimeLimit/
-  TimeLimitRST/Type_lcd` и добавил типы каналов `SNS_Dev_Type/
-  SNS_DevChan_Type`),
-  `application_language`, `CRC_CONFIG`. **Хранение (v21, области v23)**:
+* **`SNS_CFG`** (`shared_types.h`, структура v25 — автор разделил блоки):
+  `Config_common` (State, StateErr, LED-периоды, ПОРОГИ батареи
+  `battery_charge_volt_max/min/lim_1/lim_2`, серийный номер, версия железа,
+  дата производства, GPS, `PeriodTimeLora`, `Lora_Config_Flags`,
+  `Lora_freq_rx2`, `Lora_dr_rx2`, `current_build_type`, резерв);
+  `Config_archive` (`SNS_Archive_Type`: указатели кольца журнала
+  `CurrentAddrFile`/`BegginAddrFile`, `ArchiveRecording`, `Archiveinterval`);
+  `Working_data` (`SNS_Working_Type`: часы `working_hours` — ВРЕМЯ в секундах,
+  и `working_hours_offset` — СМЕЩЕНИЕ, v24: offset НЕ часы);
+  `application_language`, `CRC_CONFIG`. ИЗМЕРЕННЫЕ ДАННЫЕ (T/H/P, батарея,
+  ориентация/поворот, `Sensors_ok`, калибровочное смещение) в v25 ПЕРЕЕХАЛИ
+  из `SNS_CFG` в `sensors_status` — во flash остаётся только то, что
+  действительно конфигурация. В v23 автор убрал `Bump_interval/
+  DataLastBumpTest/TimeLimit/TimeLimitRST/Type_lcd` и добавил типы каналов
+  `SNS_Dev_Type/SNS_DevChan_Type` (+ экземпляр `Connected_device`, v25).
+  **Хранение (v21, области v23)**:
   рабочий конфиг — страница внешней flash 0x400000 `SF_CONFIG_BASE`,
   заводской конфиг — страница 0x401000 `SF_CONFIG_DEFAULT` (`cfg_save/
   cfg_load` extstore с явным `addr`, CRC32 extstore + CRC16 `CRC_CONFIG`;
   записи добавляются в страницу без стирания, свежая = максимальный seq);
-  журнал событий — кольцевая область LOG 0x402000..8 МБ (`log_append`/
-  `log_next`, запись `EVENT_LOG`);
+  журнал событий — КОЛЬЦЕВАЯ область LOG 0x402000..8 МБ (v25, схема автора):
+  слоты фиксированной длины 64 байта = `sizeof(EVENT_LOG)` (per-record
+  заголовок `LOG_REC_HDR` упразднён — длина одинаковая), кольцо 0x8000
+  (32768) слотов = 2 МБ, позиция в памяти = указатель & 0x7FFF; указатели
+  `CurrentAddrFile`/`BegginAddrFile` монотонно растут и хранятся в
+  `Config_archive` (в flash попадают вместе с конфигом); переполнение —
+  стирание сектора и сдвиг начала на число записей в секторе (64 — чётное,
+  сектор делится нацело); API `Config_save_read.c`: `save_event()`,
+  `log_read(ptr)`, `log_find_by_time(t_from,t_to)` (бинпоиск по
+  `Event_log.working_hours`);
   заводские данные (калибровка температуры, бренд `current_build_type`,
   LoRa AppKey) — последняя страница ВНУТРЕННЕЙ flash 0x080FE000 (код
   ограничен 1016K в `.ld`). Оси акселерометра и статусы падения — runtime,
@@ -234,12 +247,14 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
       вращения на 160 МГц
 
 **Этап 6. Журнал и сервис**
-* [x] кольцевой журнал в области LOG (0x402000.., v23): `save_event()` →
-      `log_append` (v21); события «включение» и архив по `Archiveinterval`
+* [x] кольцевой журнал в области LOG (0x402000..): `save_event()` (v25 — слот
+      64 Б, кольцо 0x7FFF, указатели в `Config_archive`); события «включение»
+      и архив по `Archiveinterval`
 * [x] конфигурация `SNS_CFG` во внешней flash: `read_param/save_param` →
       `cfg_load/cfg_save` (v21), загрузка при старте, заводской фолбэк
-* [ ] чтение журнала/конфига через BLE или LoRa по команде (`log_next`,
-      `compare_param` — каркас есть)
+* [ ] чтение журнала/конфига через BLE или LoRa по команде: `log_read(ptr)` и
+      `log_find_by_time(t_from,t_to)` готовы (v25), `compare_param` — каркас;
+      осталось развести протокол команд
 * [ ] событие `TYPE_TURN_OFF` при выключении (нужен обработчик выключения)
 * [ ] версионирование прошивки и (опционально) OTA
 
@@ -273,6 +288,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 | Хранение конфига/журнала (v21) | `SNS_CFG` и журнал — ВО ВНЕШНЕЙ flash через `extstore` (`cfg_save/cfg_load` — два слота с CRC, `log_append` — кольцо LOG); заводские данные (калибровка T, бренд, AppKey) — во ВНУТРЕННЕЙ flash, страница 0x080FE000 (`.ld` ограничен 1016K). Адресация Avis (`reg_mem`, AT45/W25) не переносилась. Часы (уточнение автора, v24): `working_hours` — САМО ВРЕМЯ в секундах (`volatile`, +1 каждый такт `Timer_Tick_1s()` от RTC 1 Гц), `working_hours_offset` — СМЕЩЕНИЕ (не часы); в журнал `save_event()` пишет сумму offset + working_hours. (С v23 области и адреса — в строке «Области конфига (v23)» ниже) |
 | Шина flash и звук (v22) | «Окно тишины» вместо `TX_WAIT_FOREVER` (решение автора): `Vector_RunFlashMemory()` заходит во внешнюю flash только когда звук молчит (`audio_is_busy()==0` — доигран или пауза повтора 500 мс), иначе флаги живут и повторяются каждый проход (50 мс); звук всегда доигрывает до конца, форс-стирания сквозь звук нет. В `extstore`: чтения ждут шину ограниченно (`VECTOR_EXT_LOCK_READ_MS`=250 мс), записи — try-lock (`VECTOR_EXT_LOCK_WRITE_MS`=0) с кодом `EXT_BUSY (-2)`; стирания под звук не стартуют и изнутри `extstore` (защита гонки старта с кнопки), счётчики `ext_dbg_busy`/`ext_dbg_erase_defer`; `ext_mtx` с `TX_INHERIT` (Audio 10 не ждёт, пока Receiver 12 вытесняет Measure 13). Записи последовательные (опрос, без DMA). `save_param/save_event` → `int`, флаги гасятся только по успеху, жёсткая ошибка → `cnt_flash_errors`; `compare_param` пишет журнал отложенно через `SaveEvent` (поток приёма flash не трогает) |
 | Области конфига (v23) | Решение автора: у `cfg_save/cfg_load/save_param/read_param` явный адрес области `uint32_t addr` (НЕ `uint16_t` — 0x400000 в 16 бит не помещается); ДВЕ config-страницы (`sfmap.h`): `SF_CONFIG_BASE 0x400000` — рабочий конфиг (загрузка при старте, флаг `SaveConfig`), `SF_CONFIG_DEFAULT 0x401000` — заводской (флаг `SaveConfigDefault` пишет туда ТЕКУЩИЙ конфиг, `ReadConfigDefault` — СБРОС К ЗАВОДСКИМ: читает область через буфер `Cfg_structdef_read` и при валидном CRC копирует в рабочий `Sns_Cfg_struct`, пустая/битая область → рабочий конфиг не тронут; закрепление сброса во flash — отдельным `SaveConfig`); журнал сдвинут на `0x402000`. «Дефолтный» флаг — это ОБЛАСТЬ ПАМЯТИ заводских настроек, а не запись дефолтов при первом пуске (та остаётся в рабочей области). Флаг `ext_ready` удалён (решение автора): порядок `ext_init()` → `audio_init()` → потоки фиксирован, звук и обращения к конфигу возникают только по событиям; до `ext_init()` `tx_mutex_get` на нулевом мьютексе вернёт ошибку штатно. Журнал единый: единичные события (`SaveEvent`) + периодический архив (`TIMER_RTC_LOG`, `ArchiveRecording==1`) — оба через `save_event()`; из `SNS_CFG` убраны `TimeLimit/TimeLimitRST/Bump_interval/DataLastBumpTest/Type_lcd`, добавлены `SNS_Dev_Type/SNS_DevChan_Type` |
+| Журнал-кольцо и данные (v25) | Схема автора: журнал — слоты ФИКСИРОВАННОЙ длины 64 Б (`sizeof(EVENT_LOG)`, `LOG_REC_HDR` не нужен), кольцо на 0x7FFF (маска указателя), указатели `CurrentAddrFile`/`BegginAddrFile` — в `SNS_CFG.Config_archive` (растут монотонно, в памяти — по маске); переполнение: стирание сектора + сдвиг начала на ЧИСЛО ЗАПИСЕЙ В СЕКТОРЕ (64 — чётное/кратное, сектор делится нацело); чтение по номеру `log_read(ptr)` и поиск по времени `log_find_by_time(t_from,t_to)` → номера указателей (время = `Event_log.working_hours`, бинпоиск). Разделение данных: измеренное — в `sensors_status`, сохраняемое — в `SNS_CFG` (`Config_archive`/`Working_data`). Часы: `working_hours` при включении берётся ИЗ РЕЗЕРВНОГО РЕГИСТРА RTC BKP0 ПОСЛЕ чтения конфига; `Timer_Tick_1s()` зеркалит счётчик в BKP0 каждую секунду (DBP открыт в `Vector_Run_Board_Init()`); offset — смещение, не часы |
 | Часы и сброс к заводским (v24) | Уточнение автора: `working_hours_offset` — СМЕЩЕНИЕ, а не часы; ВРЕМЯ — `Config_common.working_hours` (`volatile`, +1 каждую секунду из `Timer_Tick_1s()`, RTC wakeup 1 Гц; сохраняется/грузится вместе с `SNS_CFG`). Сброс к заводским (`ReadConfigDefault`) ЧАСЫ СОХРАНЯЕТ: `working_hours` переносится при копировании структуры, остальное (включая offset) заменяется заводским; потеря ≤1 с из-за гонки с RTC-ISR допустима. Журнал: `Event_log.working_hours` = offset + working_hours |
 | Подсветка экрана (v21) | ШИМ: TIM8_CH1 (PC6, AF3), куб — PSC 159 / ARR 39 → 25 кГц. `backlight_set(%)` масштабирует скважность от фактического ARR (`__HAL_TIM_GET_AUTORELOAD`), `VECTOR_LCD_PWM_PERIOD` больше не используется |
 | Заголовки | Один `vector_macros.h` на все макросы/хелперы проекта вместо `vector_status.h` + `vector_compat.h`; API и состояние датчиков (`sensors_status`) живут в `Vector_main.h`, реализация — в `Vector_main.c` (как `Ble_Run`/`Lora_Run` в `Avis_main.c`). Биты статусов — в `shared_macros.h` автора. Новых `vector_*.h` без нужды не заводим |
@@ -549,3 +565,32 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     если вылезут новые ошибки (пины куба, HAL), прислать лог.
     (в) `task_module_name()` не знал про добавленный автором `TASK_MOD_SENSOR`
     (ветка возвращала "?") — добавлен case "sensor" (v24).
+45. **v25 (пункты 1-3 автора: кольцо журнала, данные/часы, чтение по времени)**
+    реализовано: журнал — слоты 64 Б (`sizeof(EVENT_LOG)`, assert в
+    `Config_save_read.c`), кольцо 0x8000 по маске 0x7FFF, указатели в
+    `Config_archive.CurrentAddrFile/BegginAddrFile`; переполнение — стирание
+    сектора + сдвиг начала на 64 записи; `log_read(ptr)` и
+    `log_find_by_time(t_from,t_to,&ptr_from,&ptr_to)` (бинпоиск по
+    `Event_log.working_hours`); измеренные данные перенесены автором из
+    `SNS_CFG` в `sensors_status` — все обращения по коду перенаправлены
+    (Vector_main/bme280_com/Lora_S7678S/TFT_indicator); часы при включении —
+    из RTC BKP0 после чтения конфига, `Timer_Tick_1s()` зеркалит счётчик в
+    BKP0 (DBP открыт в `Board_Init`); попутно: `Battery_Init()` вызывается из
+    `Pre_Init` (guard исправлен CONFIG_BME→CONFIG_MAX17048), дубль полей
+    `Orientation/Screen_rotation` в `sensors_status_t` убран, экземпляр
+    `Connected_device` определён, `TYPE_LOG_PARAM_UPDATE_0` в `compare_param`
+    заменён на `TYPE_LOG_PARAM_NOP` (enum-значения удалены автором).
+    Сброс к заводским (ReadConfigDefault) сохраняет не только часы (v24), но и
+    указатели кольца CurrentAddrFile/BegginAddrFile (v25): журнал — история, а
+    не настройка; заводские указатели отмотали бы кольцо (вплоть до
+    Beggin > Current и поломки инварианта стираний).
+    Допущения/ограничения (подтвердить автору): «регистр RTC» = резервный
+    регистр BKP0 (не календарь); время монотонно только при живой VBAT (после
+    полной потери питания BKP0=0 — часы с нуля, порядок времени в старом
+    журнале может нарушиться); журнал старого формата (сектора 'LOGS' v21-v24)
+    несовместим — кольцо стартует по указателям конфига, мусор старого
+    формата стирается проверкой «слот пуст» на границе сектора.
+    На железе: `ArchiveRecording=1` → записи `log: rec N`; `log_read` из
+    отладчика по номеру; `log_find_by_time` надиапазоне; переполнение кольца →
+    `BegginAddrFile += 64`; часы переживают перезагрузку (VBAT); `SaveEvent`
+    по-прежнему пишется только в окно тишины.
