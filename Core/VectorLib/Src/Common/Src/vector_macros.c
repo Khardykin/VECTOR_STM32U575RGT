@@ -10,6 +10,7 @@
   */
 #include "vector_macros.h"
 #include "main.h"          /* Uart_SetBaudrate, usart-макросы, HAL */
+#include "rtc.h"           /* hrtc: RTC_ReadTime/RTC_WriteTime (BKP0, v26) */
 #include "tx_api.h"
 #include <string.h>
 
@@ -87,4 +88,41 @@ void Uart_SetBaudrate(UART_HandleTypeDef *huart, uint32_t baud)
   (void)Uart_Init(huart);
   Uart_Enable_IT(huart, UART_IT_RX_ERR);
   Uart_Enable_IT(huart, UART_IT_RX_BYTE);
+}
+
+/* ============================================================================
+ * ЧАСЫ ПРИБОРА в резервном регистре RTC (v26, замена AT32 rtc_counter_*)
+ *
+ * В Avis счётчик секунд жил в свободном 32-битном счётчике RTC
+ * (rtc_counter_get/rtc_counter_set, AT32). На STM32U5 такого счётчика нет:
+ * RTC здесь - календарь (дата/время), а роль "вечного" 32-битного хранилища
+ * играет резервный регистр BKP0 (TAMP_BKP0R). Он живёт от VBAT, переживает
+ * NVIC_SystemReset() и полный сброс питания при живой батарейке, и НЕ занят
+ * кубом (HAL_RTCEx_BKGetRegister/BKSetRegister работают напрямую).
+ *
+ * Доступ к backup-домену разрешён постоянно: HAL_PWREx_EnableBkUpAccess()
+ * вызывается один раз в Vector_Run_Board_Init() (снимает PWR_DBP). Без него
+ * запись в BKP0 молча игнорируется - часы не переживут выключение.
+ *
+ * Единица - секунды: Timer_Tick_1s() (RTC wakeup, ровно 1 Гц) делает +1,
+ * Vector_Options_System() раз в секунду сверяет и пишет обратно
+ * (flag_start_work_bat_sys). При включении Vector_Run_Pre_Init() читает
+ * регистр ПОСЛЕ конфигурации и перекрывает значение из flash.
+ * КОНТЕКСТ: поток (обе функции; из ISR не звать - не нужно).
+ * ============================================================================ */
+uint32_t RTC_ReadTime(void)
+{
+  return HAL_RTCEx_BKGetRegister(&hrtc, RTC_BKP_DR0);
+}
+
+/* Записать счётчик часов в BKP0. Возврат: 0 = ok, -1 = отказ (нет handle/
+   не снята защита backup-домена). Имя/сигнатура - как в Avis
+ * (error_status заменён на int: типа error_status в проекте нет).          */
+int RTC_WriteTime(uint32_t TimeCounter)
+{
+  if (HAL_RTCEx_BKSetRegister(&hrtc, RTC_BKP_DR0, TimeCounter) != HAL_OK)
+  {
+    return -1;
+  }
+  return 0;
 }

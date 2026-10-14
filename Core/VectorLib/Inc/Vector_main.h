@@ -136,6 +136,16 @@ void    sensors_read(void);             /* из Vector_Run_Measure (1 с)       
 uint8_t sensors_rotation_changed(void);
 uint8_t sensors_fall_event(void);       /* 1 = было падение, флаг сбрасывается */
 
+/* --- сервис (v26, по образцу Avis) ------------------------------------------
+ * SoftResetProgram: 1 = команда мягкой перезагрузки прошивки (взводит COM/
+ *   BLE-модуль ВМЕСТЕ с START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, N));
+ *   отрабатывает Vector_Options_System(): событие TYPE_FW_UPDATE в журнал ->
+ *   стоп TIM3 -> NVIC_SystemReset(). Экземпляр - Vector_main.c.
+ * Avis_Battery_System(): секундное обслуживание батареи/зарядки (weak-
+ *   заглушка в Vector_main.c - перенести машину состояний из Avis).          */
+extern uint8_t SoftResetProgram;
+void Avis_Battery_System(void);
+
 /* --- такты прибора --------------------------------------------------------
  * Timer_Tick_1ms() - из TIM3 (1 кГц, HAL_TIM_PeriodElapsedCallback в main.c):
  *   декремент countdown_time[], флаги timer.flag_1ms/10ms/100ms/1s, счётчики

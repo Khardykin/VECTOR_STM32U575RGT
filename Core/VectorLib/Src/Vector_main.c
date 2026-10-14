@@ -176,11 +176,11 @@ void Timer_Tick_1s(void)
 
 	Sns_Cfg_struct.Working_data.working_hours += 1;
 
-	/* v25 (решение автора): каждую секунду дублируем часы в резервный
-	   регистр RTC BKP0 - при включении Pre_Init берёт working_hours ОТТУДА
-	   (регистр живёт от VBAT и переживает сброс питания). Запись BKP -
-	   одна операция с регистром, DBP открыт в Vector_Run_Board_Init().
-	   КОНТЕКСТ: прерывание.                                                 */
+	/* Часы: +1 каждую секунду (автор). В резервный регистр RTC BKP0 счётчик
+	   из ISR НЕ пишем (v26): сверку и запись раз в секунду делает
+	   Vector_Options_System() по flag_start_work_bat_sys через
+	   RTC_WriteTime() (vector_macros.c) - поток, а не прерывание.
+	   При включении Pre_Init читает BKP0 ПОСЛЕ конфигурации.                */
 
 	Countdown_Timer_Rtc();
 
@@ -218,6 +218,12 @@ void Vector_Run_Board_Init(void)
         это bus fault. Включаем до первого использования. Для сна потом не
         забыть биты SRAM4PD/SRAM4PDS.                                        */
   __HAL_RCC_SRAM4_CLK_ENABLE();
+
+  /* 0b. Разрешить доступ к резервным регистрам RTC (снять PWR_DBP): с v26 в
+        BKP0 живёт счётчик часов working_hours (RTC_ReadTime/RTC_WriteTime из
+        vector_macros.c). Без этого бита запись в BKP0 МОЛЧА игнорируется -
+        часы не переживут выключение. КОНТЕКСТ: до RTOS.                    */
+  HAL_PWREx_EnableBkUpAccess();
 
 #if VECTOR_DBG_FREEZE_TICK
   /* Остановка тайм-базы HAL (TIM6), пока ядро стоит на брейкпоинте: иначе
@@ -280,6 +286,14 @@ SNS_CFG          Sns_Cfg_struct;
 SNS_CFG          Cfg_structdef_read;
 TEMPSENSOR_CALIB tempsensor_calib;
 DEVICE_TURNED    device_turn = DEVICE_TURNED_ON;
+uint8_t          SoftResetProgram = 0;   /* 1 = команда мягкой перезагрузки
+                                            прошивки: взводит COM/BLE-модуль
+                                            (Avis), вместе с флагом обязан
+                                            стартовать таймер
+                                            TIMER_RTC_SOFT_RESET_PROGRAM;
+                                            отрабатывает Vector_Options_System:
+                                            событие TYPE_FW_UPDATE в журнал ->
+                                            стоп TIM3 -> NVIC_SystemReset    */
 SNS_Dev_Type     Connected_device;   /* свод подключённого устройства (каналы
                                         Sensor[COUNT_CHAN] + статусы/батарея/
                                         версии); extern - shared_types.h (v25),
@@ -474,7 +488,7 @@ void Vector_Run_Pre_Init(void)
     LOG_W(VLOG_M_SYS, "config: load/CRC fail -> DefaultConfig + save");
     DefaultConfig(&Sns_Cfg_struct);
   }
-  Sns_Cfg_struct.Config_common.working_hours = RTC_ReadTime();
+  Sns_Cfg_struct.Working_data.working_hours = RTC_ReadTime();
 
   /* Событие "включение" в журнал - отложенно (пишет Vector_RunFlashMemory). */
   TypeLogEvent = TYPE_TURN_ON;
@@ -739,17 +753,34 @@ void Vector_RunFlashMemory(void)
 #endif
 }
 
+/* Обслуживание батареи/зарядки (секундный ритм из Vector_Options_System по
+   flag_start_work_bat_sys). WEAK-заглушка: перенесите сюда машину состояний
+   Avis (Battery_System): источник - CHARGE_STATE (PC8, EXTI8 настроен, но
+   IRQ в кубе НЕ включён - SYSTEM.md п.9.7), данные - sensors_status.
+   battery_charge_percent/volt (MAX17048), пороги - BAT_MIN/BAT_MAX/
+   BAT_LIM_1/BAT_LIM_2 (Config_common), биты - ST_COMMON_BIT_BAT_CHARGE /
+   CRITICAL_BATTERY / CRITICAL_LOW_BATTERY, звук/LED - через API плеера и
+   backlight. КОНТЕКСТ: поток receiver_task.                                  */
+__attribute__((weak)) void Avis_Battery_System(void)
+{
+}
+
 /* Сервисные действия: вызываются из потока приёма каждый проход.
    Аналог Avis_Options_System(). КОНТЕКСТ: поток receiver_task.               */
 void Vector_Options_System(void)
 {
-  /* TODO: по образцу Avis_Options_System():
-     - мягкая перезагрузка прошивки (SoftResetProgram) с записью события
-       TYPE_FW_UPDATE в журнал и NVIC_SystemReset();
+  /* Реализовано (автор, v26): мягкая перезагрузка прошивки (SoftResetProgram
+     + таймер TIMER_RTC_SOFT_RESET_PROGRAM -> событие TYPE_FW_UPDATE ->
+     NVIC_SystemReset) и секундное обслуживание батареи (Avis_Battery_System,
+     weak-заглушка) со сверкой часов в RTC BKP0 (RTC_ReadTime/WriteTime).
+     TODO: по образцу Avis_Options_System():
      - стирание внутренней flash по команде (FlashErase);
      - окончание режима обмена данными: очистить ST_COMMON_BIT_DATA_EXCHANGE
        и ST_COMMON_BIT_BLOCK_SOUND;
-     - уход в сон при CONFIG_SLEEP (PLAN.md раздел 5, этап 5).                */
+     - уход в сон при CONFIG_SLEEP (PLAN.md раздел 5, этап 5).
+     ВНИМАНИЕ: save_event_type_2 ниже пишет во flash из потока ПРИЁМА (не
+     Measure Task) - исключение из правила: это "предсмертная" запись перед
+     NVIC_SystemReset, best-effort (EXT_BUSY -> короткий ретрай внутри).     */
 	if(SoftResetProgram){
 		if(TEST_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM)){
 			RESET_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM);
@@ -765,8 +796,8 @@ void Vector_Options_System(void)
 	if(timer.flag_start_work_bat_sys){
 		timer.flag_start_work_bat_sys = 0;
 		Avis_Battery_System();
-		if(RTC_ReadTime() != Sns_Cfg_struct.Config_common.working_hours){
-			RTC_WriteTime(Sns_Cfg_struct.Config_common.working_hours);
+		if(RTC_ReadTime() != Sns_Cfg_struct.Working_data.working_hours){
+			RTC_WriteTime(Sns_Cfg_struct.Working_data.working_hours);
 		}
 	}
 	//----------------------------------------------------------------------------

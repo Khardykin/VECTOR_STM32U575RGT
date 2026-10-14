@@ -64,6 +64,10 @@ extern uint8_t  read_param(uint8_t * RamData, uint16_t len, uint32_t addr);     
 // save_event - запись слота; отложенную делает Vector_RunFlashMemory() по
 // флагам SaveEvent/TypeLogEvent и по архивному таймеру (TIMER_RTC_LOG).
 extern int      save_event(SNS_CFG *pSnsCfg, TYPE_LOG type_log);
+// Второй формат журнала (Avis EVENT_LOG_TYPE_2): пока = save_event + bounded-
+// ретрай при EXT_BUSY (зовётся перед NVIC_SystemReset, "предсмертная" запись).
+// TODO: расширить формат данными каналов после переноса модулей измерения.
+extern int      save_event_type_2(SNS_CFG *pSnsCfg, TYPE_LOG type_log);
 // Чтение записи ПО НОМЕРУ УКАЗАТЕЛЯ: ptr в диапазоне [BegginAddrFile,
 // CurrentAddrFile). Возврат: 0 = ok, 1 = ptr вне доступного диапазона,
 // -1 = ошибка шины (EXT_BUSY транзитом). КОНТЕКСТ: поток.
