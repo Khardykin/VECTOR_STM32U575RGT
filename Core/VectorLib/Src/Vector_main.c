@@ -181,8 +181,6 @@ void Timer_Tick_1s(void)
 	   (регистр живёт от VBAT и переживает сброс питания). Запись BKP -
 	   одна операция с регистром, DBP открыт в Vector_Run_Board_Init().
 	   КОНТЕКСТ: прерывание.                                                 */
-	HAL_RTCEx_BKSetRegister(&hrtc, RTC_BKP_DR0,
-	                        Sns_Cfg_struct.Working_data.working_hours);
 
 	Countdown_Timer_Rtc();
 
@@ -220,12 +218,6 @@ void Vector_Run_Board_Init(void)
         это bus fault. Включаем до первого использования. Для сна потом не
         забыть биты SRAM4PD/SRAM4PDS.                                        */
   __HAL_RCC_SRAM4_CLK_ENABLE();
-
-  /* 0b. Разрешить доступ к резервным регистрам RTC (снять DBP): с v25 там
-        живёт счётчик часов working_hours (BKP0): Timer_Tick_1s() пишет его
-        каждую секунду, Vector_Run_Pre_Init() читает при старте после конфига.
-        КОНТЕКСТ: до RTOS.                                                  */
-  HAL_PWREx_EnableBkUpAccess();
 
 #if VECTOR_DBG_FREEZE_TICK
   /* Остановка тайм-базы HAL (TIM6), пока ядро стоит на брейкпоинте: иначе
@@ -276,11 +268,6 @@ void Vector_Run_Board_Init(void)
  *                       датчиков (Temperature/Humidity/Pressure), батарея,
  *                       серийный номер, параметры LoRa. Сюда пишет
  *                       bme280_measure(), отсюда читают модули обмена.
- *   Cfg_structdef_read  буфер сравнения конфигурации (compare_param читает
- *                       сюда сохранённый конфиг из внешней flash); с v23 он
- *                       же - промежуточный буфер сброса к заводским:
- *                       ReadConfigDefault читает в него SF_CONFIG_DEFAULT и
- *                       при валидном CRC копирует в Sns_Cfg_struct.
  *   tempsensor_calib    калибровка температуры BME280 (VECTOR_BME_CALIBRATION 0
  *                       -> пока не используется).
  *   device_turn         прибор включён/выключен (DEVICE_TURNED).
@@ -486,16 +473,8 @@ void Vector_Run_Pre_Init(void)
   {
     LOG_W(VLOG_M_SYS, "config: load/CRC fail -> DefaultConfig + save");
     DefaultConfig(&Sns_Cfg_struct);
-    // Save config
-//    save_param((uint8_t *)&Sns_Cfg_struct, (uint16_t)sizeof(SNS_CFG), SF_CONFIG_BASE);
   }
-
-  /* ЧАСЫ (решение автора, v25): истинный источник working_hours - резервный
-     регистр RTC BKP0 (живёт от VBAT); читается ПОСЛЕ конфигурации и
-     перекрывает значение из flash. BKP = 0 (села VBAT/первый пуск) - часы
-     стартуют с нуля.                                                        */
-  Sns_Cfg_struct.Working_data.working_hours =
-      HAL_RTCEx_BKGetRegister(&hrtc, RTC_BKP_DR0);
+  Sns_Cfg_struct.Config_common.working_hours = RTC_ReadTime();
 
   /* Событие "включение" в журнал - отложенно (пишет Vector_RunFlashMemory). */
   TypeLogEvent = TYPE_TURN_ON;
@@ -771,7 +750,54 @@ void Vector_Options_System(void)
      - окончание режима обмена данными: очистить ST_COMMON_BIT_DATA_EXCHANGE
        и ST_COMMON_BIT_BLOCK_SOUND;
      - уход в сон при CONFIG_SLEEP (PLAN.md раздел 5, этап 5).                */
+	if(SoftResetProgram){
+		if(TEST_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM)){
+			RESET_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM);
+#if CONFIG_SAVE_PARAM_LOG
+			save_event_type_2(&Sns_Cfg_struct, TYPE_FW_UPDATE);
+#endif
+//			Go_To_User_App();
+			HAL_TIM_Base_Stop_IT(&htim3);
+			NVIC_SystemReset();
+		}
+	}
+	//----------------------------------------------------------------------------
+	if(timer.flag_start_work_bat_sys){
+		timer.flag_start_work_bat_sys = 0;
+		Avis_Battery_System();
+		if(RTC_ReadTime() != Sns_Cfg_struct.Config_common.working_hours){
+			RTC_WriteTime(Sns_Cfg_struct.Config_common.working_hours);
+		}
+	}
+	//----------------------------------------------------------------------------
 }
+
+//==============================================================================
+// Переход к bootloader программе
+//void Go_To_User_App(void)
+//{
+//    uint32_t app_jump_address;
+//#if CONFIG_SAVE_PARAM_LOG
+//    ultra_deep_power_down_memory();                                             //вход в энергосберегающий режим микросхемы памяти
+//#endif
+//    __HAL_IRDA_DISABLE_IT(&USART_COM, IRDA_IT_RXNE);
+//    __HAL_IRDA_DISABLE_IT(&USART_COM, IRDA_IT_ERR);
+//    __HAL_RTC_WAKEUPTIMER_DISABLE(&hrtc);
+//      HAL_ADC_Stop_DMA(&hadc1);
+//    HAL_TIM_Base_Stop_IT(&htim1);
+//    HAL_TIM_Base_Stop_IT(&htim2);
+//
+//    void(*GoToApp)(void);                                                       //объявляем пользовательский тип
+//
+//    __disable_irq();//запрещаем прерывания
+//
+//    app_jump_address = *( uint32_t*) (FLASH_ADDRESS_START_BOOTLOADER+4);                   // извлекаем адрес перехода из вектора Reset
+//    GoToApp = (void (*)(void))app_jump_address;                                 // приводим его к пользовательскому типу
+//    SCB->VTOR = FLASH_ADDRESS_START_BOOTLOADER;                                            // Изменяем адресс векторов прерывания
+//    __set_CONTROL(0);
+//      __set_MSP(*(__IO uint32_t*) FLASH_ADDRESS_START_BOOTLOADER);                         // устанавливаем SP приложения
+//    GoToApp();		                                                            // запускаем приложение
+//}
 
 //===========================================================================================================================
 // Функция инициализации батареи (вызывать при старте системы)

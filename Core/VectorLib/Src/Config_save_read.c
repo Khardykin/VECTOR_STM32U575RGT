@@ -320,30 +320,28 @@ int log_find_by_time(SNS_CFG *pSnsCfg, uint32_t t_from, uint32_t t_to,
 #endif
 }
 
-// Сравнение текущих параметров и сохранённых (после приёма новых по COM/BLE)
-void compare_param(SNS_CFG *pSnsCfgread, SNS_CFG *pSnsCfgCur)
-{
-  uint16_t type_log = 0;
-
-  // Чтение конфигурационных параметров (рабочая область SF_CONFIG_BASE)
-  if(read_param((uint8_t*)pSnsCfgread, sizeof(SNS_CFG), SF_CONFIG_BASE)){
-    if(pSnsCfgread->Config_archive.Archiveinterval != pSnsCfgCur->Config_archive.Archiveinterval){
-  	  END_TIMER_RTC(TIMER_RTC_LOG);   // форсируем запись архива с новым периодом
-  	  type_log |= TYPE_LOG_PARAM_NOP; // v25: TYPE_LOG_PARAM_UPDATE_* удалены автором;
-  	                                  // когда перенесётся COM-модуль - вернуть типы обновлений
-    }
-    /* TODO: остальные параметры по битам TYPE_LOG_PARAM_UPDATE_x - когда
-       перенесётся COM-модуль (command_message) и каналы измерения.         */
-  }
-  if(type_log){
-	  /* Запись НЕ отсюда (поток приёма), а отложенно через Measure Task:
-	     по правилам проекта (SYSTEM.md) во внешнюю flash пишет только
-	     Vector_RunFlashMemory() - и только в «окно тишины» (звук не играет).
-	     Если событие уже отложено - новое побеждает (журнал best-effort). */
-	  TypeLogEvent = (TYPE_LOG)type_log;
-	  SaveEvent    = 1u;
-  }
-}
+//// Сравнение текущих параметров и сохранённых (после приёма новых по COM/BLE)
+//void compare_param(SNS_CFG *pSnsCfgread, SNS_CFG *pSnsCfgCur)
+//{
+//  uint16_t type_log = 0;
+//
+//  // Чтение конфигурационных параметров (рабочая область SF_CONFIG_BASE)
+//  if(read_param((uint8_t*)pSnsCfgread, sizeof(SNS_CFG), SF_CONFIG_BASE)){
+//    if(pSnsCfgread->Config_archive.Archiveinterval != pSnsCfgCur->Config_archive.Archiveinterval){
+//  	  END_TIMER_RTC(TIMER_RTC_LOG);   // форсируем запись архива с новым периодом
+//  	  type_log |= TYPE_LOG_PARAM_NOP; // v25: TYPE_LOG_PARAM_UPDATE_* удалены автором;
+//  	                                  // когда перенесётся COM-модуль - вернуть типы обновлений
+//    }
+//  }
+//  if(type_log){
+//	  /* Запись НЕ отсюда (поток приёма), а отложенно через Measure Task:
+//	     по правилам проекта (SYSTEM.md) во внешнюю flash пишет только
+//	     Vector_RunFlashMemory() - и только в «окно тишины» (звук не играет).
+//	     Если событие уже отложено - новое побеждает (журнал best-effort). */
+//	  TypeLogEvent = (TYPE_LOG)type_log;
+//	  SaveEvent    = 1u;
+//  }
+//}
 
 //===========================================================================================================================
 // Начальная или тестовая конфигурация
