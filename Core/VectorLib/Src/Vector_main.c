@@ -446,6 +446,14 @@ static void measure_task_function(ULONG thread_input)
       Vector_Run_Measure();
     }
     Vector_RunFlashMemory();
+
+#if CONFIG_DISPLAY
+    /* Основа меню (v26): жесты кнопок и навигация - каждый проход (50 мс),
+       НЕ по flag_1s: LONG=1.5 с и DOUBLE-окно 400 мс требуют частого опроса.
+       Отрисовку подставит LVGL-порт (weak Menu_Draw).                      */
+    Menu_Run();
+#endif
+
     VTICK_SLEEP_MS(VECTOR_TASKS_MEASURE_DELAY_MS);
   }
 }
@@ -476,12 +484,11 @@ void Vector_Run_Pre_Init(void)
      read_param также восстанавливает working_hours_offset (СМЕЩЕНИЕ; часы -
      это working_hours, см. shared_types.h) и AppKey (CONFIG_LORA).
      КОНТЕКСТ: поток (мьютекс extstore уже создан в tx_application_define). */
-  if (read_param((uint8_t *)&Sns_Cfg_struct, (uint16_t)sizeof(SNS_CFG), SF_CONFIG_BASE) != 0u)
+  if (read_param((uint8_t *)&Cfg_structdef_read, (uint16_t)sizeof(SNS_CFG), SF_CONFIG_BASE) != 0u)
   {
-    LOG_I(VLOG_M_SYS, "config: loaded (wh_off=%u s, serial=%04x%04x)",
-          (uint32_t)Sns_Cfg_struct.Working_data.working_hours_offset,
-          (uint32_t)Sns_Cfg_struct.Config_common.SerialHi,
-          (uint32_t)Sns_Cfg_struct.Config_common.SerialLo);
+	  Sns_Cfg_struct = Cfg_structdef_read;
+		// Чтение текущего адреса архива
+		ReadCurrentAddrFile();
   }
   else
   {
@@ -521,6 +528,12 @@ void Vector_Run_Pre_Init(void)
 #endif
 #if CONFIG_G4
   SET_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GSM);
+#endif
+
+#if CONFIG_DISPLAY
+  /* Основа меню (v26): машина экранов + декодер жестов кнопок. Экраны/статусы
+     определит автор - каркас уже считает кнопки и ходит по screen_t.        */
+  Menu_Init();
 #endif
 
   /* TODO: по образцу Avis_Run_Pre_Init():

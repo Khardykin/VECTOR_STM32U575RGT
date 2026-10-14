@@ -59,6 +59,14 @@ Src/Lora_S7678S.c          LoRa S7678S: AT-драйвер, машина сост
 Inc/Lora_S7678S.h            (CONFIG_LORA = 0 - порт не подключён: PLAN.md п.25/27)
 Src/buffer.c               кольца приёма InputBuffer[TYPE_*]: строгий SPSC (ISR пишет end,
 Inc/buffer.h                 Receiver Task пишет begin), transmit_buffer по типу порта
+Src/Ble_vector.c           BLE: ОТВЕТНАЯ сторона протокола Avis (v26, CONFIG_BLE): строковая
+Inc/Ble_vector.h             машина AT-команд из кольца TYPE_BLE; ADVMSDDATAGET -> наши данные
+                           (hex+OK), ADVMSDDATASET=<hex> -> Connected_device, MODINFO?;
+                           не блокируется; состояние - ble_status
+Src/Menu_vector.c          ОСНОВА меню (v26, CONFIG_DISPLAY): машина экранов screen_t +
+Inc/Menu_vector.h            декодер жестов кнопок (SHORT/LONG/DOUBLE/SHORT_LONG/FAKE - логика
+                           Avis_Menu_2), авто-возврат TIMER_RTC_MAIN_RESET, dirty_data ->
+                           SaveConfig; отрисовка - weak Menu_Draw() (подставит LVGL-порт)
 Src/lis3dh.c               акселерометр LIS3DH: 6D-ориентация, кэш ускорений, ACCEL_INT
 Src/bme280_com.c           BME280: T/H/P (обёртка над Src/BME280/bme280.c от Bosch)
 Src/MAX17048.c             топливный счётчик MAX17048 (I2C): SOC, VCELL, ALRT
@@ -143,8 +151,8 @@ main()
 | Поток | Приоритет | Стек | Что делает |
 |---|---|---|---|
 | `Audio Player` (`ap_thread_entry`) | 10 | 4096 | **единственный владелец** SAI/DMA и `ap_buf[]`: ждёт `ap_wake` (heartbeat или будильник паузы повтора), разбирает команды, дозагружает половины стрим-буфера, запускает DMA, повторяет последний звук по кругу |
-| `Receiver Task` (`receiver_task_function`) | 12 | 2048 | **единственный потребитель** колец приёма `InputBuffer[TYPE_USART/TYPE_LORA/TYPE_BLE/TYPE_LTE/TYPE_SENSOR]` (GPS — исключение: байты из ISR идут прямо в `Gps_Data_Verification()`, а `Gps_Receive()` разбирает внутренний буфер `Gps.c`): `command_message()`, `Lora_Receive()`, `Ble_Receive()`, `Lte_Receive()`, `Gps_Receive()`, `Uart_Channel_Receive()`, затем `Vector_Options_System()`; пауза `VECTOR_TASKS_RECEIVER_DELAY_MS` |
-| `Measure Task` (`measure_task_function`) | 13 | 4096 | `Vector_Run_Pre_Init()` один раз (`sensors_init()`, биты включения модулей), затем по флагу `timer.flag_1s` (такт 1 с от TIM3): `Vector_Run_Measure()` → `sensors_read()` (BME280/LIS3DH/MAX17048), поворот экрана по 6D-ориентации, `Ble_Run/Lora_Run/Lte_Run/Gps_Run`; и `Vector_RunFlashMemory()` каждый проход — журнал/конфиг во внешнюю flash только в «окно тишины» (пока звучит звук, флаги живут до следующего прохода, v22) |
+| `Receiver Task` (`receiver_task_function`) | 12 | 2048 | **единственный потребитель** колец приёма `InputBuffer[TYPE_USART/TYPE_LORA/TYPE_BLE/TYPE_LTE/TYPE_SENSOR]` (GPS — исключение: байты из ISR идут прямо в `Gps_Data_Verification()`, а `Gps_Receive()` разбирает внутренний буфер `Gps.c`): `command_message()`, `Lora_Receive()`, `Ble_Receive()` (v26: strong-реализация в `Ble_vector.c` — ответная сторона AT-протокола Avis под `CONFIG_BLE`), `Lte_Receive()`, `Gps_Receive()`, `Uart_Channel_Receive()`, затем `Vector_Options_System()`; пауза `VECTOR_TASKS_RECEIVER_DELAY_MS` |
+| `Measure Task` (`measure_task_function`) | 13 | 4096 | `Vector_Run_Pre_Init()` один раз (`sensors_init()`, биты включения модулей), затем по флагу `timer.flag_1s` (такт 1 с от TIM3): `Vector_Run_Measure()` → `sensors_read()` (BME280/LIS3DH/MAX17048), поворот экрана по 6D-ориентации, `Ble_Run/Lora_Run/Lte_Run/Gps_Run`; и `Vector_RunFlashMemory()` каждый проход — журнал/конфиг во внешнюю flash только в «окно тишины» (пока звучит звук, флаги живут до следующего прохода, v22); каждый проход (50 мс) — `Menu_Run()` (основа меню v26: жесты кнопок, навигация, авто-возврат) |
 | `LVGL Task` | 15 | 4096 | заглушка: спит по 1 с |
 
 Мёртвый поток `Audio Task` и семафор `audio_done_sem` удалены: звуком владеет

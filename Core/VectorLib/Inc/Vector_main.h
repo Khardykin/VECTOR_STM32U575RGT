@@ -57,6 +57,8 @@
 #include "audio_demo.h"
 #include "audio_player.h"
 #include "vector_tasks.h"
+#include "Ble_vector.h"     /* ответная сторона BLE-протокола Avis (CONFIG_BLE, v26) */
+#include "Menu_vector.h"    /* основа слоя меню: экраны + жесты кнопок (CONFIG_DISPLAY, v26) */
 
 
 /* Карта ВНУТРЕННЕЙ flash. Заводские данные - последняя страница банка 2

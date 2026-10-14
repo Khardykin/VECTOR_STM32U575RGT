@@ -320,6 +320,56 @@
 #define VECTOR_TASKS_MEASURE_DELAY_MS    50u
 #endif
 
+/* --- BLE: ответная сторона протокола Avis (Ble_vector.c, v26) ---------------
+ * Мы - ПЕРИФЕРИЙНОЕ устройство: мастер (Avis) присылает по радио строки
+ * "AT+CMD[=payload]" (терминатор 0x0D, payload данных - hex "%02x" побайтно,
+ * как в Ble_mk01), мы отвечаем [строка данных + 0x0D] ["OK"|"ERROR" + 0x0D].
+ * Протокол будет дополняться (автор) - таблица команд в начале Ble_vector.c.
+ *   VECTOR_BLE_FRAME_TMO_MS - тишина после последнего байта = конец кадра
+ *                             (страховка, если терминатор потерялся);
+ *   VECTOR_BLE_MAX_LINE     - максимум символов строки (DATASET: "AT+
+ *                             ADVMSDDATASET=" 17 + 2*32 + запас);
+ *   VECTOR_BLE_DEV_ID       - наш ID устройства в протоколе (ТОЧНОЕ ЗНАЧЕНИЕ
+ *                             ЗАДАЁТ АВТОР; в Avis: 1 = Device2_1, 2 = Pro). */
+#ifndef VECTOR_BLE_FRAME_TMO_MS
+#define VECTOR_BLE_FRAME_TMO_MS     50u
+#endif
+#ifndef VECTOR_BLE_MAX_LINE
+#define VECTOR_BLE_MAX_LINE         300u
+#endif
+#ifndef VECTOR_BLE_DEV_ID
+#define VECTOR_BLE_DEV_ID           3u
+#endif
+
+/* --- Основа меню (Menu_vector.c, v26) ---------------------------------------
+ * Жесты кнопок декодируются из button_count (счёт в TIM3 1 кГц = мс,
+ * ставит EXTI) по образцу Button_1/2/3_Menu из Avis_Menu_2.c:
+ *   SHORT  - нажатие дольше антидребезга, отпущено до LONG;
+ *   LONG   - удержание >= VECTOR_MENU_PRESS_LONG_MS (срабатывает ДО отпускания);
+ *   DOUBLE - два SHORT с интервалом < VECTOR_MENU_DOUBLE_MS;
+ *   SHORT_LONG - SHORT, затем LONG быстрее DOUBLE-окна;
+ *   FAKE   - слишком короткое (дребезг).
+ * Авто-возврат на главный экран: любой жест перезапускает TIMER_RTC_MAIN_RESET
+ * (секундный таймер прибора), по его expiry Menu_Run() возвращает SCREEN_MAIN.
+ * Экраны/статусы пока НЕ определены (автор) - enum screen_t расширяется в
+ * Menu_vector.h, отрисовка - weak Menu_Draw() (заменит LVGL-порт).          */
+#ifndef VECTOR_MENU_PRESS_SHORT_MS
+#define VECTOR_MENU_PRESS_SHORT_MS  50u
+#endif
+#ifndef VECTOR_MENU_PRESS_LONG_MS
+#define VECTOR_MENU_PRESS_LONG_MS   1500u
+#endif
+#ifndef VECTOR_MENU_DOUBLE_MS
+#define VECTOR_MENU_DOUBLE_MS       400u
+#endif
+#ifndef VECTOR_MENU_AUTO_RETURN_S
+#define VECTOR_MENU_AUTO_RETURN_S   30u
+#endif
+#ifndef VECTOR_MENU_ITEMS
+#define VECTOR_MENU_ITEMS           4u   /* пунктов в SCREEN_MENU (заглушка: по
+                                            числу экранов SquareLine после MAIN) */
+#endif
+
 /* --- РАБОЧЕЕ: экран TFT (ST7789P3 172x320, SPI2 + GPDMA1 Channel8) ---------
  * Драйвер - Core/VectorLib/Src/TFT/LCD_platform.c (v17 переведён с AT32 на HAL,
  * названия функций сохранены). Периферию задаёт CubeMX: SPI2 8 бит Simplex TX,
