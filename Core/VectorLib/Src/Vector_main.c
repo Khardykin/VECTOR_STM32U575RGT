@@ -223,7 +223,7 @@ void Vector_Run_Board_Init(void)
         BKP0 живёт счётчик часов working_hours (RTC_ReadTime/RTC_WriteTime из
         vector_macros.c). Без этого бита запись в BKP0 МОЛЧА игнорируется -
         часы не переживут выключение. КОНТЕКСТ: до RTOS.                    */
-  HAL_PWREx_EnableBkUpAccess();
+  HAL_PWR_EnableBkUpAccess();
 
 #if VECTOR_DBG_FREEZE_TICK
   /* Остановка тайм-базы HAL (TIM6), пока ядро стоит на брейкпоинте: иначе

@@ -11,7 +11,7 @@
 #include "vector_macros.h"
 #include "main.h"          /* Uart_SetBaudrate, usart-макросы, HAL */
 #include "rtc.h"           /* hrtc: RTC_ReadTime/RTC_WriteTime (BKP0, v26) */
-#include "tx_api.h"
+#include "time.h"
 #include <string.h>
 
 /* Busy-wait в условных итерациях (volatile - чтобы компилятор не свернул). */
@@ -112,7 +112,24 @@ void Uart_SetBaudrate(UART_HandleTypeDef *huart, uint32_t baud)
  * ============================================================================ */
 uint32_t RTC_ReadTime(void)
 {
-  return HAL_RTCEx_BKGetRegister(&hrtc, RTC_BKP_DR0);
+	time_t tmp_bt = 0;
+	struct tm tm_ptr = {0};
+	RTC_DateTypeDef sdates = {0};
+	RTC_TimeTypeDef stimes = {0};
+	HAL_RTC_GetDate(&hrtc, &sdates, RTC_FORMAT_BIN);
+	HAL_RTC_GetTime(&hrtc, &stimes, RTC_FORMAT_BIN);
+
+	tm_ptr.tm_year = sdates.Year;
+	tm_ptr.tm_mon = sdates.Month - 1;
+	tm_ptr.tm_mday = sdates.Date;
+
+	tm_ptr.tm_sec = stimes.Seconds;
+	tm_ptr.tm_min = stimes.Minutes;
+	tm_ptr.tm_hour = stimes.Hours;
+
+	tmp_bt = mktime(&tm_ptr);
+	return (uint32_t)tmp_bt;
+//  return HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0);
 }
 
 /* Записать счётчик часов в BKP0. Возврат: 0 = ok, -1 = отказ (нет handle/
@@ -120,9 +137,30 @@ uint32_t RTC_ReadTime(void)
  * (error_status заменён на int: типа error_status в проекте нет).          */
 int RTC_WriteTime(uint32_t TimeCounter)
 {
-  if (HAL_RTCEx_BKSetRegister(&hrtc, RTC_BKP_DR0, TimeCounter) != HAL_OK)
-  {
-    return -1;
-  }
-  return 0;
+
+	error_status status = SUCCESS;
+	time_t tmp = TimeCounter;
+	RTC_DateTypeDef sdates = {0};
+	RTC_TimeTypeDef stimes = {0};
+	struct tm tm_ptr = *gmtime(&tmp);
+
+	sdates.Year = tm_ptr.tm_year;
+	sdates.Month = tm_ptr.tm_mon + 1;
+	sdates.Date = tm_ptr.tm_mday;
+
+	stimes.Seconds = tm_ptr.tm_sec;
+	stimes.Minutes = tm_ptr.tm_min;
+	stimes.Hours = tm_ptr.tm_hour;
+	stimes.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+	stimes.StoreOperation = RTC_STOREOPERATION_RESET;
+
+	HAL_RTC_SetDate(&hrtc, &sdates, RTC_FORMAT_BIN);
+	HAL_RTC_SetTime(&hrtc, &stimes, RTC_FORMAT_BIN);
+
+	return status;
+//  if (HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, TimeCounter) != HAL_OK)
+//  {
+//    return -1;
+//  }
+//  return 0;
 }
