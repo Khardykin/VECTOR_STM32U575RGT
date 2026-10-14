@@ -57,7 +57,7 @@
 #include "audio_demo.h"
 #include "audio_player.h"
 #include "vector_tasks.h"
-#include "Ble_vector.h"     /* ответная сторона BLE-протокола Avis (CONFIG_BLE, v26) */
+#include "Ble_vector.h"     /* BLE-модуль MK01: мастерская сторона, порт Ble_mk01 (CONFIG_BLE, v27) */
 #include "Menu_vector.h"    /* основа слоя меню: экраны + жесты кнопок (CONFIG_DISPLAY, v26) */
 
 

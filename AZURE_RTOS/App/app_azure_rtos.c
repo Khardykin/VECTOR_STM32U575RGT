@@ -28,6 +28,12 @@
 #include "vector_config.h"
 #include "vector_log.h"
 #include "main.h"
+#include "Vector_main.h"      /* timer, device_turn, tasks_status (v27) */
+#include "Menu_vector.h"      /* Vector_Run_Indication() (v27) */
+#if (CONFIG_TYPE_LCD_TFT && VECTOR_LCD_USE_LVGL)
+#include "TFT.h"              /* TFT_Initialized */
+#include "lvgl.h"
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -37,7 +43,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* Размеры стека для задач (в байтах) */
+/* Размеры стека для задач (в байтах). */
 #define LVGL_STACK_SIZE    4096
 
 /* Дескриптор потока ThreadX */
@@ -72,23 +78,31 @@ static TX_BYTE_POOL tx_app_byte_pool;
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
 /* ---------------------------------------------------------------------------
- * Поток для дисплея и LVGL. Воспроизведением владеет поток "Audio Player" из
- * audio_player.c (создаётся в audio_init()), отдельный звуковой поток здесь
- * больше не нужен и удалён вместе со своими счётчиками.
+ * Поток дисплея/индикации (LVGL Task).
  * -------------------------------------------------------------------------*/
 void lvgl_thread_entry(ULONG thread_input)
 {
   (void)thread_input;
-  /* Тут в будущем инициализируем LVGL и дисплей */
-  /* lv_init(); */
 
   while (1)
   {
-    /* Вызов периодического обработчика таймеров LVGL */
-    /* lv_timer_handler(); */
-
-    /* Пока LVGL нет, поток только жрёт CPU: до подключения LVGL спим подольше. */
-    tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);   /* 1 с */
+    if (tasks_status.cnt_pre_init != 0u)     /* Pre_Init завершён */
+    {
+      if (timer.flag_100ms != 0u)
+      {
+        timer.flag_100ms = 0u;
+#if CONFIG_DISPLAY
+        Vector_Run_Indication();
+#endif
+      }
+#if (CONFIG_TYPE_LCD_TFT && VECTOR_LCD_USE_LVGL)
+      if (TFT_Initialized == 1u)
+      {
+        lv_timer_handler();
+      }
+#endif
+    }
+    tx_thread_sleep(1u);                     /* 10 мс */
   }
 }
 /* USER CODE END PFP */

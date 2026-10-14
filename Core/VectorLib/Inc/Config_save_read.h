@@ -85,6 +85,24 @@ extern int      log_find_by_time(SNS_CFG *pSnsCfg, uint32_t t_from, uint32_t t_t
 //extern void     compare_param(SNS_CFG *pSnsCfgread, SNS_CFG *pSnsCfgCur);
 //--------------------------------------------------------------------------------------------------------------
 extern void     DefaultConfig(SNS_CFG *pSnsCfg);                                // Начальная или тестовая конфигурация
+//--------------------------------------------------------------------------------------------------------------
+// v27: бренд прибора (MIRAX/BACS) и страница-кольцо указателей архива.
+// Init_Build_Type(): прочитать current_build_type из последней страницы
+// внутренней flash (FLASH_ADDRESS_BUILD_TYPE). КОНТЕКСТ: Measure Task
+// (Vector_Run_Pre_Init). Возврат: нет.
+extern void     Init_Build_Type(void);
+extern uint16_t current_build_type;      // бренд: MIRAX=0 / BACS=1 (рантайм)
+// log_ptr_load(): скан страницы SF_LOG_PTR (свежая запись = max seq c валидным
+// CRC); apply=1 - перенести cur/beg в pSnsCfg->Config_archive. КОНТЕКСТ:
+// Measure Task (Vector_Run_Pre_Init, после чтения конфига). Возврат: 1 найдена
+// валидная запись / 0 пуста / -1 ошибка шины.
+extern int      log_ptr_load(SNS_CFG *pSnsCfg, uint8_t apply);
+// log_ptr_save(): сохранить CurrentAddrFile/BegginAddrFile (16-байтная запись
+// в кольцо SF_LOG_PTR); вызывается из save_event после каждой записи журнала.
+// КОНТЕКСТ: Measure Task. Возврат: 0 ok / EXT_BUSY отложено (звук) / -1 ошибка.
+extern int      log_ptr_save(const SNS_CFG *pSnsCfg);
+extern volatile uint32_t log_ptr_dbg_saves;   // счётчики для Expressions
+extern volatile uint32_t log_ptr_dbg_defers;
 //===========================================================================================================================
 extern uint8_t  SaveConfig;              	// 1 = сохранить конфигурацию (снимает Vector_RunFlashMemory)
 extern uint8_t  SaveConfigDefault;       	// 1 = записать ТЕКУЩИЙ конфиг в заводскую область SF_CONFIG_DEFAULT (v23)

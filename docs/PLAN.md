@@ -180,24 +180,32 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 * [x] Плеер: стриминг, громкость, повтор, watchdog, лог частоты SAI
 * [x] Убраны: мост UART4↔USART2, слой «состояний» плеера
 
-**Этап 1. Транспорт BLE** — роль: мы ПЕРИФЕРИЯ, мастер — Avis (решение автора, v26)
+**Этап 1. Транспорт BLE** — мы ХОЗЯИН своего модуля MK01, как Avis (v27, отмена решения v26)
 * [x] определить `USART_BLE` в `main.h` (v26: `huart3`, PC4/PC5 — PLAN п.13 закрыт)
 * [x] приём USART3 → `InputBuffer[TYPE_BLE]` — работает в `stm32u5xx_it.c` под `CONFIG_BLE`
-* [x] детект конца кадра: терминатор `0x0D` (как в Ble_mk01) + таймаут тишины
-      `VECTOR_BLE_FRAME_TMO_MS` в `Ble_Run()` — IDLE-линия не понадобилась (v26)
-* [x] парсер и **ответная часть протокола** — `Src/Ble_vector.c` + `Inc/Ble_vector.h` (v26):
-      строковая машина AT-команд, `ADVMSDDATAGET` → наши данные (hex + `OK`),
-      `ADVMSDDATASET=<hex>` → `Connected_device` (`SNS_Dev_Type`), `MODINFO?`,
-      неизвестная команда → `ERROR`; strong-символы замещают weak-заглушки
-      `Ble_Receive/Ble_Run` без правки `Vector_main.c`; неблокирующе
-* [x] счётчики: `ble_status` (строки/OK/ERROR/unknown/decode_fail/frame_tmo/datasets)
-      + `tasks_status.mod[TASK_MOD_BLE]`; потери в кольце по-прежнему молчаливые
-      (см. последний пункт)
+* [x] ~~детект конца кадра: терминатор `0x0D` + таймаут тишины~~ — v27: НЕ НУЖНО,
+      обмен синхронный (Ble_TransmitReceive ждёт ответ ≤35 мс + 5 мс, как в Avis)
+* [x] **порт Ble_mk01.c (мастерская сторона) — `Src/Ble_vector.c` + `Inc/Ble_vector.h`
+      (v27, замечание автора п.2: «полностью копируешь весь функционал, кроме
+      ADVMSDDATASET, которую заменяем обычным запросом ADVMSDDATAGET, и на
+      которую нам отвечают структурой. И так периодически опрашиваем»)**:
+      `Ble_Init(serial)` = AT→AT→`BLE_InitName` (ADVBLENAMESET: метка + %04d%04d)→
+      BLEADDR?→период 300→мощность 8→старт; `Ble_TransmitReceive` 4 попытки,
+      OK/ERROR, 3 серии ошибок → `Ble_flag_err`; `Ble_MsdDataGet()` — опрос
+      принятых данных (ответ hex → `str_ble_data_set_t` → `Ble_ApplyConnectedDevice`
+      → `Connected_device`); `Ble_MsdDataSleep/AdvStart/AdvPeriodms/AdvPower/
+      SystemOff/DeInit/SystemDFU` — один в один Avis; `Ble_Run()` — скелет
+      Avis (INIT 2 с / SET 60 с / SLEEP 30 с таймеры, `ST_COMMON_BIT_ERR_BLE`)
+* [x] кольцо `TYPE_BLE` читает ТОЛЬКО `Ble_TransmitReceive` (публичный
+      `Ble_Receive()` — пустой: в Avis Receiver Task BLE не обслуживает)
+* [x] счётчики: `ble_status` (tx/ok/error/noanswer/unknown/datasets/init/err)
+      + `tasks_status.mod[TASK_MOD_BLE]`; хост-тест 9 сценариев пройден
 * [ ] `CONFIG_BLE 1` — включать после проверки на живом модуле (формат ответа
       `ADVMSDDATAGET` предварительный: протокол будет дополняться, автор)
-* [ ] дополнения протокола (автор): поля ответа VECTOR, дискретность/коэффициент
-      концентрации мастера (сейчас в `Connected_device.Sensor[].ConcentrationVal`
-      кладётся raw u16), команды beyond DATAGET/DATASET/MODINFO
+* [ ] дополнения протокола (автор): точный wire-формат ответа `ADVMSDDATAGET`
+      (сейчас: эхо 2 байта + hex структуры + «OK» — как у BLEADDR? в Avis),
+      метка имени `BLE_Label[0]` = "VEC" — предварительная, дискретность/
+      коэффициент концентрации отправителя (в `ConcentrationVal` пока raw u16)
 * [ ] счётчик потерь при переполнении кольца (сейчас байты теряются молча) — ставить в ISR по возврату `add_to_buffer()`; место под счётчик: `tasks_status.mod[].cnt_errors`
 
 **Этап 2. Транспорт LoRa**
@@ -243,12 +251,18 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
       `Src/Menu_vector.c` (v26): декодер жестов по образцу `Button_1/2/3_Menu`
       из Avis_Menu_2 (`GEST_SHORT/LONG/DOUBLE/SHORT_LONG/FAKE`, LONG срабатывает
       до отпускания), пороги — `VECTOR_MENU_PRESS_SHORT_MS`/`_LONG_MS`/`_DOUBLE_MS`
-* [x] основа меню (v26): машина экранов `screen_t` (Start/HeadMain/Measurements/
+* [x] основа меню (v26; v27): машина экранов `screen_t` (Start/HeadMain/Measurements/
       Menu/TestSound — по имеющимся экспортам SquareLine), `Menu_GoTo`,
       авто-возврат на главный по `TIMER_RTC_MAIN_RESET`, `dirty_data` → `SaveConfig=1`;
-      отрисовка — weak `Menu_Draw()`/`Menu_EnterScreen()` (подставит LVGL-порт).
-      Состав экранов/пунктов/статусов ещё не определён (автор) — расширяется в
-      `Menu_vector.h` + `menu_navigate()`
+      отрисовка — weak `Menu_Draw()` (подставит LVGL-порт). v27 по замечаниям
+      автора: хук `Menu_EnterScreen()` УДАЛЁН (п.1 — как `LCD_Fill_Template`
+      в Avis, экран перерисовывается целиком каждый цикл, `lv_screen_load`
+      порт сделает внутри `Menu_Draw()` при смене screen); приоритет жестов
+      ПОСТОЯННЫЙ B1>B2>B3 (п.3); `Menu_Run()` переехал из Measure Task в поток
+      LVGL Task по `timer.flag_100ms` через `Vector_Run_Indication()` — аналог
+      `indication_task_function` из Avis_main.c (п.5). Состав экранов/пунктов/
+      статусов ещё не определён (автор) — расширяется в `Menu_vector.h` +
+      `menu_navigate()`
 * [ ] `button_sos` — зафиксировать, что это та же BUTTON1
 * [ ] `VECTOR_AUDIO_DEMO_KEYS 0` — демо-кнопки отдаются рабочему коду (сейчас демо
       плеера и `Menu_vector` читают одни и те же `button1/2/3`: при включённом демо
@@ -313,7 +327,8 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 | Шина flash и звук (v22) | «Окно тишины» вместо `TX_WAIT_FOREVER` (решение автора): `Vector_RunFlashMemory()` заходит во внешнюю flash только когда звук молчит (`audio_is_busy()==0` — доигран или пауза повтора 500 мс), иначе флаги живут и повторяются каждый проход (50 мс); звук всегда доигрывает до конца, форс-стирания сквозь звук нет. В `extstore`: чтения ждут шину ограниченно (`VECTOR_EXT_LOCK_READ_MS`=250 мс), записи — try-lock (`VECTOR_EXT_LOCK_WRITE_MS`=0) с кодом `EXT_BUSY (-2)`; стирания под звук не стартуют и изнутри `extstore` (защита гонки старта с кнопки), счётчики `ext_dbg_busy`/`ext_dbg_erase_defer`; `ext_mtx` с `TX_INHERIT` (Audio 10 не ждёт, пока Receiver 12 вытесняет Measure 13). Записи последовательные (опрос, без DMA). `save_param/save_event` → `int`, флаги гасятся только по успеху, жёсткая ошибка → `cnt_flash_errors`; `compare_param` пишет журнал отложенно через `SaveEvent` (поток приёма flash не трогает) |
 | Области конфига (v23) | Решение автора: у `cfg_save/cfg_load/save_param/read_param` явный адрес области `uint32_t addr` (НЕ `uint16_t` — 0x400000 в 16 бит не помещается); ДВЕ config-страницы (`sfmap.h`): `SF_CONFIG_BASE 0x400000` — рабочий конфиг (загрузка при старте, флаг `SaveConfig`), `SF_CONFIG_DEFAULT 0x401000` — заводской (флаг `SaveConfigDefault` пишет туда ТЕКУЩИЙ конфиг, `ReadConfigDefault` — СБРОС К ЗАВОДСКИМ: читает область через буфер `Cfg_structdef_read` и при валидном CRC копирует в рабочий `Sns_Cfg_struct`, пустая/битая область → рабочий конфиг не тронут; закрепление сброса во flash — отдельным `SaveConfig`); журнал сдвинут на `0x402000`. «Дефолтный» флаг — это ОБЛАСТЬ ПАМЯТИ заводских настроек, а не запись дефолтов при первом пуске (та остаётся в рабочей области). Флаг `ext_ready` удалён (решение автора): порядок `ext_init()` → `audio_init()` → потоки фиксирован, звук и обращения к конфигу возникают только по событиям; до `ext_init()` `tx_mutex_get` на нулевом мьютексе вернёт ошибку штатно. Журнал единый: единичные события (`SaveEvent`) + периодический архив (`TIMER_RTC_LOG`, `ArchiveRecording==1`) — оба через `save_event()`; из `SNS_CFG` убраны `TimeLimit/TimeLimitRST/Bump_interval/DataLastBumpTest/Type_lcd`, добавлены `SNS_Dev_Type/SNS_DevChan_Type` |
 | Журнал-кольцо и данные (v25) | Схема автора: журнал — слоты ФИКСИРОВАННОЙ длины 64 Б (`sizeof(EVENT_LOG)`, `LOG_REC_HDR` не нужен), кольцо на 0x7FFF (маска указателя), указатели `CurrentAddrFile`/`BegginAddrFile` — в `SNS_CFG.Config_archive` (растут монотонно, в памяти — по маске); переполнение: стирание сектора + сдвиг начала на ЧИСЛО ЗАПИСЕЙ В СЕКТОРЕ (64 — чётное/кратное, сектор делится нацело); чтение по номеру `log_read(ptr)` и поиск по времени `log_find_by_time(t_from,t_to)` → номера указателей (время = `Event_log.working_hours`, бинпоиск). Разделение данных: измеренное — в `sensors_status`, сохраняемое — в `SNS_CFG` (`Config_archive`/`Working_data`). Часы: `working_hours` при включении берётся ИЗ РЕЗЕРВНОГО РЕГИСТРА RTC BKP0 ПОСЛЕ чтения конфига; `Timer_Tick_1s()` зеркалит счётчик в BKP0 каждую секунду (DBP открыт в `Vector_Run_Board_Init()`); offset — смещение, не часы |
-| BLE-периферия и основа меню (v26) | Роли поменялись относительно `Ble_mk01` (docs/): там MCU был МАСТЕРОМ своего модуля и пушил данные (`AT+ADVMSDDATASET=`), у нас мастер — Avis, а VECTOR отвечает. `Ble_vector.c/h` (`CONFIG_BLE`): неблокирующая строковая машина по кольцу `TYPE_BLE` (терминатор `0x0D`, страховка — таймаут тишины `VECTOR_BLE_FRAME_TMO_MS` в `Ble_Run()`), таблица команд `ble_cmds[]` (дополняется одной строкой): `ADVMSDDATAGET` → `str_ble_vector_data_t` hex-строкой + `OK`, `ADVMSDDATASET=<hex>` → `str_ble_data_set_t` (формат Ble_mk01 байт-в-байт) → `Ble_ApplyConnectedDevice()` → `Connected_device` (`SNS_Dev_Type`: dev_id/версии/заряд + `Sensor[]`: `num_formula_gas`, `ConcentrationVal` = raw u16 LE, `StateErr`, `Setting`; общий `StateErr` = OR по каналам), `MODINFO?`, прочее → `ERROR`. Ответы: `[данные + 0x0D] [«OK»|«ERROR» + 0x0D]` — формат предварительный, протокол будет дополняться (автор). `Menu_vector.c/h` (`CONFIG_DISPLAY`): основа слоя меню — `screen_t` по экранам SquareLine, жесты кнопок 1/2/3 как в `Button_1/2/3_Menu` (Avis_Menu_2), роли B1=вход/назад, B2=вниз, B3=вверх, авто-возврат `TIMER_RTC_MAIN_RESET`, `dirty_data`→`SaveConfig`, weak-хуки `Menu_Draw()`/`Menu_EnterScreen()` под LVGL-порт. Вызовы: `Menu_Init()` в `Pre_Init`, `Menu_Run()` каждый проход `measure_task` (50 мс — LONG 1.5 с и окно DOUBLE 400 мс требуют частого опроса). Проверено хост-тестами: BLE 10/10 (пинг, DATAGET-содержимое, DATASET→Connected_device, битый hex, переполнение строки, таймаут кадра, выключенный модуль), меню — жесты/навигация/авто-возврат/dirty→SaveConfig |
+| BLE-периферия и основа меню (v26) — **ОТМЕНЕНО в v27, см. след. строку** | Роли поменялись относительно `Ble_mk01` (docs/): там MCU был МАСТЕРОМ своего модуля и пушил данные (`AT+ADVMSDDATASET=`), у нас мастер — Avis, а VECTOR отвечает. `Ble_vector.c/h` (`CONFIG_BLE`): неблокирующая строковая машина по кольцу `TYPE_BLE` (терминатор `0x0D`, страховка — таймаут тишины `VECTOR_BLE_FRAME_TMO_MS` в `Ble_Run()`), таблица команд `ble_cmds[]` (дополняется одной строкой): `ADVMSDDATAGET` → `str_ble_vector_data_t` hex-строкой + `OK`, `ADVMSDDATASET=<hex>` → `str_ble_data_set_t` (формат Ble_mk01 байт-в-байт) → `Ble_ApplyConnectedDevice()` → `Connected_device` (`SNS_Dev_Type`: dev_id/версии/заряд + `Sensor[]`: `num_formula_gas`, `ConcentrationVal` = raw u16 LE, `StateErr`, `Setting`; общий `StateErr` = OR по каналам), `MODINFO?`, прочее → `ERROR`. Ответы: `[данные + 0x0D] [«OK»|«ERROR» + 0x0D]` — формат предварительный, протокол будет дополняться (автор). `Menu_vector.c/h` (`CONFIG_DISPLAY`): основа слоя меню — `screen_t` по экранам SquareLine, жесты кнопок 1/2/3 как в `Button_1/2/3_Menu` (Avis_Menu_2), роли B1=вход/назад, B2=вниз, B3=вверх, авто-возврат `TIMER_RTC_MAIN_RESET`, `dirty_data`→`SaveConfig`, weak-хуки `Menu_Draw()`/`Menu_EnterScreen()` под LVGL-порт. Вызовы: `Menu_Init()` в `Pre_Init`, `Menu_Run()` каждый проход `measure_task` (50 мс — LONG 1.5 с и окно DOUBLE 400 мс требуют частого опроса). Проверено хост-тестами: BLE 10/10 (пинг, DATAGET-содержимое, DATASET→Connected_device, битый hex, переполнение строки, таймаут кадра, выключенный модуль), меню — жесты/навигация/авто-возврат/dirty→SaveConfig |
+| BLE и меню — исправления по замечаниям автора (v27) | **(1)** `Menu_EnterScreen` удалён: как `LCD_Fill_Template`/`DisplayIndication` в Avis, экран перерисовывается ЦЕЛИКОМ каждый цикл — слабое `Menu_Draw()`, `lv_screen_load` при смене screen сделает порт внутри него. **(2)** BLE — роли НЕ менялись: полный порт `Ble_mk01.c` (мастерская сторона своего модуля: AT/ADVBLENAMESET/BLEADDR?/ADVPERIODMS/ADVPOWER/ADVSTART/SLEEP/SYSTEMOFF/DFU/MODINFO?, 4 попытки, OK/ERROR, 3 серии → flag_err), вместо `ADVMSDDATASET` — периодический запрос `ADVMSDDATAGET` (`Ble_Run`, SET-таймер 60 с), ответ hex → `str_ble_data_set_t` (64 байта с паддингом внутреннего struct — ОДИН В ОДИН сборка Avis) → `Connected_device`; кольцо TYPE_BLE читает только `Ble_TransmitReceive`, публичный `Ble_Receive()` пустой. **(3)** Приоритет жестов постоянный: B1 > B2 > B3 (LONG > SHORT внутри кнопки), единая else-if цепочка на экран. **(4)** Указатели архива `CurrentAddrFile/BegginAddrFile` сохраняются после КАЖДОЙ записи журнала ОТДЕЛЬНОЙ страницей-кольцом `SF_LOG_PTR` 0x602000 (запись 16 Б {seq,cur,beg,crc16,pad}, 256 шт на стирание, свежая = max seq; аналог `SaveCurrentAddrFile/ReadCurrentAddrFile` Avis) — конфиг из-за двух слов не перезаписывается; стирание только в «окне тишины» (EXT_BUSY → указатели ждут в RAM). **(5)** Меню/индикация переехали из Measure Task в поток LVGL Task (`app_azure_rtos.c`) по образцу `indication_task_function` Avis: `timer.flag_100ms` → `Vector_Run_Indication()` (switch device_turn → `Menu_Run()`), затем `lv_timer_handler()` при `TFT_Initialized`, цикл 10 мс. Побочно: `Init_Build_Type()`/`current_build_type` (бренд из последней страницы внутренней flash, линкер уже резервирует 1016K) — закрыта висячая ссылка `TFT_indicator.c`; сброс к заводским теперь как в Avis закрепляется `SaveConfig=1` + `ST_COMMON_BIT_DATA_EXCHANGE`. Хост-тесты: menu (жесты/приоритет/indication), ble (9 сценариев: init/DATAGET/sleep/ошибки/таймауты/DeInit), logptr (кольцо указателей: append/wrap/busy/CRC) — все прошли |
 | Часы в RTC BKP0 и сервис (v26) | Автор заменил зеркало BKP0 из ISR на Avis-функции `RTC_ReadTime()/RTC_WriteTime()` (реализованы в `vector_macros.c` поверх HAL_RTCEx_BKGet/SetRegister(BKP0) — на U5 нет 32-битного счётчика RTC как на AT32): `Timer_Tick_1s()` только `+1`, сверку и запись раз в секунду делает `Vector_Options_System()` (Receiver Task, `flag_start_work_bat_sys`), чтение при старте — `Pre_Init` после конфига; DBP открыт в `Board_Init`. Там же: `SoftResetProgram` (+ `TIMER_RTC_SOFT_RESET_PROGRAM`) → `save_event_type_2(TYPE_FW_UPDATE)` (пока = `save_event` + bounded-ретрай; второй формат журнала — после переноса каналов) → стоп TIM3 → `NVIC_SystemReset()`; `Avis_Battery_System()` — weak-заглушка (перенести из Avis). Блок-схема проекта — `docs/ARCHITECTURE.md` + `architecture.svg` |
 | Часы и сброс к заводским (v24) | Уточнение автора: `working_hours_offset` — СМЕЩЕНИЕ, а не часы; ВРЕМЯ — `Config_common.working_hours` (`volatile`, +1 каждую секунду из `Timer_Tick_1s()`, RTC wakeup 1 Гц; сохраняется/грузится вместе с `SNS_CFG`). Сброс к заводским (`ReadConfigDefault`) ЧАСЫ СОХРАНЯЕТ: `working_hours` переносится при копировании структуры, остальное (включая offset) заменяется заводским; потеря ≤1 с из-за гонки с RTC-ISR допустима. Журнал: `Event_log.working_hours` = offset + working_hours |
 | Подсветка экрана (v21) | ШИМ: TIM8_CH1 (PC6, AF3), куб — PSC 159 / ARR 39 → 25 кГц. `backlight_set(%)` масштабирует скважность от фактического ARR (`__HAL_TIM_GET_AUTORELOAD`), `VECTOR_LCD_PWM_PERIOD` больше не используется |
@@ -632,18 +647,30 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     `START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, N)`). На железе: выставить
     `SoftResetProgram=1` + таймер → перезагрузка с записью TYPE_FW_UPDATE;
     часы переживают NVIC_Reset и питание при живой VBAT (BKP0).
-47. **v26 — новые модули, открытые вопросы**: `Ble_vector.c` (ответная сторона
-    BLE-протокола Avis) и `Menu_vector.c` (основа меню: экраны + жесты кнопок).
-    `CONFIG_BLE` пока 0 — включить после живого модуля. Открытые вопросы автору:
-    (а) точный wire-формат ответа `ADVMSDDATAGET` (сейчас: hex-строка
-    заголовка `str_ble_vector_data_t` + 0x0D, затем «OK» + 0x0D — как модуль
-    Avis отдавал данные в Ble_mk01); (б) `VECTOR_BLE_DEV_ID` = 3 — заглушка,
-    задать реальный ID устройства VECTOR; (в) `ConcentrationVal` пишется raw
-    (дискретность/коэффициент мастера неизвестны); (г) дополнения протокола —
-    таблица `ble_cmds[]` расширяется одной строкой; (д) состав экранов/пунктов
-    меню и статусов не определён — `screen_t`/`menu_navigate()` расширяются в
-    одном месте; (е) `VECTOR_AUDIO_DEMO_KEYS 1` конфликтует с меню: одни и те
-    же кнопки листают звуки (демо) и ходят по экранам — для продукта поставить 0.
-    На железе: `ble_status`/`menu_status` в Expressions; прогнать AT-строки
-    эхо-кейсом (пинг AT → OK), жесты кнопок → `cnt_gestures[0..2]`,
-    авто-возврат на MAIN через `VECTOR_MENU_AUTO_RETURN_S`.
+47. **v26 — ОТМЕНЕНО в v27** (ответная сторона BLE не понадобилась: мы, как и
+    Avis, хозяин своего модуля — см. п.48 и строку v27 в §6). Из открытого
+    остались: `CONFIG_BLE` = 0 до проверки на живом модуле; `ConcentrationVal`
+    пишется raw (дискретность отправителя неизвестна); состав экранов/пунктов
+    меню не определён; `VECTOR_AUDIO_DEMO_KEYS 1` конфликтует с меню — для
+    продукта поставить 0.
+48. **v27 — порт Ble_mk01 + страница указателей + поток индикации, открытые
+    вопросы**: правки по пяти замечаниям автора (строка v27 в §6).
+    Открытые вопросы автору:
+    (а) wire-формат ответа `ADVMSDDATAGET` — сейчас принято как у `BLEADDR?`:
+    2 байта эха + hex-строка структуры (64 байта = 128 hex) + «OK»; если модуль
+    отвечает иначе — поправить `Ble_ReadAnswer()` (одно место);
+    (б) метка имени модуля `BLE_Label[0]` = "VEC" — предварительная (в Avis:
+    "MIRAX"/"22.");
+    (в) полярность `BLE_RESET` (PC12) в `Ble_SystemOff`/`Ble_DeInit` — проверить
+    на железе (скопирована схема Avis: SET_OFF → 50 мс → SET_ON);
+    (г) указатели архива теперь живут в `SF_LOG_PTR` (0x602000) — в конфиге
+    `Config_archive.CurrentAddrFile/BegginAddrFile` остаются рабочей копией;
+    при чтении конфига на старте страница указателей приоритетнее
+    (`log_ptr_load` после `read_param`, как `ReadCurrentAddrFile` в Avis);
+    (д) `Init_Build_Type()` читает полуслово бренда из `FLASH_ADDRESS_BUILD_TYPE`
+    0x080FE000 (последняя страница, линкер LENGTH=1016K) — запись бренда при
+    производстве пока не реализована (пусто = MIRAX);
+    (е) стек потока LVGL Task 4096 — при подключении LVGL поднять до 8–16 КБ.
+    На железе: `ble_status`/`menu_status`/`log_ptr_dbg_saves/defers` в
+    Expressions; эхо-кейс AT → OK; DATAGET-опрос раз в `TIME_RTC_BLE_DATA_SET`
+    (60 с); жесты → `cnt_gestures[0..2]`, приоритет B1 в SCREEN_MENU.

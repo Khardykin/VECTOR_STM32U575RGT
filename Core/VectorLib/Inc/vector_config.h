@@ -320,28 +320,21 @@
 #define VECTOR_TASKS_MEASURE_DELAY_MS    50u
 #endif
 
-/* --- BLE: ответная сторона протокола Avis (Ble_vector.c, v26) ---------------
- * Мы - ПЕРИФЕРИЙНОЕ устройство: мастер (Avis) присылает по радио строки
- * "AT+CMD[=payload]" (терминатор 0x0D, payload данных - hex "%02x" побайтно,
- * как в Ble_mk01), мы отвечаем [строка данных + 0x0D] ["OK"|"ERROR" + 0x0D].
- * Протокол будет дополняться (автор) - таблица команд в начале Ble_vector.c.
- *   VECTOR_BLE_FRAME_TMO_MS - тишина после последнего байта = конец кадра
- *                             (страховка, если терминатор потерялся);
- *   VECTOR_BLE_MAX_LINE     - максимум символов строки (DATASET: "AT+
- *                             ADVMSDDATASET=" 17 + 2*32 + запас);
- *   VECTOR_BLE_DEV_ID       - наш ID устройства в протоколе (ТОЧНОЕ ЗНАЧЕНИЕ
- *                             ЗАДАЁТ АВТОР; в Avis: 1 = Device2_1, 2 = Pro). */
-#ifndef VECTOR_BLE_FRAME_TMO_MS
-#define VECTOR_BLE_FRAME_TMO_MS     50u
-#endif
-#ifndef VECTOR_BLE_MAX_LINE
-#define VECTOR_BLE_MAX_LINE         300u
-#endif
-#ifndef VECTOR_BLE_DEV_ID
-#define VECTOR_BLE_DEV_ID           3u
-#endif
+/* --- BLE: мастерская сторона модуля MK01 (Ble_vector.c, v27) ---------------
+ * v27 (замечание автора п.2): роли НЕ менялись - как и Avis, мы ХОЗЯИН своего
+ * BLE-модуля (порт Ble_mk01.c: AT/ADVBLENAMESET/BLEADDR?/ADVPERIODMS/
+ * ADVPOWER/ADVSTART/SLEEP/SYSTEMOFF/DFU/MODINFO?). Отличие одно: вместо пуша
+ * своих данных (ADVMSDDATASET) - периодический ЗАПРОС принятых данных
+ * ADVMSDDATAGET (Ble_Run по TIMER_RTC_BLE_DATA_SET = 60 с); ответ модуля -
+ * hex-структура str_ble_data_set_t (данные отправителя, прибора Avis) ->
+ * Connected_device. Тайминги обмена (BLE_WAIT_UART_TIMEOUT/DELAY, повторы) -
+ * в Ble_vector.h, все как в Avis.
+ * v26-переключатели VECTOR_BLE_FRAME_TMO_MS / VECTOR_BLE_MAX_LINE /
+ * VECTOR_BLE_DEV_ID УДАЛЕНЫ: неблокирующая строковая машина больше не нужна
+ * (обмен синхронный, команды фиксированные), а dev_id - поле принимаемой
+ * структуры, а не наша настройка.                                            */
 
-/* --- Основа меню (Menu_vector.c, v26) ---------------------------------------
+/* --- Основа меню (Menu_vector.c, v26; v27) ----------------------------------
  * Жесты кнопок декодируются из button_count (счёт в TIM3 1 кГц = мс,
  * ставит EXTI) по образцу Button_1/2/3_Menu из Avis_Menu_2.c:
  *   SHORT  - нажатие дольше антидребезга, отпущено до LONG;
@@ -351,8 +344,13 @@
  *   FAKE   - слишком короткое (дребезг).
  * Авто-возврат на главный экран: любой жест перезапускает TIMER_RTC_MAIN_RESET
  * (секундный таймер прибора), по его expiry Menu_Run() возвращает SCREEN_MAIN.
+ * v27: приоритет жестов ПОСТОЯННЫЙ - Button1 > Button2 > Button3 (автор, п.3);
+ * Menu_Run() вызывается из потока LVGL Task по timer.flag_100ms через
+ * Vector_Run_Indication() (аналог indication_task_function из Avis_main.c,
+ * автор п.5), НЕ из Measure Task; хука Menu_EnterScreen нет (п.1) - экран
+ * перерисовывается целиком каждый цикл, weak Menu_Draw() заменит LVGL-порт.
  * Экраны/статусы пока НЕ определены (автор) - enum screen_t расширяется в
- * Menu_vector.h, отрисовка - weak Menu_Draw() (заменит LVGL-порт).          */
+ * Menu_vector.h.                                                             */
 #ifndef VECTOR_MENU_PRESS_SHORT_MS
 #define VECTOR_MENU_PRESS_SHORT_MS  50u
 #endif

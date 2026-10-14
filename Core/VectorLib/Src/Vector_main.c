@@ -447,12 +447,10 @@ static void measure_task_function(ULONG thread_input)
     }
     Vector_RunFlashMemory();
 
-#if CONFIG_DISPLAY
-    /* Основа меню (v26): жесты кнопок и навигация - каждый проход (50 мс),
-       НЕ по flag_1s: LONG=1.5 с и DOUBLE-окно 400 мс требуют частого опроса.
-       Отрисовку подставит LVGL-порт (weak Menu_Draw).                      */
-    Menu_Run();
-#endif
+    /* v27 (замечание автора п.5): меню/индикация здесь НЕ живут - они в
+       потоке LVGL Task по образцу indication_task_function из Avis_main.c
+       (timer.flag_100ms -> Vector_Run_Indication(), затем lv_timer_handler).
+       См. app_azure_rtos.c и Menu_vector.c.                               */
 
     VTICK_SLEEP_MS(VECTOR_TASKS_MEASURE_DELAY_MS);
   }
@@ -469,6 +467,10 @@ void Vector_Run_Pre_Init(void)
 {
   LOG_I(VLOG_M_TASKS, "pre init");
 
+  /* Бренд прибора (MIRAX/BACS) из последней страницы внутренней flash -
+     первой строкой, как Init_Build_Type() в Avis_Run_Pre_Init (v27).      */
+  Init_Build_Type();
+
   //----------------------------------------------------------------------------
   // Для уменьшения потребления, пин PWR_WAKEUP_PIN4_LOW_1 на всякий случай, так как в слип наврятли мы войдем
 	HAL_PWR_EnableWakeUpPin(PWR_WAKEUP_PIN4_LOW_1);
@@ -484,17 +486,29 @@ void Vector_Run_Pre_Init(void)
      read_param также восстанавливает working_hours_offset (СМЕЩЕНИЕ; часы -
      это working_hours, см. shared_types.h) и AppKey (CONFIG_LORA).
      КОНТЕКСТ: поток (мьютекс extstore уже создан в tx_application_define). */
-  if (read_param((uint8_t *)&Cfg_structdef_read, (uint16_t)sizeof(SNS_CFG), SF_CONFIG_BASE) != 0u)
+  uint8_t cfg_ok = (uint8_t)((read_param((uint8_t *)&Sns_Cfg_struct,
+                        (uint16_t)sizeof(SNS_CFG), SF_CONFIG_BASE) != 0u) ? 1u : 0u);
+  if (cfg_ok != 0u)
   {
-	  Sns_Cfg_struct = Cfg_structdef_read;
-		// Чтение текущего адреса архива
-		ReadCurrentAddrFile();
+    LOG_I(VLOG_M_SYS, "config: loaded (wh_off=%u s, serial=%04x%04x)",
+          (uint32_t)Sns_Cfg_struct.Working_data.working_hours_offset,
+          (uint32_t)Sns_Cfg_struct.Config_common.SerialHi,
+          (uint32_t)Sns_Cfg_struct.Config_common.SerialLo);
   }
   else
   {
     LOG_W(VLOG_M_SYS, "config: load/CRC fail -> DefaultConfig + save");
     DefaultConfig(&Sns_Cfg_struct);
   }
+
+  /* v27 (замечание автора п.4): указатели архива хранятся ОТДЕЛЬНО от конфига
+     в странице-кольце SF_LOG_PTR и сохраняются после каждой записи журнала.
+     При старте страница сканируется всегда (позиция следующей записи), а в
+     конфиг cur/beg переносятся только если конфиг прочитался - аналог
+     ReadCurrentAddrFile() в Avis_Run_Pre_Init (в else-ветке Avis он
+     закомментирован).                                                      */
+  (void)log_ptr_load(&Sns_Cfg_struct, cfg_ok);
+
   Sns_Cfg_struct.Working_data.working_hours = RTC_ReadTime();
 
   /* Событие "включение" в журнал - отложенно (пишет Vector_RunFlashMemory). */
@@ -755,6 +769,9 @@ void Vector_RunFlashMemory(void)
       Sns_Cfg_struct.Working_data.working_hours     = wh;
       Sns_Cfg_struct.Config_archive.CurrentAddrFile = cur;
       Sns_Cfg_struct.Config_archive.BegginAddrFile  = beg;
+      /* Как в Avis: закрепить сброс в рабочей области + режим обмена данными */
+      SET_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);
+      SaveConfig = 1u;
       LOG_I(VLOG_M_SYS, "config: factory defaults restored (wh=%u s, log %u..%u kept)",
             wh, beg, cur);
     }
@@ -891,7 +908,11 @@ __attribute__((weak)) void command_message(void)
 #endif
 }
 
-/* BLE-модуль (USART3): приём из кольца и парсинг кадров. */
+/* BLE-модуль (USART3): weak-заглушка приёма. ВНИМАНИЕ (v27): с подключённым
+   Ble_vector.c (CONFIG_BLE=1) замещается ПУСТЫМ strong-символом - обмен с
+   модулем синхронный внутри Ble_TransmitReceive (Measure Task), он и есть
+   единственный читатель кольца TYPE_BLE (как в Avis: Receiver Task BLE не
+   обслуживает). Тело ниже - только на случай CONFIG_BLE=1 БЕЗ Ble_vector.c. */
 __attribute__((weak)) void Ble_Receive(void)
 {
 #if CONFIG_BLE

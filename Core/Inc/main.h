@@ -107,7 +107,7 @@ void Uart_SetBaudrate(UART_HandleTypeDef *huart, uint32_t baud);
 #define USART_COM			(huart4)
 #define USART_DEBUG			(huart4)
 #define USART_BLE			(huart3)	// BLE-модуль (PC4/PC5): v26 - определён (PLAN.md п.13);
-									// ответная сторона протокола - Ble_vector.c (CONFIG_BLE)
+									// мастерская сторона (порт Ble_mk01) - Ble_vector.c (CONFIG_BLE, v27)
 
 
 #define BUTTON_1_EXTI_LINE 	LL_EXTI_LINE_1

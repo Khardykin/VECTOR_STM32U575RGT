@@ -15,15 +15,25 @@
   *                         ставит EXTI) - логика один в один Avis_Menu_2.c;
   *            menu_status - ЕДИНАЯ volatile-структура состояния (стиль
   *                         проекта: в Expressions одна строка);
-  *            Menu_Draw()/Menu_EnterScreen() - WEAK-хуки: отрисовку подставит
-  *                         LVGL-порт (этап 2c), каркас от графики не зависит.
+  *            Menu_Draw()          - WEAK-хук: отрисовку подставит LVGL-порт
+  *                         (этап 2c), каркас от графики не зависит.
+  *                         Хука «входа на экран» НЕТ (v27, замечание автора
+  *                         п.1): как в Avis DisplayIndication/LCD_Fill_Template,
+  *                         экран перерисовывается ЦЕЛИКОМ каждый цикл, а
+  *                         lv_screen_load порт делает внутри Menu_Draw() при
+  *                         смене menu_status.screen.
   *
   *          Роли кнопок (как в Avis): Button1 (PB1) - вход/подтверждение/назад,
   *          Button2 (PB2) - вниз/инкремент, Button3 (PB3) - вверх/декремент.
   *          Любой жест перезапускает TIMER_RTC_MAIN_RESET - авто-возврат на
   *          SCREEN_MAIN; по возврату dirty_data -> SaveConfig = 1 (Avis:
-  *          Button_Menu()). Вызовы: Menu_Init() - из Vector_Run_Pre_Init(),
-  *          Menu_Run() - из measure_task_function КАЖДЫЙ проход (50 мс).
+  *          Button_Menu()). Вызовы (v27, замечание автора п.5 - по образцу
+  *          indication_task_function из Avis_main.c): Menu_Init() - из
+  *          Vector_Run_Pre_Init(); Vector_Run_Indication() - из потока LVGL
+  *          Task (app_azure_rtos.c) по timer.flag_100ms, внутри по device_turn
+  *          вызывает Menu_Run(). В Measure Task меню больше не живёт.
+  *          Приоритет жестов ПОСТОЯННЫЙ (v27, замечание автора п.3):
+  *          Button1 > Button2 > Button3, внутри кнопки LONG > SHORT.
   ******************************************************************************
   */
 #ifndef MENU_VECTOR_H
@@ -92,7 +102,8 @@ void Menu_Init(void);
    проход (50 мс). НЕ блокируется.                                           */
 void Menu_Run(void);
 
-/* Перейти на экран (хук Menu_EnterScreen + счётчики). КОНТЕКСТ: поток.      */
+/* Перейти на экран (счётчики + лог; отрисовка - следующий цикл Menu_Draw).
+   КОНТЕКСТ: поток LVGL Task (indication).                                   */
 void Menu_GoTo(uint8_t screen);
 
 /* Забрать готовый жест кнопки (1..3): возвращает gesture_t и гасит его.
@@ -101,12 +112,14 @@ void Menu_GoTo(uint8_t screen);
 uint8_t Menu_Gesture(uint8_t button);
 
 /* WEAK-хуки (заменит LVGL-порт / слой индикации):
-   Menu_Draw()        - аналог DisplayIndication: обновить виджеты текущего
-                        экрана (иконки статусов, значения из sensors_status /
-                        Sns_Cfg_struct / Connected_device);
-   Menu_EnterScreen() - подготовка экрана при входе (load screen, тексты).   */
+   Menu_Draw()        - аналог DisplayIndication/LCD_Fill_Template: обновить
+                        виджеты текущего экрана ЦЕЛИКОМ каждый цикл (при смене
+                        screen порт делает lv_screen_load внутри Menu_Draw).
+   Vector_Run_Indication() - аналог Avis_Run_Indication: switch(device_turn),
+                        ON/ON_1 -> Menu_Run(); вызывается из LVGL Task по
+                        timer.flag_100ms (100 мс).                          */
 void Menu_Draw(void);
-void Menu_EnterScreen(uint8_t screen);
+void Vector_Run_Indication(void);
 
 #endif /* CONFIG_DISPLAY */
 

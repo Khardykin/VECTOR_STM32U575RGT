@@ -1,7 +1,7 @@
 /**
   ******************************************************************************
   * @file    Menu_vector.c
-  * @brief   ОСНОВА слоя меню (v26): машина экранов + декодер жестов кнопок
+  * @brief   ОСНОВА слоя меню (v26, v27): машина экранов + декодер жестов кнопок
   *
   *          Логика кнопок перенесена из Button_1/2/3_Menu (docs/Avis_Menu_2.c)
   *          один-в-один по смыслу, но БЕЗ блокирующих ожиданий и без графики:
@@ -14,12 +14,23 @@
   *               Button2 вниз/инкремент, Button3 вверх/декремент; состав
   *               экранов и пунктов определит автор - пока каркас на имеющихся
   *               экранах SquareLine (см. menu_screens[]);
-  *            4) Menu_Draw() - WEAK аналог DisplayIndication: LVGL-порт
-  *               подставит обновление виджетов; сам каркас графики не требует.
+  *            4) Menu_Draw() - WEAK аналог DisplayIndication/LCD_Fill_Template:
+  *               LVGL-порт подставит обновление виджетов; сам каркас графики
+  *               не требует. Хука «входа на экран» НЕТ (v27, замечание автора
+  *               п.1): в Avis LCD_Fill_Template перерисовывает шаблон КАЖДЫЙ
+  *               цикл, поэтому screen load/тексты порт сделает внутри
+  *               Menu_Draw() при смене menu_status.screen.
   *
-  *          КОНТЕКСТ: Menu_Init() - Measure Task (Vector_Run_Pre_Init, один
-  *          раз); Menu_Run() - Measure Task КАЖДЫЙ проход (50 мс). Из ISR не
-  *          вызывать (тут таймеры прибора и SaveConfig).
+  *          КОНТЕКСТ (v27, замечание автора п.5 - по образцу
+  *          indication_task_function из Avis_main.c): Menu_Init() - Measure
+  *          Task (Vector_Run_Pre_Init, один раз); Vector_Run_Indication() -
+  *          поток LVGL Task (app_azure_rtos.c) по timer.flag_100ms (100 мс),
+  *          внутри по device_turn -> Menu_Run(). В Measure Task меню НЕ живёт.
+  *          Из ISR не вызывать (тут таймеры прибора и SaveConfig).
+  *
+  *          v27 (замечание автора п.3): приоритет жестов ПОСТОЯННЫЙ -
+  *          Button1 > Button2 > Button3 (внутри кнопки LONG > SHORT >
+  *          DOUBLE), единая цепочка else-if на экран начинается с g1.
   ******************************************************************************
   */
 #include "Vector_main.h"     /* агрегатор: таймеры прибора, SaveConfig, лог */
@@ -76,19 +87,14 @@ __attribute__((weak)) void Menu_Draw(void)
      Рисовать из LVGL Task или отсюда - решит порт (владелец дисплея один).  */
 }
 
-__attribute__((weak)) void Menu_EnterScreen(uint8_t screen)
-{
-  /* TODO(LVGL-порт): lv_screen_load(ui_Screen...) по screen_t + заполнение
-     текстов (lv_i18n). Здесь - только лог перехода.                        */
-  (void)screen;
-}
-
 /* ============================================================================
  *                          переходы между экранами
  * ============================================================================ */
 
-/* Перейти на экран. Хук Menu_EnterScreen() зовётся ПОСЛЕ обновления
-   menu_status, чтобы порт видел актуальный screen. КОНТЕКСТ: поток.        */
+/* Перейти на экран: только состояние/счётчики/лог. Отрисовку (включая
+   lv_screen_load при смене screen) делает Menu_Draw() в следующем цикле -
+   как в Avis, где DisplayIndication/LCD_Fill_Template перерисовывает всё
+   каждый проход (v27, замечание автора п.1). КОНТЕКСТ: поток LVGL Task.    */
 void Menu_GoTo(uint8_t screen)
 {
   if (screen >= (uint8_t)SCREEN_COUNT)
@@ -108,7 +114,6 @@ void Menu_GoTo(uint8_t screen)
   LOG_D(VLOG_M_SYS, "menu: screen %u -> %u",
         (uint32_t)menu_status.screen_prev, (uint32_t)screen);
 
-  Menu_EnterScreen(screen);
   Menu_Draw();
 }
 
@@ -207,6 +212,10 @@ static void menu_navigate(void)
   uint8_t g2 = Menu_Gesture(2u);
   uint8_t g3 = Menu_Gesture(3u);
 
+  /* ПРИОРИТЕТ ЖЕСТОВ ПОСТОЯННЫЙ (v27, замечание автора п.3): на каждом
+     экране цепочка else-if ВСЕГДА начинается с Button1 (вход/назад - важнее
+     скролла), затем Button2 (вниз), затем Button3 (вверх); внутри кнопки
+     LONG важнее SHORT. Так g1 не может «стать последним», как в v26.       */
   switch (menu_status.screen)
   {
     /* Заставка: любое короткое нажатие - на главный. */
@@ -223,16 +232,16 @@ static void menu_navigate(void)
        обработчика выключения ещё нет (PLAN этап 6, TYPE_TURN_OFF) - оставлен
        хук-заглушка, чтобы не потерять жест.                                 */
     case SCREEN_MAIN:
-      if (g1 == (uint8_t)GEST_SHORT)
-      {
-        Menu_GoTo((uint8_t)SCREEN_MEASUREMENTS);
-      }
-      else if (g1 == (uint8_t)GEST_LONG)
+      if (g1 == (uint8_t)GEST_LONG)
       {
         /* TODO(автор): отключение прибора (device_turn = DEVICE_TURNED_OFF,
            событие TYPE_TURN_OFF в журнал, счётчик обратного отсчёта на
            экране). Здесь намеренно ничего не делаем.                        */
         LOG_D(VLOG_M_SYS, "menu: MAIN long press (turn-off not implemented)");
+      }
+      else if (g1 == (uint8_t)GEST_SHORT)
+      {
+        Menu_GoTo((uint8_t)SCREEN_MEASUREMENTS);
       }
       else if (g2 == (uint8_t)GEST_SHORT)
       {
@@ -244,8 +253,8 @@ static void menu_navigate(void)
       }
       break;
 
-    /* Измерения: Button2/Button3 - листать каналы/страницы (когда автор
-       определит состав), Button1 - назад на главный.                        */
+    /* Измерения: Button1 - назад на главный (приоритет), Button2/Button3 -
+       листать каналы/страницы (когда автор определит состав).               */
     case SCREEN_MEASUREMENTS:
       if (g1 == (uint8_t)GEST_SHORT)
       {
@@ -261,11 +270,23 @@ static void menu_navigate(void)
       }
       break;
 
-    /* Меню: Button2 вниз, Button3 вверх (Avis: scroll_down/scroll_up),
-       Button1 SHORT - войти в пункт, Button1 LONG - назад на главный.
-       Пункты и куда они ведут - таблица автора (пока цикл по экранам).      */
+    /* Меню: Button1 SHORT - войти в пункт, Button1 LONG - назад на главный
+       (ВСЕГДА раньше скролла - v27); Button2 вниз, Button3 вверх (Avis:
+       scroll_down/scroll_up). Пункты и куда они ведут - таблица автора
+       (пока цикл по экранам).                                               */
     case SCREEN_MENU:
-      if (g2 == (uint8_t)GEST_SHORT)
+      if (g1 == (uint8_t)GEST_LONG)
+      {
+        Menu_GoTo((uint8_t)SCREEN_MAIN);
+      }
+      else if (g1 == (uint8_t)GEST_SHORT)
+      {
+        /* TODO(автор): switch (menu_status.state_menu) - переход в конкретный
+           подраздел (инфо/настройки/сервис/калибровка/тест звука). Пока -
+           демо-переход в тест звука как единственный реализованный подраздел. */
+        Menu_GoTo((uint8_t)SCREEN_TEST_SOUND);
+      }
+      else if (g2 == (uint8_t)GEST_SHORT)
       {
         menu_status.state_menu = scroll_down(menu_status.state_menu, MENU_ITEMS_COUNT);
       }
@@ -273,21 +294,10 @@ static void menu_navigate(void)
       {
         menu_status.state_menu = scroll_up(menu_status.state_menu, MENU_ITEMS_COUNT);
       }
-      else if (g1 == (uint8_t)GEST_SHORT)
-      {
-        /* TODO(автор): switch (menu_status.state_menu) - переход в конкретный
-           подраздел (инфо/настройки/сервис/калибровка/тест звука). Пока -
-          демо-переход в тест звука как единственный реализованный подраздел. */
-        Menu_GoTo((uint8_t)SCREEN_TEST_SOUND);
-      }
-      else if (g1 == (uint8_t)GEST_LONG)
-      {
-        Menu_GoTo((uint8_t)SCREEN_MAIN);
-      }
       break;
 
-    /* Тест звука: Button1 SHORT - назад; LONG - тоже назад (отмена).
-       Сам проигрыватель дёргает потребитель хука Menu_EnterScreen/порт
+    /* Тест звука: Button1 SHORT/LONG - назад (приоритет); Button2/Button3 -
+       выбор звука (скролл). Проигрыватель запускает порт/слой индикации
        (audio_play_now(SND_*)), каркас звук не трогает.                      */
     case SCREEN_TEST_SOUND:
       if ((g1 == (uint8_t)GEST_SHORT) || (g1 == (uint8_t)GEST_LONG))
@@ -338,13 +348,13 @@ void Menu_Init(void)
   /* Авто-возврат на главный экран: как в Avis (TIMER_RTC_MAIN_RESET). */
   START_TIMER_RTC(TIMER_RTC_MAIN_RESET, VECTOR_MENU_AUTO_RETURN_S);
 
-  Menu_EnterScreen((uint8_t)SCREEN_START);
   LOG_I(VLOG_M_SYS, "menu: init (screen START, auto-return %u s)",
         (uint32_t)VECTOR_MENU_AUTO_RETURN_S);
 }
 
-/* Цикл меню (каждый проход Measure Task, 50 мс): жесты -> навигация ->
-   авто-возврат -> dirty_data -> отрисовка. НЕ блокируется.                 */
+/* Цикл меню (v27: вызывается из Vector_Run_Indication(), поток LVGL Task,
+   по timer.flag_100ms - 100 мс): жесты -> навигация -> авто-возврат ->
+   dirty_data -> отрисовка. НЕ блокируется.                                 */
 void Menu_Run(void)
 {
   decode_button(0u, &button1);
@@ -374,6 +384,30 @@ void Menu_Run(void)
   }
 
   Menu_Draw();
+}
+
+/* Аналог Avis_Run_Indication (Avis_main.c) - вызывается из потока LVGL Task
+   (app_azure_rtos.c) по timer.flag_100ms. КОНТЕКСТ: поток LVGL Task.
+   device_turn: ON/ON_1 -> Menu_Run() (кнопки/меню/отрисовка); OFF -> пока
+   ничего (в Avis здесь DisplayChargeIndicationTurnOff + Button_Run_Start -
+   экран заряда при выключенном приборе, появится с продуктовой кнопкой
+   включения, PLAN этап 6). PRE_INIT-фаза сюда не попадает: поток ждёт
+   cnt_pre_init в app_azure_rtos.c.                                          */
+void Vector_Run_Indication(void)
+{
+  switch (device_turn)
+  {
+    case DEVICE_TURNED_ON:
+    case DEVICE_TURNED_ON_1:      /* включён без звука/вибро (прогрев) */
+      Menu_Run();
+      break;
+    case DEVICE_TURNED_OFF:
+      /* TODO(автор): индикация заряда при выключенном приборе (Avis:
+         DisplayChargeIndicationTurnOff) и обработка кнопки включения.   */
+      break;
+    default:
+      break;
+  }
 }
 
 #endif /* CONFIG_DISPLAY */

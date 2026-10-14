@@ -2,7 +2,13 @@
  * Config_save_read.c - конфигурация прибора и КОЛЬЦЕВОЙ журнал событий (v21;
  * v25 - журнал перенесён сюда из extstore: слоты фиксированной длины 64 байта,
  * кольцо 0x8000 слотов по маске 0x7FFF, указатели в SNS_CFG.Config_archive,
- * чтение по номеру (log_read) и поиск по времени (log_find_by_time)).
+ * чтение по номеру (log_read) и поиск по времени (log_find_by_time);
+ * v27 - СТРАНИЦА-КОЛЬЦО указателей архива SF_LOG_PTR (замечание автора п.4:
+ * cur/beg сохраняются после КАЖДОЙ записи журнала отдельно, чтобы не
+ * перезаписывать всю конфигурацию - аналог SaveCurrentAddrFile/
+ * ReadCurrentAddrFile из Avis) + Init_Build_Type()/current_build_type
+ * (бренд прибора, последняя страница внутренней flash - как в Avis;
+ * закрывает висячую ссылку TFT_indicator.c и нужна имени BLE-модуля)).
  */
 #include "Vector_main.h"          /* HAL, SNS_CFG, макросы статусов/таймеров, лог */
 #include "extstore.h"             /* cfg_save/cfg_load + ext_read/ext_write/ext_erase_sector */
@@ -35,6 +41,171 @@ uint8_t	ReadConfigDefault = 0;		// Чтение заводской конфиг�
 uint8_t	SaveEvent = 0;			// Отложенная запись события в журнал
 
 TYPE_LOG TypeLogEvent = TYPE_TURN_ON;	// Тип отложенного события
+
+//===========================================================================================================================
+// Бренд прибора (v27): current_build_type читается Init_Build_Type() из
+// последней страницы внутренней flash (FLASH_ADDRESS_BUILD_TYPE, зарезервирована
+// линкером LENGTH=1016K). Объявлена здесь по комментарию config_device.h -
+// до v27 переменная была висячей (TFT_indicator.c её использует).
+uint16_t current_build_type = MIRAX;	// MIRAX=0 / BACS=1
+
+//===========================================================================================================================
+// v27 (замечание автора п.4): СТРАНИЦА-КОЛЬЦО указателей архива.
+// После каждой записи журнала CurrentAddrFile/BegginAddrFile сохраняются в
+// отдельную страницу SF_LOG_PTR (не вместе со всем конфигом!). Запись 16 байт
+// {seq, cur, beg, crc16, pad}, 4096/16 = 256 записей на цикл стирания,
+// свежая = максимальный seq с валидным CRC (та же схема, что в конфиг-
+// страницах). Стирание - только в "окне тишины" (ext_erase_sector сам
+// откладывает при звуке -> EXT_BUSY, указатели ждут в RAM следующей записи).
+typedef struct __attribute__((packed)) {
+	uint32_t seq;		// порядковый номер записи (растёт, в т.ч. после стирания)
+	uint32_t cur;		// CurrentAddrFile
+	uint32_t beg;		// BegginAddrFile
+	uint16_t crc;		// CRC16 (полином 0xA001, как CALC_CRC_CONFIG) по seq+cur+beg
+	uint16_t pad;		// 0xFFFF (NOR: записанные биты остаются 1)
+} log_ptr_rec_t;
+typedef char log_ptr_rec_assert[(sizeof(log_ptr_rec_t) == 16u) ? 1 : -1];
+
+#define LOG_PTR_SLOTS	(SF_LOG_PTR_SIZE / sizeof(log_ptr_rec_t))	// 256
+
+static uint16_t log_ptr_slot = 0;	// слот для следующей записи
+static uint32_t log_ptr_seq  = 0;	// счётчик порядка (последний восстановленный)
+volatile uint32_t log_ptr_dbg_saves  = 0;	// сколько раз указатели сохранены
+volatile uint32_t log_ptr_dbg_defers = 0;	// сколько раз отложено (EXT_BUSY)
+
+// CRC16 записи указателей (полином 0xA001, как у конфига), считается по
+// первым 12 байтам (seq/cur/beg). КОНТЕКСТ: поток. Возврат: CRC.
+static uint16_t crc16_ptr(const log_ptr_rec_t *r)
+{
+	uint16_t crc = 0xFFFF;
+	const uint8_t *p = (const uint8_t *)r;
+	for (uint16_t i = 0; i < 12u; i++)
+	{
+		crc ^= (uint16_t)p[i];
+		for (uint8_t k = 0; k < 8u; k++)
+		{
+			crc = (crc & 1u) ? (uint16_t)((crc >> 1) ^ 0xA001u)
+							 : (uint16_t)(crc >> 1);
+		}
+	}
+	return crc;
+}
+
+// Чтение бренда прибора из последней страницы внутренней flash (аналог
+// Init_Build_Type в Avis). Пусто (0xFFFF) или мусор -> MIRAX.
+// КОНТЕКСТ: Measure Task (Vector_Run_Pre_Init, первым делом). Возврат: нет.
+void Init_Build_Type(void)
+{
+	uint16_t v = *(volatile uint16_t *)FLASH_ADDRESS_BUILD_TYPE;
+	current_build_type = ((v == (uint16_t)MIRAX) || (v == (uint16_t)BACS))
+						 ? v : (uint16_t)MIRAX;
+}
+
+// Сканирование страницы указателей (аналог ReadCurrentAddrFile из Avis):
+// ищет свежую запись (max seq с валидным CRC), определяет позицию следующей
+// записи. apply=1 - перенести cur/beg в pSnsCfg->Config_archive (вызывается
+// после успешного чтения конфига; при DefaultConfig - только скан позиции,
+// как в Avis, где ReadCurrentAddrFile в else-ветке закомментирован).
+// КОНТЕКСТ: Measure Task (Vector_Run_Pre_Init, один раз).
+// Возврат: 1 = валидная запись найдена, 0 = страница пуста/побита, -1 = шина.
+int log_ptr_load(SNS_CFG *pSnsCfg, uint8_t apply)
+{
+#if CONFIG_SAVE_PARAM_LOG
+	log_ptr_rec_t rec;
+	uint32_t best_seq = 0, best_cur = 0, best_beg = 0;
+	uint8_t found = 0;
+	uint16_t slot = 0;
+
+	for (slot = 0; slot < (uint16_t)LOG_PTR_SLOTS; slot++)
+	{
+		if (ext_read(SF_LOG_PTR_BASE + (uint32_t)slot * sizeof(log_ptr_rec_t),
+					 (uint8_t *)&rec, sizeof rec) != 0)
+		{
+			LOG_E(VLOG_M_SYS, "log_ptr: read FAIL at slot %u", (uint32_t)slot);
+			return -1;
+		}
+		if ((rec.seq == 0xFFFFFFFFu) && (rec.cur == 0xFFFFFFFFu))
+		{
+			break;	// первый пустой слот - записи кончились
+		}
+		if ((rec.crc == crc16_ptr(&rec)) && (rec.seq > best_seq))
+		{
+			found   = 1;
+			best_seq = rec.seq;
+			best_cur = rec.cur;
+			best_beg = rec.beg;
+		}
+	}
+	log_ptr_slot = slot;
+	log_ptr_seq  = best_seq;
+	if ((found != 0u) && (apply != 0u))
+	{
+		pSnsCfg->Config_archive.CurrentAddrFile = best_cur;
+		pSnsCfg->Config_archive.BegginAddrFile  = best_beg;
+		LOG_I(VLOG_M_SYS, "log_ptr: cur=%u beg=%u (seq %u)",
+			  best_cur, best_beg, best_seq);
+	}
+	return (int)found;
+#else
+	(void)pSnsCfg; (void)apply;
+	return 0;
+#endif
+}
+
+// Сохранение указателей архива после записи журнала (аналог
+// SaveCurrentAddrFile из Avis). Страница заполнилась -> стирание (только в
+// "окне тишины": EXT_BUSY = звук/шина, сохранение повторится со следующей
+// записью - указатели живут в RAM). КОНТЕКСТ: Measure Task (из save_event).
+// Возврат: 0 = ok, EXT_BUSY = отложено, -1 = ошибка flash.
+int log_ptr_save(const SNS_CFG *pSnsCfg)
+{
+#if CONFIG_SAVE_PARAM_LOG
+	log_ptr_rec_t rec;
+	int rc;
+
+	if (log_ptr_slot >= (uint16_t)LOG_PTR_SLOTS)
+	{
+		rc = ext_erase_sector(SF_LOG_PTR_BASE);
+		if (rc == EXT_BUSY)
+		{
+			log_ptr_dbg_defers++;
+			return EXT_BUSY;
+		}
+		if (rc != 0)
+		{
+			LOG_E(VLOG_M_SYS, "log_ptr: erase FAIL");
+			return -1;
+		}
+		log_ptr_slot = 0;
+	}
+
+	log_ptr_seq++;
+	rec.seq = log_ptr_seq;
+	rec.cur = pSnsCfg->Config_archive.CurrentAddrFile;
+	rec.beg = pSnsCfg->Config_archive.BegginAddrFile;
+	rec.pad = 0xFFFFu;
+	rec.crc = crc16_ptr(&rec);
+
+	rc = ext_write(SF_LOG_PTR_BASE + (uint32_t)log_ptr_slot * sizeof(log_ptr_rec_t),
+				   (const uint8_t *)&rec, sizeof rec);
+	if (rc != 0)
+	{
+		log_ptr_seq--;					// seq не потрачен - повтор с тем же номером
+		log_ptr_dbg_defers++;
+		if (rc != EXT_BUSY)
+		{
+			LOG_E(VLOG_M_SYS, "log_ptr: write FAIL");
+		}
+		return rc;
+	}
+	log_ptr_slot++;
+	log_ptr_dbg_saves++;
+	return 0;
+#else
+	(void)pSnsCfg;
+	return 0;
+#endif
+}
 
 //===========================================================================================================================
 // Банк и страница
@@ -236,6 +407,11 @@ int save_event(SNS_CFG *pSnsCfg, TYPE_LOG type_log)
     return -1;
   }
   pSnsCfg->Config_archive.CurrentAddrFile = cur + 1u;
+  // v27 (замечание автора п.4): указатели архива сохраняются СРАЗУ отдельной
+  // страницей-кольцом SF_LOG_PTR - не перезаписывая всю конфигурацию.
+  // EXT_BUSY/ошибка не фатальны: указатели в RAM актуальны, повторятся со
+  // следующей записью журнала.
+  (void)log_ptr_save(pSnsCfg);
   LOG_D(VLOG_M_SYS, "log: rec %u (beg %u)", cur,
         pSnsCfg->Config_archive.BegginAddrFile);
   return 0;
