@@ -116,9 +116,9 @@ typedef struct
   volatile uint8_t  Sensors_ok;             /* биты: 1=BME280 2=LIS3DH 4=MAX17048 */
   volatile uint8_t  Sensors_reserve;
   volatile float    Temperature_calib_offset; /* поправка калибровки, °C     */
-  volatile float    Temperature;            /* BME280, °C                    */
-  volatile float    Humidity;               /* BME280, %                     */
-  volatile float    Pressure;               /* BME280 (автор v25: Па/1000)   */
+  volatile float    Temperature;            /* BME280 int32-драйвер: °C×100 (Bosch comp_data). LoRa v4 Environment: /10 -> °C×10. Индикация: /100 */
+  volatile float    Humidity;               /* BME280 int32-драйвер: %×1024 (Bosch). LoRa v4: /1024 -> %. Индикация: /1024 */
+  volatile float    Pressure;               /* BME280 int32 (Па×100)/1000 = гПа×10 - СРАЗУ формат LoRa v4 Environment.Pressure (u16) */
 
 } sensors_status_t;
 
@@ -147,6 +147,16 @@ uint8_t sensors_fall_event(void);       /* 1 = было падение, флаг
  *   заглушка в Vector_main.c - перенести машину состояний из Avis).          */
 extern uint8_t SoftResetProgram;
 void Avis_Battery_System(void);
+
+/* --- v28: общие данные модулей обмена --------------------------------------
+ * deveui_com[8]: копия DevEUI LoRa-модуля для COM/LTE-протокола (как в Avis);
+ *   заполняет Lora_InitDeveui() (Lora_S7678S.c), экземпляр - Vector_main.c.
+ * Get_Conversion_factor_rf(chan): коэффициент пересчёта концентрации для RF
+ *   (в Avis - таблица conversion_factor_rf[] из Avis_Menu_Functionality.c);
+ *   weak-заглушка Vector_main.c возвращает 1.0 - данные AVIS приходят по BLE
+ *   уже масштабированными (pass-through в LoRa v4), порт таблицы - TODO автор. */
+extern uint8_t deveui_com[8];
+float Get_Conversion_factor_rf(uint8_t chan);
 
 /* --- такты прибора --------------------------------------------------------
  * Timer_Tick_1ms() - из TIM3 (1 кГц, HAL_TIM_PeriodElapsedCallback в main.c):

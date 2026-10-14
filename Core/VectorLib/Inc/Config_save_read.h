@@ -37,7 +37,7 @@ typedef struct
 	uint32_t working_hours;			// суммарное время, с (offset + working_hours конфига, v24)
 	uint16_t battery_charge_percent;
 	uint16_t battery_charge_volt;	// мВ
-	int16_t  temperature;			// sensors_status.Temperature * 100
+	int16_t  temperature;			// °C×100 (= sensors_status.Temperature, int32-драйвер BME280; v28: без повторного *100)
 	uint16_t Reserve[19];			// добивает слот до РОВНО 64 байт (v25)
 }EVENT_LOG;
 

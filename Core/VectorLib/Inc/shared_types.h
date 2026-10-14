@@ -184,6 +184,9 @@ extern volatile DOWN_TIMER_RTC 		countdown_time_rtc;	 /* секундные (RTC
 #define TIME_RTC_LORA_DATA_INIT		(3u)
 #define TIME_RTC_LORA_DATA_SET		(120u)
 #define TIME_RTC_LORA_DATA_SLEEP	(60u)
+/* Держать питание/приём после принятого downlink (mac rx), с: окно RX2 +
+   запас; Lora_Receive() взводит TIMER_RTC_LORA_DATA_SLEEP этим значением (v28). */
+#define TIME_RTC_LORA_DATA_SLEEP_AFTER_DL	(10u)
 #define TIME_RTC_LED_STATE_RUN_PULSE	(1u)	// пульс зеленого светодиода, с
 #define TIME_RTC_LED_STATE_RUN_PERIOD	(5u)	// период зеленого светодиода, с
 //--------------------------------------------------------------------------------------------------------------
@@ -225,6 +228,55 @@ typedef struct//
 	uint16_t            FirmwareVersion;
 }SNS_Dev_Type;
 extern SNS_Dev_Type		Connected_device;
+
+//--------------------------------------------------------------------------------------------------------------
+/* v28: ТЕЛЕМЕТРИЯ BLE-ОКРУЖЕНИЯ - хранилище данных, которые BLE-модуль читает
+   из эфира и которые затем уходят в КОНТЕЙНЕРНЫЕ блоки LoRa v4
+   (Mirax-Lora-protocol-v4.md пп. 4.6-4.7) и в TYPE_STATIC (п. 6):
+   - beacons[]  -> блок BLEBeacons (бит 8 ContainerMask): видимые маяки нашей
+     инфраструктуры (ShortID из рекламы + RSSI + состояние заряда); раскладка
+     ble_beacon_t БАЙТ-В-БАЙТ как ble_beacon_t LoRa v4 (4 байта);
+   - ppe[]      -> блок PPE (бит 7): единицы СИЗ (тип/серийник для TYPE_STATIC,
+     присутствие и заряд для динамики);
+   - gas_*      -> секция под-устройства AVIS (SUB_TYPE_GAS): признак "данные
+     свежие" и серийник (0 = legacy-пакет Avis без серийника).
+   Заполняет Ble_vector.c (CONFIG_BLE), читает Lora_S7678S.c (CONFIG_LORA) -
+   поэтому типы/экземпляр живут ЗДЕСЬ, вне обоих CONFIG. Экземпляр -
+   Vector_main.c. Свежесть: потребитель сравнивает *_ms (GetTick, мс) с
+   BLE_TELEMETRY_TTL_MS. Протокол BLE - docs/Mirax-Ble-protocol-v1.md.       */
+#define BLE_BEACONS_MAX		(16u)	// маяков в хранителе (ограничение блока LoRa)
+#define BLE_PPE_MAX			(8u)	// единиц СИЗ (LoRa v4: PresenceMask 8 бит)
+#define BLE_TELEMETRY_TTL_MS	(300000u)	// 5 мин: данные старше - не свежие
+
+typedef struct
+{
+	uint16_t	ShortID;	// короткий ID маяка из рекламы (minor/instance)
+	int8_t		Rssi;		// уровень сигнала, дБм
+	uint8_t		Battery;	// заряд маяка: 0 разряжен, 1 предупреждение, 2 норма
+} __attribute__ ((__packed__)) ble_beacon_t;	// 4 байта = ble_beacon_t LoRa v4
+
+typedef struct
+{
+	uint8_t		PpeType;	// тип СИЗ (LoRa v4 приложение: 0 каска, 1 привязь...)
+	uint16_t	Serial;		// заводской идентификатор единицы (для TYPE_STATIC)
+	uint8_t		Charge;		// заряд: 0 разряжен, 1 предупреждение, 2 норма
+	int8_t		Rssi;		// уровень сигнала, дБм
+	uint8_t		Present;	// 1 = метка видна сейчас (присутствует/надета)
+} __attribute__ ((__packed__)) ble_ppe_item_t;
+
+typedef struct
+{
+	ble_beacon_t	beacons[BLE_BEACONS_MAX];	// видимые маяки (пакет BLE_PKT_BEACONS)
+	uint8_t			beacon_count;
+	uint32_t		beacon_ms;					// GetTick() последнего обновления
+	ble_ppe_item_t	ppe[BLE_PPE_MAX];			// единицы СИЗ (пакет BLE_PKT_PPE)
+	uint8_t			ppe_count;
+	uint32_t		ppe_ms;
+	uint8_t			gas_online;					// 1 = AVIS подключён/данные свежие
+	uint32_t		gas_ms;						// GetTick() последнего пакета AVIS
+	uint16_t		gas_serial;					// серийник AVIS (0 = legacy, TODO)
+} BLE_TELEMETRY;
+extern BLE_TELEMETRY		Ble_telemetry;
 
 typedef struct//
 {

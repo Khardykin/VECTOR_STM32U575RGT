@@ -66,14 +66,17 @@ uint16_t Search_text(uint8_t *data1, const char *data2);
 /* Смена скорости UART на ходу - см. макрос usart_init() и прототип
    Uart_SetBaudrate() в main.h (реализация в vector_macros.c).                */
 
-/* --- ЧАСЫ прибора в резервном регистре RTC BKP0 (v26) -----------------------
- * Замена AT32 rtc_counter_get/set из Avis: на U5 роль 32-битного "вечного"
- * счётчика играет TAMP_BKP0R (живёт от VBAT, переживает NVIC_SystemReset).
- * Единица - секунды; +1 делает Timer_Tick_1s() (RTC wakeup 1 Гц), сверку и
- * запись раз в секунду - Vector_Options_System(), чтение при включении -
- * Vector_Run_Pre_Init() ПОСЛЕ конфигурации. Требуется
- * HAL_PWREx_EnableBkUpAccess() один раз при старте (Vector_Run_Board_Init).  */
-uint32_t RTC_ReadTime(void);              /* счётчик часов, с (BKP0)          */
+/* --- ЧАСЫ прибора: календарный RTC <-> Unix-секунды (v28, подход автора) ----
+ * Замена AT32 rtc_counter_get/set из Avis: на U5 RTC - календарь (LSE,
+ * backup-домен, идёт от VBAT при снятом VDD). RTC_ReadTime() преобразует
+ * календарь в Unix-секунды (mktime, AN4759), RTC_WriteTime() - обратно
+ * (gmtime). Единица - секунды; +1 делает Timer_Tick_1s() (RTC wakeup 1 Гц),
+ * сверку и запись раз в секунду - Vector_Options_System(), чтение при
+ * включении - Vector_Run_Pre_Init() ПОСЛЕ конфигурации. Требуется
+ * HAL_PWR_EnableBkUpAccess() один раз при старте (Vector_Run_Board_Init;
+ * на U5 функция в PWR-модуле, НЕ Ex). База года: HAL 0..99 от 2000,
+ * tm_year от 1900 - внутри функций +/-100. TZ newlib не трогать (UTC).      */
+uint32_t RTC_ReadTime(void);              /* Unix-секунды из календаря RTC    */
 int      RTC_WriteTime(uint32_t TimeCounter);  /* 0 = ok, -1 = отказ          */
 
 #ifdef __cplusplus

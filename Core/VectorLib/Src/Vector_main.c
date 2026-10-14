@@ -219,10 +219,12 @@ void Vector_Run_Board_Init(void)
         забыть биты SRAM4PD/SRAM4PDS.                                        */
   __HAL_RCC_SRAM4_CLK_ENABLE();
 
-  /* 0b. Разрешить доступ к резервным регистрам RTC (снять PWR_DBP): с v26 в
-        BKP0 живёт счётчик часов working_hours (RTC_ReadTime/RTC_WriteTime из
-        vector_macros.c). Без этого бита запись в BKP0 МОЛЧА игнорируется -
-        часы не переживут выключение. КОНТЕКСТ: до RTOS.                    */
+  /* 0b. Разрешить доступ к backup-домену (снять PWR DBP): с v28 часы прибора
+        working_hours - Unix-секунды из КАЛЕНДАРЯ RTC (RTC_ReadTime/
+        RTC_WriteTime из vector_macros.c, подход автора; календарь живёт от
+        VBAT). Без этого бита запись в календарь/BKP МОЛЧА игнорируется.
+        На U5 функция HAL_PWR_EnableBkUpAccess (PWR-модуль, не Ex).
+        КОНТЕКСТ: до RTOS.                                                  */
   HAL_PWR_EnableBkUpAccess();
 
 #if VECTOR_DBG_FREEZE_TICK
@@ -294,11 +296,34 @@ uint8_t          SoftResetProgram = 0;   /* 1 = команда мягкой пе
                                             отрабатывает Vector_Options_System:
                                             событие TYPE_FW_UPDATE в журнал ->
                                             стоп TIM3 -> NVIC_SystemReset    */
-SNS_Dev_Type     Connected_device;   /* свод подключённого устройства (каналы
-                                        Sensor[COUNT_CHAN] + статусы/батарея/
-                                        версии); extern - shared_types.h (v25),
-                                        экземпляр пока никем не заполняется -
-                                        резерв под модули измерения          */
+SNS_Dev_Type     Connected_device;   /* свод подключённого под-устройства AVIS
+                                        (каналы Sensor[COUNT_CHAN] + статусы/
+                                        батарея/версии); extern - shared_types.h
+                                        (v25); заполняет Ble_vector.c из пакета
+                                        ADVMSDDATAGET (v27/v28); читает LoRa v4
+                                        (секция SUB_TYPE_GAS) и индикация    */
+
+BLE_TELEMETRY    Ble_telemetry;      /* v28: телеметрия BLE-окружения (маяки/
+                                        СИЗ/признак AVIS) - заполняет
+                                        Ble_vector.c, читает Lora_S7678S.c
+                                        (контейнерные блоки LoRa v4 и
+                                        TYPE_STATIC); типы - shared_types.h  */
+
+uint8_t          deveui_com[8];      /* v28: копия DevEUI для модулей COM/LTE
+                                        (как в Avis); заполняет Lora_InitDeveui
+                                        (Lora_S7678S.c) при CONFIG_LORA      */
+
+/* v28: коэффициент пересчёта концентрации для RF-пакетов (LoRa/BLE). В Avis -
+   таблица conversion_factor_rf[] из Avis_Menu_Functionality.c (пересчёт
+   мг/м³ <-> PPM <-> %НКПР по настройкам канала); порт таблицы - за автором.
+   Слабая заглушка: 1.0 (данные AVIS приходят по BLE УЖЕ масштабированными -
+   Ble_CompleteDataSet отправителя применяет ту же формулу, поэтому для
+   pass-through в LoRa v4 коэффициент не нужен). КОНТЕКСТ: Measure Task.   */
+__attribute__((weak)) float Get_Conversion_factor_rf(uint8_t chan)
+{
+  (void)chan;
+  return 1.0f;
+}
 
 static TX_THREAD receiver_task_handler;
 static TX_THREAD measure_task_handler;
@@ -802,7 +827,7 @@ void Vector_Options_System(void)
   /* Реализовано (автор, v26): мягкая перезагрузка прошивки (SoftResetProgram
      + таймер TIMER_RTC_SOFT_RESET_PROGRAM -> событие TYPE_FW_UPDATE ->
      NVIC_SystemReset) и секундное обслуживание батареи (Avis_Battery_System,
-     weak-заглушка) со сверкой часов в RTC BKP0 (RTC_ReadTime/WriteTime).
+     weak-заглушка) со сверкой часов с календарём RTC (RTC_ReadTime/WriteTime, v28).
      TODO: по образцу Avis_Options_System():
      - стирание внутренней flash по команде (FlashErase);
      - окончание режима обмена данными: очистить ST_COMMON_BIT_DATA_EXCHANGE

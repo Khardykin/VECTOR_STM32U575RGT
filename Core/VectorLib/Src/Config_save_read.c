@@ -358,7 +358,10 @@ int save_event(SNS_CFG *pSnsCfg, TYPE_LOG type_log)
                                                                 + pSnsCfg->Working_data.working_hours;   // ВРЕМЯ, с
   Event_log.battery_charge_percent                              = sensors_status.battery_charge_percent;
   Event_log.battery_charge_volt                                 = sensors_status.battery_charge_volt;
-  Event_log.temperature                                         = (int16_t)(sensors_status.Temperature*100);
+  /* v28-исправление: sensors_status.Temperature УЖЕ в °C×100 (int32-драйвер
+     Bosch BME280, BME280_FLOAT_ENABLE не определён), повторное *100 переполняло
+     int16. Формат поля журнала - сотые °C (Config_save_read.h).              */
+  Event_log.temperature                                         = (int16_t)sensors_status.Temperature;
 
   // Начало сектора: стереть его, если кольцо полное (сдвинуть начало) или
   // слот не пустой (первый круг после журнала старого формата).

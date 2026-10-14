@@ -3,9 +3,24 @@
   * @file    Lora_S7678S.c
   * @brief   Драйвер LoRa S7678S: AT-команды и payload (файл автора, CONFIG_LORA)
   *
+  *          v28: ПРОТОКОЛ v4 (MIRAX, docs/Mirax-Lora-protocol-v4.md) -
+  *          дополнение к рабочей v3-реализации БЕЗ переименования функций:
+  *          TYPE_DYNAMIC = контейнерные блоки трекера по ContainerMask
+  *          (батарея/GPS/трек/TimeRef/ControlLora16/среда/движение/СИЗ/
+  *          BLE-маяки/контейнерный журнал/история GPS/ConfigAck/MsgAck) +
+  *          SubCount и секции под-устройств (SubID+SubMask); газовые данные
+  *          (Sensors/канальный EventLog/заряд) - в секции AVIS (SUB_TYPE_GAS,
+  *          источник Connected_device/Ble_telemetry по BLE). ControlLora
+  *          8->16 бит (+EVACUATION бит 8, защита SOS|CURRENT_C 0x00A0,
+  *          ACK-маска 0x0137). TYPE_STATIC v4: +radio_cfg_t, +СИЗ, +дескрип-
+  *          торы под-устройств (CfgLen/Cfg[]). Downlink: Control 4 Б, +блок
+  *          Message (CP1251 -> Lora_Message, квитирование MsgAck). ACK/
+  *          TURN_OFF: статус u16. Контейнерный EventLog - типизированные
+  *          10-байтовые записи (падение/поза/SOS/СИЗ) alongside газового v3.
+  *
   *          Блоки: таблица AT-команд и машина состояний парсинга ответов/URC,
   *          инициализация (Lora_Init: версия, класс, DR, частоты rx2 из
-  *          SNS_CFG), передача (Lora_DataSet -> transmit_buffer TYPE_RF,
+  *          SNS_CFG), передача (Lora_DataSet -> transmit_buffer TYPE_LORA,
   *          сборка uplink по COUNT_CHAN_LORA каналам), GPS-трек
   *          (Lora_UpdateGPSTrack), системные сообщения (ack/turnoff),
   *          занятость передатчика (Lora_IsTxBusy), DeInit/сон.
@@ -18,6 +33,11 @@
   */
 #include "main.h"
 #include "Vector_main.h"
+#include "lis3dh.h"     /* LIS3DH_ORIENT_*: поза для блока Motion (v4 п.4.5) */
+#include <stdio.h>      /* sprintf/sscanf: AT-строки, парсинг hex */
+#include <stdlib.h>     /* strtol */
+#include <string.h>     /* memcpy/memset/strstr */
+#include <math.h>       /* cosf/powf/lround: дельты метров, баровысота */
 
 #if CONFIG_LORA
 
@@ -159,6 +179,80 @@ typedef struct {
 static gps_history_buffer_t gps_history = {0};
 
 //===========================================================================================================================
+// КОНТЕЙНЕРНЫЙ EVENT LOG v4 (п.4.8): типизированные события КОМПЛЕТА за время
+// потери связи (падение/поза/SOS/СИЗ; пороги среды - задел). Записи 10 байт,
+// механизм частичной отправки и квитирования ECHO - как у газового журнала.
+// Газовые пороги ЗДЕСЬ НЕ хранятся - они в StateErr секции AVIS (п.5.2-5.3).
+//===========================================================================================================================
+#define CONTAINER_EVENT_MAX_RECORDS  32
+
+typedef struct {
+    uint32_t unix_time;        // абсолютное время события (для пересчета Dt)
+    int32_t  lat;              // широта события (0 - нет GPS)
+    int32_t  lon;              // долгота события (0 - нет GPS)
+    uint8_t  type;             // enum CONTAINER_EVENT_TYPE
+    uint8_t  severity;         // CONT_SEV_*
+    int16_t  value;            // значение величины (CONT_EV_VALUE_NA - неприменимо)
+} container_event_record_t;
+
+typedef struct {
+    uint8_t count;                 // всего записей в буфере
+    uint8_t send_index;            // индекс следующей записи для отправки
+    uint8_t last_sent_count;       // сколько упаковано в ПОСЛЕДНИЙ кадр (подтверждение по ECHO)
+    container_event_record_t records[CONTAINER_EVENT_MAX_RECORDS];
+} container_event_buffer_t;
+
+static container_event_buffer_t container_event_log = {0};
+
+//===========================================================================================================================
+// СООБЩЕНИЕ СЕРВЕРА НА ДИСПЛЕЙ (v4 п.7.1): экземпляр публичного хранилища.
+// Потребитель (меню/индикация) при Lora_Message.New показывает Text[Length]
+// (CP1251) и вызывает Lora_MessageShown(); квитирование MsgAck уходит
+// автоматически следующим uplink (бит 12 ContainerMask). Идемпотентность:
+// повтор того же MsgSeq флаг New не взводит (дубль не показывается), MsgAck
+// при этом уходит снова (сервер ждёт совпадения).
+//===========================================================================================================================
+lora_msg_t Lora_Message = {0};
+
+static uint8_t lora_msg_last_seq = 0;   // MsgSeq последнего показанного сообщения (идемпотентность, v4 п.7.1)
+static uint8_t lora_msg_seen = 0;       // 0 = сообщений ещё не было (seq 0 валиден)
+
+void Lora_MessageShown(void)
+{
+    Lora_Message.New = 0;
+}
+
+//===========================================================================================================================
+// СВЕЖЕСТЬ BLE-ТЕЛЕМЕТРИИ (v28): контейнерные блоки PPE/BLEBeacons и секция
+// AVIS включаются в кадр, только если данные не старше BLE_TELEMETRY_TTL_MS
+// (Ble_vector.c обновляет *_ms по GetTick при каждом принятом пакете).
+// Беззнаковое вычитание корректно при переполнении GetTick (32 бит, ~49 сут).
+//===========================================================================================================================
+static uint8_t Lora_BleFresh(uint32_t timestamp_ms)
+{
+    return ((timestamp_ms != 0u) &&
+            ((GetTick() - timestamp_ms) < BLE_TELEMETRY_TTL_MS)) ? 1u : 0u;
+}
+
+/* Барометрическая высота, м (международная барометрическая формула):
+   h = 44330*(1-(P/P0)^0.1903), P0 = 1013.25 гПа. Вход - гПа×10 (=
+   sensors_status.Pressure, int32-драйвер BME280: Па×100 / 1000).
+   v4 п.4.4: высота - самостоятельная величина со своими порогами.          */
+static int16_t Lora_CalcAltitudeM(float pressure_hpa_x10)
+{
+    float p_hpa = pressure_hpa_x10 / 10.0f;
+    float h;
+
+    if ((p_hpa < 100.0f) || (p_hpa > 1200.0f)) {
+        return 0;    // нет данных / вне диапазона датчика
+    }
+    h = 44330.0f * (1.0f - powf(p_hpa / 1013.25f, 0.1903f));
+    if (h > 32767.0f)  h = 32767.0f;
+    if (h < -32768.0f) h = -32768.0f;
+    return (int16_t)lround(h);
+}
+
+//===========================================================================================================================
 //===========================================================================================================================
 // ОПТИМИЗИРОВАННЫЕ СТРУКТУРЫ И ФЛАГИ
 //===========================================================================================================================
@@ -205,6 +299,16 @@ typedef struct {
 static channel_state_t chan_state[COUNT_CHAN_LORA] = {0};
 
 //===========================================================================================================================
+// ТРЕКИНГ КОНТЕЙНЕРНЫХ СОБЫТИЙ v4 (п.4.8): предыдущие значения величин для
+// детектора ПЕРЕХОДОВ (событие фиксируется и на взведение, и на снятие).
+// Обновляется в test_state_alarm_flag_lora() (Measure Task, каждый проход).
+//===========================================================================================================================
+static uint32_t last_fall_cnt   = 0;      // sensors_status.cnt_fall_events на прошлом проходе
+static uint8_t  last_posture    = 0;      // MOTION_POSTURE_* на прошлом проходе
+static uint8_t  last_ppe_mask   = 0xFF;   // маска присутствия СИЗ (0xFF = ещё не считана)
+static uint8_t  fall_latched    = 0;      // 1 = падение для бита MOTION_BIT_FALL (снимается после сборки кадра)
+
+//===========================================================================================================================
 // ОПТИМИЗИРОВАННАЯ СТРУКТУРА СОСТОЯНИЯ LORA
 //===========================================================================================================================
 typedef struct {
@@ -231,11 +335,12 @@ typedef struct {
     uint16_t alarm_chan_state;
     uint8_t  alarm_pre_state_all;
 
-    uint8_t  ControlLora;
+    uint16_t ControlLora;         // v28/v4 п.4.2: ControlLora16 (биты enum STATUS_LORA, +EVACUATION)
     uint8_t  ControlLora2;
 
     uint8_t  applied_rev;         // Версия последней примененной конфигурации
     uint8_t  config_ack_pending;  // Флаг: 1 = нужно отправить ConfigAck, 0 = уже отправлено
+    uint8_t  msg_ack_pending;     // v28/v4 п.7.1: 1 = нужно отправить MsgAck (бит 12)
 } lora_internal_state_t;
 
 static lora_internal_state_t lora = {0};
@@ -351,12 +456,17 @@ static void Lora_Cfg_UpdateGPSFixInterval(uint8_t interval)
 }
 
 //===========================================================================================================================
-static void Lora_BuildSensorMap(SNS_CFG *Cfg_struct)
+/* Карта "канал -> уплотнённый индекс в блоке Sensors" (v28: источник -
+   Connected_device, газовые каналы приходят с AVIS по BLE; порядок - по
+   возрастанию номера канала, совпадает с маской SensorsEnabled в TYPE_STATIC
+   и с порядком channel_cfg_t[] в Cfg дескриптора SUB_TYPE_GAS).
+   Вызывается перед каждой сборкой кадра (подключение AVIS может измениться). */
+static void Lora_BuildSensorMap(void)
 {
     uint8_t payload_idx = 0;
 
     for (uint8_t chan = 0; chan < COUNT_CHAN_LORA; chan++) {
-        if (Cfg_struct->Sensor[chan].channel == chan) {
+        if (Connected_device.Sensor[chan].channel == chan) {
             lora_sensor_map[chan] = payload_idx;
             payload_idx++;
         }
@@ -553,9 +663,9 @@ uint8_t Lora_IsTxBusy(void)
     return (lora.tx_busy_timer > 0) ? 1 : 0;
 }
 
-uint8_t Lora_GetControlLora(void)
+uint16_t Lora_GetControlLora(void)
 {
-    return lora.ControlLora;
+    return lora.ControlLora;    // v28/v4: ControlLora16
 }
 
 void Lora_SetControlLoraBit(uint8_t bit_num, uint8_t state)
@@ -639,14 +749,84 @@ void clr_state_alarm_flag_lora(void)
     LORA_CLR_FLAG(LORA_FLAG_ALARM);
 }
 
-// Вспомогательная функция для масштабирования концентрации (используем вашу формулу)
-static int16_t Lora_ScaleConcentration(SNS_CFG *Cfg_struct, uint8_t chan)
+/* Концентрация канала для провода (v28/v4 п.5.3): PASS-THROUGH из
+   Connected_device. Отправитель (AVIS) уже применил свою формулу
+   ConcentrationVal*Discreteness*Get_Conversion_factor_rf() в своём
+   Ble_CompleteDataSet (docs/Ble_mk01.c.md) - повторное масштабирование на
+   трекере ЗАПРЕЩЕНО (иначе единицы уедут дважды). int16 - протокол требует
+   знаковый тип (дрейф около нуля). Единицы/дискретность описаны Setting-ом
+   канала в TYPE_STATIC (channel_cfg_t.Setting).                            */
+static int16_t Lora_ScaleConcentration(uint8_t chan)
 {
-    // Приводим к int16_t, так как протокол требует знаковый тип (для дрейфа около нуля)
-    float raw_val = Cfg_struct->Sensor[chan].ConcentrationVal *
-                    Cfg_struct->Sensor[chan].Discreteness *
-                    Get_Conversion_factor_rf(chan);
-    return (int16_t)lround(raw_val);
+    return (int16_t)lround(Connected_device.Sensor[chan].ConcentrationVal);
+}
+
+/* Дискретность канала из Setting-байта отправителя (Avis: DeviceSetting &
+   (MEASURE_MASK|MEASURE_DISK)): биты 0..1 - единицы (0 PPM, 1 мг/м3, 2 %НКПР,
+   3 %об.д. - приложение v4), биты 2..3 - код дискретности. Карта дискретности
+   ПРЕДВАРИТЕЛЬНАЯ (0->1, 1->10, 2->100, 3->1000) - сверить с Avis-Lora-
+   protocol-v3 / заголовками Avis (автор предлагал прислать v3). Нужна только
+   для мёртвой зоны O2 20.85..20.95 (границы в единицах провода = 20.9*d).   */
+#define LORA_SETT_UNIT_MASK   (0x03u)
+#define LORA_SETT_DISK_SHIFT  (2u)
+static const uint16_t lora_discreteness_tab[4] = { 1u, 10u, 100u, 1000u };
+
+static uint16_t Lora_ChannelDiscreteness(uint8_t setting)
+{
+    return lora_discreteness_tab[(setting >> LORA_SETT_DISK_SHIFT) & 0x03u];
+}
+
+/* Поза из ориентации акселерометра (v4 п.4.5: 0 неизвестно, 1 вертикальное,
+   2 горизонтальное). Z_UP/Z_DOWN - прибор вертикально (человек стоит),
+   X/Y UP/DOWN - горизонтально (человек лежит). Без LIS3DH - неизвестно.    */
+static uint8_t Lora_PostureFromOrientation(uint8_t orient)
+{
+#if CONFIG_LIS3DH
+    switch (orient) {
+    case LIS3DH_ORIENT_Z_UP:
+    case LIS3DH_ORIENT_Z_DOWN:
+        return MOTION_POSTURE_VERTICAL;
+    case LIS3DH_ORIENT_X_UP:
+    case LIS3DH_ORIENT_X_DOWN:
+    case LIS3DH_ORIENT_Y_UP:
+    case LIS3DH_ORIENT_Y_DOWN:
+        return MOTION_POSTURE_HORIZONTAL;
+    default:
+        return MOTION_POSTURE_UNKNOWN;
+    }
+#else
+    (void)orient;
+    return MOTION_POSTURE_UNKNOWN;
+#endif
+}
+
+/* Добавить запись в КОНТЕЙНЕРНЫЙ журнал v4 (п.4.8). Журнал ведётся ТОЛЬКО за
+   время потери связи (LORA_FLAG_CONNECTION_LOST) - как и газовый: это канал
+   ВОССТАНОВЛЕНИЯ данных; в штатном режиме величины и так уходят живыми
+   блоками (Motion/PPE/DeviceStatus). КОНТЕКСТ: Measure Task.               */
+static void Lora_AddContainerEvent(uint8_t type, uint8_t severity, int16_t value)
+{
+    container_event_record_t *rec;
+
+    if (!LORA_TEST_FLAG(LORA_FLAG_CONNECTION_LOST)) {
+        return;
+    }
+    if (container_event_log.count >= CONTAINER_EVENT_MAX_RECORDS) {
+        return;    // буфер полон: новые события теряются до квитирования ECHO
+    }
+    rec = &container_event_log.records[container_event_log.count];
+    rec->unix_time = (uint32_t)Sns_Cfg_struct.Working_data.working_hours;
+#if CONFIG_GPS
+    rec->lat = gps_last_valid_lat;
+    rec->lon = gps_last_valid_lon;
+#else
+    rec->lat = 0;
+    rec->lon = 0;
+#endif
+    rec->type     = type;
+    rec->severity = severity;
+    rec->value    = value;
+    container_event_log.count++;
 }
 
 uint8_t test_state_alarm_flag_lora(SNS_CFG *Cfg_struct)
@@ -659,18 +839,30 @@ uint8_t test_state_alarm_flag_lora(SNS_CFG *Cfg_struct)
 	}
     uint8_t state_changed = 0;
 
-    for (uint8_t chan = 0; chan < COUNT_CHAN_LORA; chan++) {
-        if (Cfg_struct->Sensor[chan].channel != chan) continue;
+    /* v28/v4: газовые каналы - секция под-устройства AVIS; источник данных -
+       Connected_device (заполняет Ble_vector.c), а НЕ собственные каналы
+       SNS_CFG (у трекера газовых сенсоров нет). Cfg_struct в сигнатуре
+       оставлен (совместимость вызова Lora_Run) и используется ниже для
+       метки времени газового журнала.                                       */
+    uint8_t gas_fresh = (Ble_telemetry.gas_online != 0u) &&
+                        Lora_BleFresh(Ble_telemetry.gas_ms);
 
-        int16_t current_conc = Lora_ScaleConcentration(Cfg_struct, chan);
-        uint8_t current_state = Cfg_struct->Sensor[chan].StateErr & 0x7F;
+    for (uint8_t chan = 0; chan < COUNT_CHAN_LORA; chan++) {
+        if (!gas_fresh) break;
+        if (Connected_device.Sensor[chan].channel != chan) continue;
+
+        int16_t current_conc = Lora_ScaleConcentration(chan);
+        uint8_t current_state = (uint8_t)(Connected_device.Sensor[chan].StateErr & 0x7F);
 
         // 1. Определяем текущее положение относительно мёртвой зоны
+        // (O2: код газа LORA_GAS_ID_O2, зона 20.85..20.95 в единицах провода;
+        //  дискретность - из Setting-байта отправителя, Lora_ChannelDiscreteness)
         bool current_in_dead_zone = false;
         if (current_state == 0) {
-            if (TESTBIT(Cfg_struct->Sensor[chan].DeviceSetting, BIT_SET_OXYGEN_SENSOR)) {
-            	int16_t low = 20.85 * Cfg_struct->Sensor[chan].Discreteness;
-            	int16_t high = 20.95 * Cfg_struct->Sensor[chan].Discreteness;
+            if (Connected_device.Sensor[chan].num_formula_gas == LORA_GAS_ID_O2) {
+            	uint16_t d = Lora_ChannelDiscreteness((uint8_t)Connected_device.Sensor[chan].Setting);
+            	int16_t low = (int16_t)(20.85f * (float)d);
+            	int16_t high = (int16_t)(20.95f * (float)d);
                 current_in_dead_zone = (current_conc >= low && current_conc <= high);
             } else {
                 current_in_dead_zone = (current_conc == 0);
@@ -720,11 +912,68 @@ uint8_t test_state_alarm_flag_lora(SNS_CFG *Cfg_struct)
         }
     }
 
-    // Глобальная кнопка SOS
+    // Глобальная кнопка SOS (v4 п.4.8: событие контейнерного журнала на
+    // взведение и на снятие; взведение = критическое, снятие = инфо)
     uint8_t current_sos = TESTBIT(lora.ControlLora, ST_LORA_BIT_SOS);
     if (current_sos != lora.alarm_pre_state_all) {
         state_changed = 1;
         lora.alarm_pre_state_all = current_sos;
+        if (current_sos) {
+            Lora_AddContainerEvent(CONT_EV_SOS, CONT_SEV_CRITICAL, CONT_EV_VALUE_NA);
+        } else {
+            Lora_AddContainerEvent(CONT_EV_SOS, CONT_SEV_INFO, CONT_EV_VALUE_NA);
+        }
+    }
+
+    /* v28/v4 п.4.8: ПАДЕНИЕ - дискретное событие (free-fall детектор LIS3DH,
+       счётчик sensors_status.cnt_fall_events растёт в sensors_read()). Бит
+       MOTION_BIT_FALL живёт до ближайшей сборки кадра (fall_latched).       */
+    if (sensors_status.cnt_fall_events != last_fall_cnt) {
+        last_fall_cnt = sensors_status.cnt_fall_events;
+        fall_latched = 1;
+        state_changed = 1;
+        Lora_AddContainerEvent(CONT_EV_FALL, CONT_SEV_CRITICAL, CONT_EV_VALUE_NA);
+    }
+
+    /* v28/v4 п.4.8: ПОЗА - событие на переход (горизонтальное/вертикальное).
+       Не аварийное: живой блок Motion и так уходит каждым кадром.           */
+    {
+        uint8_t posture = Lora_PostureFromOrientation(sensors_status.Orientation);
+        if ((posture != MOTION_POSTURE_UNKNOWN) && (last_posture != MOTION_POSTURE_UNKNOWN) &&
+            (posture != last_posture)) {
+            if (posture == MOTION_POSTURE_HORIZONTAL) {
+                Lora_AddContainerEvent(CONT_EV_POSTURE_HOR, CONT_SEV_INFO, CONT_EV_VALUE_NA);
+            } else {
+                Lora_AddContainerEvent(CONT_EV_POSTURE_VER, CONT_SEV_INFO, CONT_EV_VALUE_NA);
+            }
+        }
+        if (posture != MOTION_POSTURE_UNKNOWN) {
+            last_posture = posture;
+        }
+    }
+
+    /* v28/v4 п.4.8: СИЗ - "не надеты" (маска снятых) / "в норме". Бит маски =
+       позиция комплекта (индекс в Ble_telemetry.ppe = бит PPEEnabledMask в
+       TYPE_STATIC). Первый проход (last_ppe_mask == 0xFF) - без события.    */
+    if (Lora_BleFresh(Ble_telemetry.ppe_ms) && (Ble_telemetry.ppe_count > 0u)) {
+        uint8_t ppe_mask_now = 0;
+        for (uint8_t k = 0; (k < Ble_telemetry.ppe_count) && (k < BLE_PPE_MAX); k++) {
+            if (Ble_telemetry.ppe[k].Present) {
+                ppe_mask_now |= (uint8_t)(1u << k);
+            }
+        }
+        if (last_ppe_mask == 0xFFu) {
+            last_ppe_mask = ppe_mask_now;    // инициализация без события
+        } else if (ppe_mask_now != last_ppe_mask) {
+            uint8_t removed = (uint8_t)(last_ppe_mask & (uint8_t)~ppe_mask_now);
+            if (removed != 0u) {
+                Lora_AddContainerEvent(CONT_EV_PPE_OFF, CONT_SEV_WARNING, (int16_t)removed);
+                state_changed = 1;
+            } else if ((ppe_mask_now != 0u) && ((ppe_mask_now & last_ppe_mask) == last_ppe_mask)) {
+                Lora_AddContainerEvent(CONT_EV_PPE_OK, CONT_SEV_INFO, CONT_EV_VALUE_NA);
+            }
+            last_ppe_mask = ppe_mask_now;
+        }
     }
 
     if (state_changed) set_state_repeat_flag_lora();
@@ -765,7 +1014,7 @@ uint8_t Lora_Init(SNS_CFG *Cfg_struct)
         lora.req_change_class = LORA_REQ_CLASS_NONE;
 
         Lora_Cfg_InitFromFlags(Cfg_struct->Config_common.Lora_Config_Flags);
-        Lora_BuildSensorMap(Cfg_struct);
+        Lora_BuildSensorMap();
         Lora_InitDeveui(Cfg_struct);
 
         if (!TESTBIT(Cfg_struct->Config_common.Lora_Config_Flags, LORA_CFG_BIT_SAVED)) {
@@ -774,7 +1023,7 @@ uint8_t Lora_Init(SNS_CFG *Cfg_struct)
             Lora_TransmitReceive(CMD_SET_APPKEY, appkey);
 
             Lora_TransmitReceive(CMD_GET_DR, (uint8_t*)&lora.empty_buffer);
-            lora.empty_buffer = 3;
+            lora.empty_buffer = LORA_RX1_DELAY_SEC;    // v28: 3 с; значение уходит в radio_cfg_t TYPE_STATIC
             Lora_TransmitReceive(CMD_SET_RXDELAY, (uint8_t*)&lora.empty_buffer);
 
             lora.empty_buffer = LORA_FLAG_ON;
@@ -912,14 +1161,19 @@ static void Lora_Control_States_Update(str_lora_data_get_t *rx_data, uint32_t po
     // ШАГ 1: Атомарное обновление реального состояния устройства по маскам из downlink
     // ==========================================================================================
 
-    // 1. Control (Бит 0 FieldMask)
+    // 1. Control (Бит 0 FieldMask; v28/v4: Mask u16 + Value u16)
     if (rx_data->FieldMask & FIELD_MASK_DL_CONTROL) {
-        // Защищаем биты SOS (0x20) и CURRENT_C (0x80) от перезаписи сервером
-        uint8_t protected_bits = lora.ControlLora & 0xA0;
-        uint8_t allowed_mask = rx_data->ControlLoraMask & ~0xA0;
+        // Защищаем биты SOS (0x0020) и CURRENT_C (0x0080) от перезаписи сервером
+        uint16_t protected_bits = lora.ControlLora & ST_LORA16_PROTECTED_MASK;
+        uint16_t allowed_mask = rx_data->ControlLoraMask & (uint16_t)~ST_LORA16_PROTECTED_MASK;
 
         // Формула атомарной записи: state = (state & ~Mask) | (Value & Mask)
-        lora.ControlLora = protected_bits | ((lora.ControlLora & ~allowed_mask) | (rx_data->ControlLoraValue & allowed_mask));
+        lora.ControlLora = (uint16_t)(protected_bits |
+                           ((lora.ControlLora & (uint16_t)~allowed_mask) |
+                            (rx_data->ControlLoraValue & allowed_mask)));
+        // v4 бит 8 EVACUATION ("Всем на выход") приходит старшим байтом маски;
+        // локальная реакция (звук/экран) - за индикацией, здесь только хранение
+        // и эхо в uplink (подтверждение наблюдением, v4 п.4.2).
     }
 
     // 2. Mode / ControlLora2 (Бит 1 FieldMask)
@@ -954,8 +1208,25 @@ static void Lora_Control_States_Update(str_lora_data_get_t *rx_data, uint32_t po
 
     // 7. Time (Бит 6 FieldMask) — Синхронизация RTC прибора
     if (rx_data->FieldMask & FIELD_MASK_DL_TIME) {
-        // Обновляем системное время прибора полученным от сервера Unix-временем
+        // v28: working_hours - Unix-секунды календарного RTC; сверку с календарём
+        // раз в секунду делает Vector_Options_System() (RTC_WriteTime) - сюда
+        // пишется только значение.
         Sns_Cfg_struct.Working_data.working_hours = rx_data->UnixTime;
+    }
+
+    // 8. Message (Бит 7 FieldMask) — v28/v4 п.7.1: текст оператора на дисплей
+    if ((rx_data->FieldMask & FIELD_MASK_DL_MESSAGE) && (rx_data->MsgLen > 0)) {
+        Lora_Message.MsgSeq = rx_data->MsgSeq;
+        Lora_Message.Length = rx_data->MsgLen;
+        memcpy(Lora_Message.Text, rx_data->MsgText, rx_data->MsgLen);
+        // Идемпотентность: дубль того же MsgSeq повторно НЕ показываем
+        // (повтор пришёл, значит MsgAck потерялся - квитировать надо снова).
+        if ((lora_msg_seen == 0u) || (rx_data->MsgSeq != lora_msg_last_seq)) {
+            lora_msg_seen = 1u;
+            lora_msg_last_seq = rx_data->MsgSeq;
+            Lora_Message.New = 1;
+        }
+        lora.msg_ack_pending = 1;    // MsgAck уйдёт ближайшим uplink (бит 12)
     }
 
     // ==========================================================================================
@@ -973,10 +1244,16 @@ static void Lora_Control_States_Update(str_lora_data_get_t *rx_data, uint32_t po
         // Они будут добавлены обратно в маску (SET_BIT) только при следующем изменении состояния.
         lora.alarm_chan_state = 0;
 
-        // Сброс EventLog
+        // Сброс EventLog (газовый, секция AVIS)
         if (event_log.last_sent_count > 0) {
             event_log.send_index += event_log.last_sent_count;
             event_log.last_sent_count = 0;
+        }
+
+        // Сброс контейнерного EventLog v4
+        if (container_event_log.last_sent_count > 0) {
+            container_event_log.send_index += container_event_log.last_sent_count;
+            container_event_log.last_sent_count = 0;
         }
 
         // Сброс GPSHistory
@@ -985,13 +1262,16 @@ static void Lora_Control_States_Update(str_lora_data_get_t *rx_data, uint32_t po
             gps_history.last_sent_count = 0;
         }
 
-        // Сброс флага ТОЛЬКО когда оба буфера пусты
+        // Сброс флага ТОЛЬКО когда ВСЕ исторические буферы пусты
         bool event_log_empty = (event_log.send_index >= event_log.count);
+        bool cont_event_empty = (container_event_log.send_index >= container_event_log.count);
         bool gps_history_empty = (gps_history.send_index >= gps_history.count);
 
-        if (event_log_empty && gps_history_empty) {
+        if (event_log_empty && cont_event_empty && gps_history_empty) {
             event_log.count = 0;
             event_log.send_index = 0;
+            container_event_log.count = 0;
+            container_event_log.send_index = 0;
             gps_history.count = 0;
             gps_history.send_index = 0;
             event_anchor.is_valid = false;
@@ -1020,11 +1300,12 @@ static void Lora_Control_States_Update(str_lora_data_get_t *rx_data, uint32_t po
         }
     }
 
-    // Проверка на изменение ControlLora для квитирования
-    if ((lora.ControlLora & 0x37) != lora.alarm_pre) {
+    // Проверка на изменение ControlLora16 для квитирования (v28/v4: маска
+    // ST_LORA16_ACK_MASK = v3 0x37 + бит EVACUATION)
+    if ((lora.ControlLora & ST_LORA16_ACK_MASK) != lora.alarm_pre) {
         Lora_ack_system_set();
     }
-    lora.alarm_pre = lora.ControlLora & 0x37;
+    lora.alarm_pre = lora.ControlLora & ST_LORA16_ACK_MASK;
 
     port_tx = port_tx_read;
 
@@ -1035,16 +1316,23 @@ static void Lora_Control_States_Update(str_lora_data_get_t *rx_data, uint32_t po
 
 static void Lora_CompleteDataSet(SNS_CFG *Cfg_struct, str_lora_data_set_t *data_set)
 {
-    uint8_t header = (TYPE_MSG_DYNAMIC & 0xC0) | 0x03;
-    uint16_t field_mask = 0;
-    uint8_t offset = 3;
+    /* v28/v4 п.3: Header + ContainerMask(u16) + контейнерные блоки по
+       возрастанию битов + SubCount + секции под-устройств (SubID+SubMask).
+       Указателей смещений нет - блоки строго по возрастанию битов маски.    */
+    uint8_t header = (TYPE_MSG_DYNAMIC & 0xC0) | DATA_STRUCT_LORA_VER;
+    uint16_t container_mask = 0;
+    uint16_t offset = 3;
     uint8_t *buf = (uint8_t *)data_set;
     uint8_t max_payload = Lora_GetMaxPayloadSize(lora.set_param_dr);
     buf[0] = header;
 
-    bool has_event_log = (event_log.count > event_log.send_index);
-    bool has_gps_history = (gps_history.count > gps_history.send_index);
-    bool has_any_history = has_event_log || has_gps_history;
+    Lora_BuildSensorMap();    // v28: карта каналов AVIS перед сборкой (подключение могло измениться)
+
+    bool gas_fresh = (Ble_telemetry.gas_online != 0u) && Lora_BleFresh(Ble_telemetry.gas_ms);
+    bool has_gas_event_log  = gas_fresh && (event_log.count > event_log.send_index);
+    bool has_cont_event_log = (container_event_log.count > container_event_log.send_index);
+    bool has_gps_history    = (gps_history.count > gps_history.send_index);
+    bool has_any_history    = has_gas_event_log || has_cont_event_log || has_gps_history;
     int32_t anchor_lat = 0, anchor_lon = 0;
     uint32_t anchor_time = 0;
     bool has_anchor_gps = false;
@@ -1055,7 +1343,7 @@ static void Lora_CompleteDataSet(SNS_CFG *Cfg_struct, str_lora_data_set_t *data_
         anchor_lon  = event_anchor.lon;
         if (anchor_lat != 0 || anchor_lon != 0) has_anchor_gps = true;
     } else {
-        anchor_time = (uint32_t)Cfg_struct->Working_data.working_hours; // ВАШЕ ВРЕМЯ
+        anchor_time = (uint32_t)Cfg_struct->Working_data.working_hours; // Unix-секунды (v28: календарный RTC)
 #if CONFIG_GPS
         anchor_lat = gps_last_valid_lat;
         anchor_lon = gps_last_valid_lon;
@@ -1063,74 +1351,34 @@ static void Lora_CompleteDataSet(SNS_CFG *Cfg_struct, str_lora_data_set_t *data_
 #endif
     }
 
-    // БИТ 0: Battery
-    field_mask |= FIELD_MASK_BATTERY;
-    buf[offset++] = sensors_status.battery_charge_percent;
+    // ========================================================================
+    // КОНТЕЙНЕРНЫЕ БЛОКИ (биты ContainerMask по возрастанию, v4 п.3.1/п.4)
+    // ========================================================================
 
-    // БИТ 1: GPS (Якорь или живой)
-    if (has_anchor_gps && ((offset + 8) <= max_payload)) {
-        field_mask |= FIELD_MASK_GPS;
+    // БИТ 0: Battery (заряд ТРЕКЕРА)
+    if ((offset + 1u) <= max_payload) {
+        container_mask |= CONTAINER_MASK_BATTERY;
+        buf[offset++] = (uint8_t)sensors_status.battery_charge_percent;
+    }
+
+    // БИТ 1: GPS (якорь истории или живая координата; опора для GPSTrack/EventLog/GPSHistory)
+    if (has_anchor_gps && ((offset + 8u) <= max_payload)) {
+        container_mask |= CONTAINER_MASK_GPS;
         memcpy(&buf[offset], &anchor_lat, 4); offset += 4;
         memcpy(&buf[offset], &anchor_lon, 4); offset += 4;
     }
 
-    // БИТ 2: Sensors
-    uint8_t active_sensors = 0;
-    for (uint8_t chan = 0; chan < COUNT_CHAN_LORA; chan++) {
-        if (TESTBIT(lora.alarm_chan_state, chan)) {
-            active_sensors++;
-        }
-    }
-
-    uint8_t sensors_block_size = 1 + (active_sensors * 4);
-
-    if ((active_sensors > 0) && ((offset + sensors_block_size) <= max_payload)) {
-        field_mask |= FIELD_MASK_SENSORS;
-        buf[offset++] = active_sensors;
-
-        for (uint8_t chan = 0; chan < COUNT_CHAN_LORA; chan++) {
-            if (TESTBIT(lora.alarm_chan_state, chan)) {
-                buf[offset++] = lora_sensor_map[chan];
-
-                // Выбор: замороженные данные (первый пакет) или живые (последующие)
-                int16_t conc_to_send;
-                uint8_t state_err_to_send;
-
-                if (chan_state[chan].trigger_valid) {
-                    // 1. ПЕРВЫЙ ПАКЕТ после события: шлем то, что вызвало тревогу
-                    conc_to_send = chan_state[chan].trigger_concentration;
-                    state_err_to_send = chan_state[chan].trigger_state_err;
-                }
-                else {
-                    // 3. ШТАТНЫЙ РЕЖИМ: шлем абсолютно текущее живое значение
-                    conc_to_send = Lora_ScaleConcentration(Cfg_struct, chan);
-                    state_err_to_send = Cfg_struct->Sensor[chan].StateErr & 0x7F;
-                }
-
-                buf[offset++] = (uint8_t)(conc_to_send & 0xFF);
-                buf[offset++] = (uint8_t)((conc_to_send >> 8) & 0xFF);
-                buf[offset++] = state_err_to_send;
-            }
-        }
-    }
-
-    // БИТ 3: DeviceStatus
-    if ((offset + 1) <= max_payload) {
-        field_mask |= FIELD_MASK_DEV_STATUS;
-        buf[offset++] = lora.ControlLora;
-    }
-
-    // БИТ 4: GPSTrack (Только если нет истории, чтобы не смешивать дельты)
+    // БИТ 2: GPSTrack (только если нет истории, чтобы не смешивать дельты; v3-семантика)
     if (!has_any_history) {
 #if CONFIG_GPS
         if (gps_hist_has_prev && (gps_hist_count > 0)) {
-            uint8_t hist_size = 1 + (2 * gps_hist_count);
+            uint16_t hist_size = (uint16_t)(1u + (2u * gps_hist_count));
             if ((offset + hist_size) <= max_payload) {
-                field_mask |= FIELD_MASK_GPS_TRACK; // Используем новое имя маски
+                container_mask |= CONTAINER_MASK_GPS_TRACK;
                 buf[offset++] = gps_hist_count;
                 for (uint8_t i = 0; i < gps_hist_count; i++) {
-                    buf[offset++] = gps_hist_dx[i];
-                    buf[offset++] = gps_hist_dy[i];
+                    buf[offset++] = (uint8_t)gps_hist_dx[i];
+                    buf[offset++] = (uint8_t)gps_hist_dy[i];
                 }
                 gps_hist_has_prev = false;
                 gps_hist_count = 0;
@@ -1139,68 +1387,153 @@ static void Lora_CompleteDataSet(SNS_CFG *Cfg_struct, str_lora_data_set_t *data_
 #endif
     }
 
-    // БИТ 5: TimeRef (Обязателен для истории)
-    if (has_any_history && ((offset + 4) <= max_payload)) {
-        field_mask |= FIELD_MASK_TIME_REF;
+    // БИТ 3: TimeRef (обязателен при наличии любого исторического блока)
+    if (has_any_history && ((offset + 4u) <= max_payload)) {
+        container_mask |= CONTAINER_MASK_TIME_REF;
         memcpy(&buf[offset], &anchor_time, 4);
         offset += 4;
     }
 
-    // БИТ 6: EventLog
-    if (has_event_log) {
-        uint8_t temp_offset = offset + 1;
-        uint8_t packed_events_count = 0;
-        for (uint8_t i = event_log.send_index; i < event_log.count; i++) {
-            event_log_record_t *rec = &event_log.records[i];
-            uint8_t record_size = 7 + (rec->channel_count * 4);
-            if ((temp_offset + record_size) > max_payload) break;
-            temp_offset += record_size;
-            packed_events_count++;
+    // БИТ 4: DeviceStatus - ControlLora16 (v28/v4 п.4.2: 2 байта LE)
+    if ((offset + 2u) <= max_payload) {
+        container_mask |= CONTAINER_MASK_DEV_STATUS;
+        buf[offset++] = (uint8_t)(lora.ControlLora & 0xFF);
+        buf[offset++] = (uint8_t)((lora.ControlLora >> 8) & 0xFF);
+    }
+
+    // БИТ 5: Environment (v4 п.4.4, 9 Б; источник BME280 int32-драйвер:
+    // Temperature °C×100 -> °C×10, Humidity %×1024 -> %, Pressure УЖЕ гПа×10)
+    if ((sensors_status.Sensors_ok & SENSORS_OK_BME) &&
+        ((offset + (uint16_t)sizeof(environment_block_t)) <= max_payload)) {
+        environment_block_t env;
+        float hum;
+        float prs;
+
+        container_mask |= CONTAINER_MASK_ENVIRONMENT;
+        env.AirQualityIndex = 0;    // AQI: датчика пока нет (задел, v4 п.4.4)
+        env.Temperature = (int16_t)lround(sensors_status.Temperature / 10.0f);
+        hum = sensors_status.Humidity / 1024.0f;
+        if (hum < 0.0f) hum = 0.0f;
+        if (hum > 100.0f) hum = 100.0f;
+        env.Humidity = (uint8_t)lround(hum);
+        prs = sensors_status.Pressure;      // гПа×10 (Па×100 / 1000)
+        if (prs < 0.0f) prs = 0.0f;
+        if (prs > 65535.0f) prs = 65535.0f;
+        env.Pressure = (uint16_t)lround(prs);
+        env.Altitude = Lora_CalcAltitudeM(sensors_status.Pressure);
+        memcpy(&buf[offset], &env, sizeof(env));
+        offset += (uint16_t)sizeof(env);
+    }
+
+    // БИТ 6: Motion (v4 п.4.5, 2 Б: поза/падение из LIS3DH; удар/неподвижность/
+    // уровень активности - задел, источника нет)
+    if ((sensors_status.Sensors_ok & SENSORS_OK_LIS3DH) && ((offset + 2u) <= max_payload)) {
+        uint8_t status_bits = (uint8_t)(Lora_PostureFromOrientation(sensors_status.Orientation) & MOTION_POSTURE_MASK);
+
+        if (fall_latched) {
+            status_bits |= (uint8_t)(1u << MOTION_BIT_FALL);
         }
+        container_mask |= CONTAINER_MASK_MOTION;
+        buf[offset++] = status_bits;
+        buf[offset++] = 0;    // ActivityLevel: задел (источник не определён, v4 п.4.5)
+    }
 
-        if (packed_events_count > 0) {
-            field_mask |= FIELD_MASK_EVENT_LOG;
-            buf[offset++] = packed_events_count;
+    // БИТ 7: PPE (v4 п.4.6: PresenceMask + по байту заряда на установленный
+    // бит, в порядке возрастания номеров бит; источник - Ble_telemetry.ppe)
+    if (Lora_BleFresh(Ble_telemetry.ppe_ms) && (Ble_telemetry.ppe_count > 0u)) {
+        uint8_t presence = 0;
+        uint8_t n_present = 0;
 
-			for (uint8_t i = 0; i < packed_events_count; i++) {
-				uint8_t idx = event_log.send_index + i;
-				event_log_record_t *rec = &event_log.records[idx];
+        for (uint8_t k = 0; (k < Ble_telemetry.ppe_count) && (k < BLE_PPE_MAX); k++) {
+            if (Ble_telemetry.ppe[k].Present) {
+                presence |= (uint8_t)(1u << k);
+                n_present++;
+            }
+        }
+        if ((offset + 1u + (uint16_t)n_present) <= max_payload) {
+            container_mask |= CONTAINER_MASK_PPE;
+            buf[offset++] = presence;
+            for (uint8_t k = 0; (k < Ble_telemetry.ppe_count) && (k < BLE_PPE_MAX); k++) {
+                if (Ble_telemetry.ppe[k].Present) {
+                    buf[offset++] = Ble_telemetry.ppe[k].Charge;
+                }
+            }
+        }
+    }
 
-				// Dt = секунды ВПЕРЁД от TimeRef
-				uint32_t dt_sec = (rec->unix_time >= anchor_time) ? (rec->unix_time - anchor_time) : 0;
-				if (dt_sec > 0xFFFF) dt_sec = 0xFFFF;
+    // БИТ 8: BLEBeacons (v4 п.4.7: Count + 4 Б на маяк; раскладка ble_beacon_t
+    // совпадает с проводной - memcpy; список урезается по вместимости кадра)
+    if (Lora_BleFresh(Ble_telemetry.beacon_ms) && (Ble_telemetry.beacon_count > 0u)) {
+        uint8_t n = Ble_telemetry.beacon_count;
 
-				buf[offset++] = (uint8_t)(dt_sec & 0xFF);
-				buf[offset++] = (uint8_t)((dt_sec >> 8) & 0xFF);
-
-				// Dx, Dy
-				if (rec->lat != 0) {
-					int16_t dx = Lora_CalcDeltaMeters(rec->lat, anchor_lat, 0);
-					int16_t dy = Lora_CalcDeltaMeters(rec->lon, anchor_lon, anchor_lat);
-					buf[offset++] = (uint8_t)(dx & 0xFF);
-					buf[offset++] = (uint8_t)((dx >> 8) & 0xFF);
-					buf[offset++] = (uint8_t)(dy & 0xFF);
-					buf[offset++] = (uint8_t)((dy >> 8) & 0xFF);
-				} else {
-					buf[offset++] = 0x80; buf[offset++] = 0x00;
-					buf[offset++] = 0x80; buf[offset++] = 0x00;
-				}
-
-				// Channels
-				buf[offset++] = rec->channel_count;
-				for (uint8_t c = 0; c < rec->channel_count; c++) {
-					buf[offset++] = rec->channels[c].Channel;
-					buf[offset++] = rec->channels[c].StateErr;
-					buf[offset++] = (uint8_t)(rec->channels[c].Concentration & 0xFF);
-					buf[offset++] = (uint8_t)((rec->channels[c].Concentration >> 8) & 0xFF);
-				}
-			}
-			event_log.last_sent_count = packed_events_count;
+        while ((n > 0u) && ((offset + 1u + (uint16_t)(4u * n)) > max_payload)) {
+            n--;
+        }
+        if (n > 0u) {
+            container_mask |= CONTAINER_MASK_BLE_BEACONS;
+            buf[offset++] = n;
+            for (uint8_t i = 0; i < n; i++) {
+                memcpy(&buf[offset], &Ble_telemetry.beacons[i], sizeof(ble_beacon_t));
+                offset += (uint16_t)sizeof(ble_beacon_t);
+            }
         }
     }
 
     // ========================================================================
-    // БИТ 7: GPSHistory (восстановление трека за время потери связи)
+    // БИТ 9: КОНТЕЙНЕРНЫЙ EventLog v4 (п.4.8): типизированные записи 10 Б,
+    // частичная отправка (send_index/last_sent_count), квита ECHO-битом
+    // ========================================================================
+    if (has_cont_event_log) {
+        uint16_t temp_offset = (uint16_t)(offset + 1u);
+        uint8_t packed_events_count = 0;
+
+        for (uint8_t i = container_event_log.send_index; i < container_event_log.count; i++) {
+            if ((temp_offset + (uint16_t)sizeof(container_event_t)) > max_payload) break;
+            temp_offset += (uint16_t)sizeof(container_event_t);
+            packed_events_count++;
+        }
+
+        if (packed_events_count > 0) {
+            container_mask |= CONTAINER_MASK_EVENT_LOG;
+            buf[offset++] = packed_events_count;
+
+            for (uint8_t i = 0; i < packed_events_count; i++) {
+                container_event_record_t *rec = &container_event_log.records[container_event_log.send_index + i];
+
+                // Dt = секунды ВПЕРЁД от TimeRef
+                uint32_t dt_sec = (rec->unix_time >= anchor_time) ? (rec->unix_time - anchor_time) : 0;
+                if (dt_sec > 0xFFFF) dt_sec = 0xFFFF;
+                buf[offset++] = (uint8_t)(dt_sec & 0xFF);
+                buf[offset++] = (uint8_t)((dt_sec >> 8) & 0xFF);
+
+                // Dx, Dy (0x8000 = нет фикса; LE: байты 0x00 0x80)
+                if (rec->lat != 0) {
+                    int32_t dx32 = Lora_CalcDeltaMeters(rec->lat, anchor_lat, 0);
+                    int32_t dy32 = Lora_CalcDeltaMeters(rec->lon, anchor_lon, anchor_lat);
+                    if (dx32 > 32767) dx32 = 32767;
+                    if (dx32 < -32768) dx32 = -32768;
+                    if (dy32 > 32767) dy32 = 32767;
+                    if (dy32 < -32768) dy32 = -32768;
+                    buf[offset++] = (uint8_t)(dx32 & 0xFF);
+                    buf[offset++] = (uint8_t)((dx32 >> 8) & 0xFF);
+                    buf[offset++] = (uint8_t)(dy32 & 0xFF);
+                    buf[offset++] = (uint8_t)((dy32 >> 8) & 0xFF);
+                } else {
+                    buf[offset++] = 0x00; buf[offset++] = 0x80;    // Dx = 0x8000 (v28: LE-порядок исправлен)
+                    buf[offset++] = 0x00; buf[offset++] = 0x80;    // Dy = 0x8000
+                }
+
+                buf[offset++] = rec->type;
+                buf[offset++] = rec->severity;
+                buf[offset++] = (uint8_t)(rec->value & 0xFF);
+                buf[offset++] = (uint8_t)((rec->value >> 8) & 0xFF);
+            }
+            container_event_log.last_sent_count = packed_events_count;
+        }
+    }
+
+    // ========================================================================
+    // БИТ 10: GPSHistory (восстановление трека за время потери связи, v3-формат)
     // ========================================================================
     if (has_gps_history && has_anchor_gps) {
         uint8_t gps_hist_to_send = gps_history.count - gps_history.send_index;
@@ -1242,9 +1575,9 @@ static void Lora_CompleteDataSet(SNS_CFG *Cfg_struct, str_lora_data_set_t *data_
             }
 
             // 5. Проверяем, влезет ли блок: 6 (заголовок) + 2×N (точки)
-            uint8_t block_size = 6 + (2 * gps_hist_to_send);
+            uint16_t block_size = (uint16_t)(6u + (2u * gps_hist_to_send));
             if ((offset + block_size) <= max_payload) {
-                field_mask |= FIELD_MASK_GPS_HISTORY;
+                container_mask |= CONTAINER_MASK_GPS_HISTORY;
 
                 buf[offset++] = gps_hist_to_send;           // Count
                 buf[offset++] = (uint8_t)(dt0 & 0xFF);      // Dt0 low
@@ -1285,43 +1618,260 @@ static void Lora_CompleteDataSet(SNS_CFG *Cfg_struct, str_lora_data_set_t *data_
         }
     }
 
-    // БИТ 8: ConfigAck
-    if (lora.config_ack_pending && ((offset + 1) <= max_payload)) {
-        field_mask |= FIELD_MASK_CONFIG_ACK;
+    // БИТ 11: ConfigAck
+    if (lora.config_ack_pending && ((offset + 1u) <= max_payload)) {
+        container_mask |= CONTAINER_MASK_CONFIG_ACK;
         buf[offset++] = lora.applied_rev;
         // Сбрасываем флаг сразу после добавления в буфер отправки.
         // Если пакет потеряется, сервер снова пришлет ConfigSeq, и мы взведем флаг заново.
         lora.config_ack_pending = 0;
     }
 
+    // БИТ 12: MsgAck (v28/v4 п.7.1: квитирование доставки текста тем же MsgSeq)
+    if (lora.msg_ack_pending && ((offset + 1u) <= max_payload)) {
+        container_mask |= CONTAINER_MASK_MSG_ACK;
+        buf[offset++] = Lora_Message.MsgSeq;
+        lora.msg_ack_pending = 0;
+    }
 
-    buf[1] = (uint8_t)(field_mask & 0xFF);
-    buf[2] = (uint8_t)((field_mask >> 8) & 0xFF);
+    // ========================================================================
+    // СЕКЦИИ ПОД-УСТРОЙСТВ v4 (п.5): SubCount + [SubID + SubMask + блоки]
+    // ========================================================================
+    if (offset < max_payload) {
+        uint16_t subcount_pos = offset++;    // резерв SubCount, заполним по факту
+        uint8_t sub_count = 0;
+
+        // --- SUB_TYPE_GAS: газоанализатор AVIS (один; данные по BLE) -------
+        if (gas_fresh) {
+            uint16_t sec_start = offset;
+            uint8_t sub_mask = 0;
+
+            offset += 2u;    // резерв SubID + SubMask
+
+            // Бит 0: Battery (заряд газоанализатора, %)
+            if ((offset + 1u) <= max_payload) {
+                uint8_t gas_batt = (uint8_t)Connected_device.battery_charge_percent;
+                sub_mask |= SUB_MASK_GAS_BATTERY;
+                buf[offset++] = (gas_batt > 100u) ? 100u : gas_batt;
+            }
+
+            // Бит 1: Sensors (Count + sensor_data_t[] v3 п.4.3: SensorIndex +
+            // int16 Concentration + StateErr; только каналы вне мёртвой зоны)
+            uint8_t active_sensors = 0;
+            for (uint8_t chan = 0; chan < COUNT_CHAN_LORA; chan++) {
+                if ((Connected_device.Sensor[chan].channel == chan) &&
+                    TESTBIT(lora.alarm_chan_state, chan)) {
+                    active_sensors++;
+                }
+            }
+
+            uint16_t sensors_block_size = (uint16_t)(1u + ((uint16_t)active_sensors * 4u));
+
+            if ((active_sensors > 0) && ((offset + sensors_block_size) <= max_payload)) {
+                {
+                    sub_mask |= SUB_MASK_GAS_SENSORS;
+                    buf[offset++] = active_sensors;
+
+                    for (uint8_t chan = 0; chan < COUNT_CHAN_LORA; chan++) {
+                        if ((Connected_device.Sensor[chan].channel == chan) &&
+                            TESTBIT(lora.alarm_chan_state, chan)) {
+                            int16_t conc_to_send;
+                            uint8_t state_err_to_send;
+
+                            buf[offset++] = lora_sensor_map[chan];
+
+                            // Выбор: замороженные данные (первый пакет после
+                            // события) или живые (последующие)
+                            if (chan_state[chan].trigger_valid) {
+                                conc_to_send = chan_state[chan].trigger_concentration;
+                                state_err_to_send = chan_state[chan].trigger_state_err;
+                            }
+                            else {
+                                conc_to_send = Lora_ScaleConcentration(chan);
+                                state_err_to_send = (uint8_t)(Connected_device.Sensor[chan].StateErr & 0x7F);
+                            }
+
+                            buf[offset++] = (uint8_t)(conc_to_send & 0xFF);
+                            buf[offset++] = (uint8_t)((conc_to_send >> 8) & 0xFF);
+                            buf[offset++] = state_err_to_send;
+                        }
+                    }
+                }
+            }
+
+            // Бит 2: EventLog (канальный журнал v3 п.4.8 за время потери связи;
+            // якорь времени/координаты - КОНТЕЙНЕРНЫЕ TimeRef/GPS этого кадра)
+            if (has_gas_event_log) {
+                uint16_t temp_offset = (uint16_t)(offset + 1u);
+                uint8_t packed_events_count = 0;
+
+                for (uint8_t i = event_log.send_index; i < event_log.count; i++) {
+                    event_log_record_t *rec = &event_log.records[i];
+                    uint16_t record_size = (uint16_t)(7u + ((uint16_t)rec->channel_count * 4u));
+                    if ((temp_offset + record_size) > max_payload) break;
+                    temp_offset += record_size;
+                    packed_events_count++;
+                }
+
+                if (packed_events_count > 0) {
+                    sub_mask |= SUB_MASK_GAS_EVENT_LOG;
+                    buf[offset++] = packed_events_count;
+
+                    for (uint8_t i = 0; i < packed_events_count; i++) {
+                        uint8_t idx = event_log.send_index + i;
+                        event_log_record_t *rec = &event_log.records[idx];
+
+                        // Dt = секунды ВПЕРЁД от TimeRef
+                        uint32_t dt_sec = (rec->unix_time >= anchor_time) ? (rec->unix_time - anchor_time) : 0;
+                        if (dt_sec > 0xFFFF) dt_sec = 0xFFFF;
+
+                        buf[offset++] = (uint8_t)(dt_sec & 0xFF);
+                        buf[offset++] = (uint8_t)((dt_sec >> 8) & 0xFF);
+
+                        // Dx, Dy (0x8000 = нет фикса; LE: байты 0x00 0x80)
+                        if (rec->lat != 0) {
+                            int32_t dx32 = Lora_CalcDeltaMeters(rec->lat, anchor_lat, 0);
+                            int32_t dy32 = Lora_CalcDeltaMeters(rec->lon, anchor_lon, anchor_lat);
+                            if (dx32 > 32767) dx32 = 32767;
+                            if (dx32 < -32768) dx32 = -32768;
+                            if (dy32 > 32767) dy32 = 32767;
+                            if (dy32 < -32768) dy32 = -32768;
+                            buf[offset++] = (uint8_t)(dx32 & 0xFF);
+                            buf[offset++] = (uint8_t)((dx32 >> 8) & 0xFF);
+                            buf[offset++] = (uint8_t)(dy32 & 0xFF);
+                            buf[offset++] = (uint8_t)((dy32 >> 8) & 0xFF);
+                        } else {
+                            buf[offset++] = 0x00; buf[offset++] = 0x80;    // Dx = 0x8000 (v28: LE исправлен)
+                            buf[offset++] = 0x00; buf[offset++] = 0x80;    // Dy = 0x8000
+                        }
+
+                        // Channels
+                        buf[offset++] = rec->channel_count;
+                        for (uint8_t c = 0; c < rec->channel_count; c++) {
+                            buf[offset++] = rec->channels[c].Channel;
+                            buf[offset++] = rec->channels[c].StateErr;
+                            buf[offset++] = (uint8_t)(rec->channels[c].Concentration & 0xFF);
+                            buf[offset++] = (uint8_t)((rec->channels[c].Concentration >> 8) & 0xFF);
+                        }
+                    }
+                    event_log.last_sent_count = packed_events_count;
+                }
+            }
+
+            if (sub_mask != 0) {
+                buf[sec_start]     = LORA_SUBID_GAS_AVIS;    // SubID
+                buf[sec_start + 1] = sub_mask;               // SubMask
+                sub_count++;
+            } else {
+                offset = sec_start;    // секция не собрала ни блока - откат
+            }
+        }
+
+        // --- SUB_TYPE_PULSE: пульсометр - ЗАДЕЛ (v4 п.5.1): подключение по
+        // BLE ещё не реализовано, секция не собирается (TODO автор).         ---
+
+        buf[subcount_pos] = sub_count;
+    }
+
+    fall_latched = 0;    // бит падения показали в этом кадре - снять (событие в журнале живёт отдельно)
+
+    buf[1] = (uint8_t)(container_mask & 0xFF);
+    buf[2] = (uint8_t)((container_mask >> 8) & 0xFF);
     len_lora_data_set = offset;
 }
 
 static void Lora_CompleteDataSet_1(SNS_CFG *Cfg_struct, str_lora_data_set_1_t *data_set)
 {
-    uint8_t chan_data_set = 0;
-    uint8_t active_channels = 0;
+    /* v28/v4 п.6: конфигурация комплекта - паспорт трекера + ФАКТИЧЕСКИЕ
+       радиопараметры (ground truth) + состав СИЗ + под-устройства с их
+       идентификаторами и type-config (самоописываемо через CfgLen).         */
+    uint8_t *tail = data_set->Tail;
+    uint16_t t = 0;
 
     data_set->data_struct_ver   = DATA_STRUCT_LORA_VER | TYPE_MSG_STATIC;
-    data_set->dev_id            = DEVICE_NUMBER;
+    data_set->dev_id            = DEVICE_NUMBER;   // TODO автор: "заводской идентификатор трекера" - кандидат SerialLo (вопросы v28, PLAN)
     data_set->dev_hw_ver        = Cfg_struct->Config_common.HardwareVersion;
     data_set->dev_fw_ver        = FIRMWARE_VERSION;
-    data_set->sensors_enabled   = 0;
 
-    for (uint8_t chan = 0; chan < COUNT_CHAN_LORA; chan++) {
-        if (Cfg_struct->Sensor[chan].channel == chan) {
-            data_set->sensors_enabled |= (1 << chan);
-            data_set->sensors[chan_data_set].Setting = Cfg_struct->Sensor[chan].DeviceSetting;
-            data_set->sensors[chan_data_set].num_formula_gas = Cfg_struct->Sensor[chan].num_formula_gas;
-            chan_data_set++;
-            active_channels++;
+    // Радиопараметры (v4 п.6 / v3 п.4.11.1): фактически установленные в Lora_Init
+    data_set->Radio.Rx1DrOffset    = LORA_RX1_DR_OFFSET;
+    data_set->Radio.Rx2DataRate    = lora.rx2_set_param_dr;
+    data_set->Radio.Rx2FrequencyHz = lora.rx2_set_param_freq;
+    data_set->Radio.Rx1DelaySec    = LORA_RX1_DELAY_SEC;
+    data_set->Radio.TxPower        = LORA_TX_POWER_REPORT;
+    data_set->Radio.MaxDutyCycle   = LORA_MAX_DUTY_CYCLE;
+
+    // СИЗ (v4 п.6): бит k PPEEnabledMask = k-я заведённая единица (индекс в
+    // Ble_telemetry.ppe), за битом следует ppe_descr_t {Type, Serial u16 LE}
+    data_set->PPEEnabledMask = 0;
+    if (Lora_BleFresh(Ble_telemetry.ppe_ms)) {
+        for (uint8_t k = 0; (k < Ble_telemetry.ppe_count) && (k < BLE_PPE_MAX); k++) {
+            ppe_descr_t d;
+
+            data_set->PPEEnabledMask |= (uint8_t)(1u << k);
+            d.Type   = Ble_telemetry.ppe[k].PpeType;
+            d.Serial = Ble_telemetry.ppe[k].Serial;
+            if ((t + sizeof(ppe_descr_t)) <= LORA_STATIC_TAIL_MAX) {
+                memcpy(&tail[t], &d, sizeof(d));
+                t = (uint16_t)(t + sizeof(ppe_descr_t));
+            }
         }
     }
 
-    len_lora_data_set_1 = 6 + (active_channels * sizeof(sensor_data_lora_1_t));
+    // Под-устройства (v4 п.5/п.6): SubCount + дескрипторы подряд
+    uint16_t subcount_pos = t;
+    uint8_t sub_count = 0;
+    if (t < LORA_STATIC_TAIL_MAX) {
+        tail[t++] = 0;    // резерв SubCount
+    }
+
+    // SUB_TYPE_GAS: газоанализатор AVIS. Type-config (v4 п.6): uint8
+    // SensorsEnabled (битовая маска каналов) + channel_cfg_t[] (GasID u16 +
+    // Setting u8, как v3 п.4.11); CfgLen = 1 + 3×N.
+    if ((Ble_telemetry.gas_online != 0u) && Lora_BleFresh(Ble_telemetry.gas_ms)) {
+        uint8_t enabled = 0;
+        uint8_t n = 0;
+
+        for (uint8_t chan = 0; chan < COUNT_CHAN_LORA; chan++) {
+            if (Connected_device.Sensor[chan].channel == chan) {
+                enabled |= (uint8_t)(1u << chan);
+                n++;
+            }
+        }
+        uint16_t need = (uint16_t)(5u + 1u + ((uint16_t)n * sizeof(sensor_data_lora_1_t)));
+        if ((t + need) <= LORA_STATIC_TAIL_MAX) {
+            uint16_t serial = (Ble_telemetry.gas_serial != 0u) ? Ble_telemetry.gas_serial
+                                                               : Connected_device.dev_id;
+            uint16_t cfglen_pos;
+
+            tail[t++] = LORA_SUBID_GAS_AVIS;          // SubID
+            tail[t++] = SUB_TYPE_GAS;                 // SubType
+            tail[t++] = (uint8_t)(serial & 0xFF);     // Serial LE. TODO: legacy-пакет
+            tail[t++] = (uint8_t)(serial >> 8);       //  Avis серийника не несёт - берём
+                                                      //  dev_id; настоящий - из BLE-пакета
+                                                      //  SUBDEV (docs/Mirax-Ble-protocol-v1.md)
+            cfglen_pos = t;
+            tail[t++] = 0;                            // резерв CfgLen
+            tail[t++] = enabled;                      // SensorsEnabled
+            for (uint8_t chan = 0; chan < COUNT_CHAN_LORA; chan++) {
+                if (Connected_device.Sensor[chan].channel == chan) {
+                    sensor_data_lora_1_t c;
+
+                    c.num_formula_gas = Connected_device.Sensor[chan].num_formula_gas;
+                    c.Setting         = (uint8_t)Connected_device.Sensor[chan].Setting;
+                    memcpy(&tail[t], &c, sizeof(c));
+                    t = (uint16_t)(t + sizeof(c));
+                }
+            }
+            tail[cfglen_pos] = (uint8_t)(1u + ((uint16_t)n * sizeof(sensor_data_lora_1_t)));
+            sub_count++;
+        }
+    }
+    // SUB_TYPE_PULSE: пульсометр - ЗАДЕЛ (ещё не подключается, v4 п.5.1).
+    tail[subcount_pos] = sub_count;
+
+    // Длина = фиксированная часть (всё до Tail) + собранный хвост
+    len_lora_data_set_1 = (uint16_t)((sizeof(str_lora_data_set_1_t) - LORA_STATIC_TAIL_MAX) + t);
 }
 
 static void Lora_CompleteDataSet_2(SNS_CFG *Cfg_struct, str_lora_data_set_2_t *data_set, TYPE_MSG_LORA type_msg)
@@ -1420,8 +1970,9 @@ void Lora_DataSet(SNS_CFG *Cfg_struct)
         // ФИКСАЦИЯ GPS-ТОЧКИ ДЛЯ ИСТОРИИ (только при потере связи)
         // ========================================================================
         bool has_event_log = (event_log.count > event_log.send_index);
+        bool has_cont_event_log = (container_event_log.count > container_event_log.send_index);
         bool has_gps_history = (gps_history.count > gps_history.send_index);
-        bool has_any_history = has_event_log || has_gps_history;
+        bool has_any_history = has_event_log || has_cont_event_log || has_gps_history;
 
 #if CONFIG_GPS
         if (LORA_TEST_FLAG(LORA_FLAG_CONNECTION_LOST) && event_anchor.is_valid) {
@@ -1777,7 +2328,8 @@ static void ParseLoraToStruct(const char* uart_buffer)
         size_t bytes_to_parse = hex_len / 2;
 
         // 1. Преобразуем HEX-строку в массив байтов
-        uint8_t payload[64]; // С запасом (макс. downlink обычно меньше)
+        // v28: буфер 244 - downlink v4 с блоком Message до 242 байт (v4 п.7.1)
+        uint8_t payload[244];
         if (bytes_to_parse > sizeof(payload)) {
             bytes_to_parse = sizeof(payload);
         }
@@ -1788,6 +2340,13 @@ static void ParseLoraToStruct(const char* uart_buffer)
 
         // 2. Минимальная длина: Header (1) + FieldMask (2) = 3 байта
         if (bytes_to_parse < 3) {
+            return;
+        }
+
+        // 2b. v28/v4 п.2/п.7: принимаем ТОЛЬКО downlink своей версии
+        // (Header = TYPE_CONFIG | 4 = 0x04). Прочее (напр. v3-кадры) - игнор.
+        if (((payload[0] & 0xC0u) != TYPE_MSG_DYNAMIC) ||
+            ((payload[0] & 0x0Fu) != DATA_STRUCT_LORA_VER)) {
             return;
         }
 
@@ -1802,9 +2361,11 @@ static void ParseLoraToStruct(const char* uart_buffer)
         uint8_t offset = 3; // Начинаем после Header и FieldMask
 
         if (lora_data_get.FieldMask & FIELD_MASK_DL_CONTROL) {
-            if (offset + 2 <= bytes_to_parse) {
-                lora_data_get.ControlLoraMask = payload[offset++];
-                lora_data_get.ControlLoraValue = payload[offset++];
+            // v28/v4 п.7: блок Control расширен до Mask(u16) + Value(u16)
+            if (offset + 4 <= bytes_to_parse) {
+                lora_data_get.ControlLoraMask  = (uint16_t)(payload[offset] | (payload[offset + 1] << 8));
+                lora_data_get.ControlLoraValue = (uint16_t)(payload[offset + 2] | (payload[offset + 3] << 8));
+                offset += 4;
             }
         }
 
@@ -1844,8 +2405,25 @@ static void ParseLoraToStruct(const char* uart_buffer)
                 lora_data_get.UnixTime = payload[offset] |
                                         (payload[offset+1] << 8) |
                                         (payload[offset+2] << 16) |
-                                        (payload[offset+3] << 24);
+                                        ((uint32_t)payload[offset+3] << 24);
                 offset += 4;
+            }
+        }
+
+        // v28/v4 п.7.1: Message - MsgSeq + Length + Text[Length] (CP1251)
+        if (lora_data_get.FieldMask & FIELD_MASK_DL_MESSAGE) {
+            if (offset + 2 <= bytes_to_parse) {
+                lora_data_get.MsgSeq = payload[offset++];
+                lora_data_get.MsgLen = payload[offset++];
+                if (lora_data_get.MsgLen > LORA_MSG_TEXT_MAX) {
+                    lora_data_get.MsgLen = LORA_MSG_TEXT_MAX;
+                }
+                if ((uint16_t)(offset + lora_data_get.MsgLen) <= bytes_to_parse) {
+                    memcpy(lora_data_get.MsgText, &payload[offset], lora_data_get.MsgLen);
+                    offset += lora_data_get.MsgLen;
+                } else {
+                    lora_data_get.MsgLen = 0;    // текст не помещается в кадр - блок игнорируем
+                }
             }
         }
 
@@ -1869,7 +2447,8 @@ void Lora_Receive(void)
     if (buffer_uart_lora.TimeFlagRX && (get_state_init_flag_lora() == 1)) {
         buffer_uart_lora.TimeFlagRX = 0;
 
-        while (check_buffer(&InputBuffer[TYPE_LORA])) {
+        while (check_buffer(&InputBuffer[TYPE_LORA]) &&
+               (buffer_uart_lora.count_byter_r < (uint16_t)(sizeof(buffer_uart_lora.receive) - 1u))) {
             receive_buffer(&InputBuffer[TYPE_LORA], &buffer_uart_lora.receive[buffer_uart_lora.count_byter_r]);
             buffer_uart_lora.count_byter_r++;
         }
@@ -2073,8 +2652,8 @@ void Lora_DebugPrintStatus(void)
     snprintf(tmp, sizeof(tmp), "TX:%dms\r\n", lora.tx_busy_timer);
     buf_append(buf, buf_size, &len, tmp);
 
-    // 4. ControlLora
-    snprintf(tmp, sizeof(tmp), "C:%02X[", lora.ControlLora);
+    // 4. ControlLora16
+    snprintf(tmp, sizeof(tmp), "C:%04X[", lora.ControlLora);
     buf_append(buf, buf_size, &len, tmp);
     if (TESTBIT(lora.ControlLora, ST_LORA_BIT_ACTIV_MOD)) buf_append(buf, buf_size, &len, "A");
     if (TESTBIT(lora.ControlLora, ST_LORA_BIT_ECHO))      buf_append(buf, buf_size, &len, "E");

@@ -114,6 +114,10 @@ void Uart_SetBaudrate(UART_HandleTypeDef *huart, uint32_t baud);
 #define BUTTON_2_EXTI_LINE 	LL_EXTI_LINE_2
 #define BUTTON_3_EXTI_LINE 	LL_EXTI_LINE_3
 #define ACCEL_INT_EXINT_LINE LL_EXTI_LINE_11
+/* v28: совместимость со стилем Avis/SPL - error_status/SUCCESS/ERROR нужны
+   vector_macros.c (RTC_WriteTime, подход автора). В HAL U5 типа ErrorStatus
+   нет (только HAL_StatusTypeDef), определяем здесь (как в старом SPL).      */
+typedef enum { ERROR = 0, SUCCESS = !ERROR } ErrorStatus;
 #define error_status 		ErrorStatus
 #define I2C_OK				HAL_OK
 /* USER CODE END EM */

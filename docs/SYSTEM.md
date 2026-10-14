@@ -60,14 +60,24 @@ Inc/Config_save_read.h       с адресом области (sfmap.h), save_ev
                            Init_Build_Type/current_build_type (бренд, v27)
 Src/Gps.c                  GPS/GNSS: NMEA (GLL/GGA/RMC), автоопределение чипа, координаты для LoRa
 Src/Lora_S7678S.c          LoRa S7678S: AT-драйвер, машина состояний, payload uplink/downlink
-Inc/Lora_S7678S.h            (CONFIG_LORA = 0 - порт не подключён: PLAN.md п.25/27)
+Inc/Lora_S7678S.h            ПРОТОКОЛ v4 (v28, docs/Mirax-Lora-protocol-v4.md): контейнерные
+                           блоки трекера (Battery/GPS/Environment/Motion/PPE/BLEBeacons/
+                           EventLog/GPSHistory/ControlLora16/ConfigAck/MsgAck) + секции
+                           под-устройств (AVIS = SUB_TYPE_GAS из Connected_device/Ble_telemetry);
+                           TYPE_STATIC v4 (Radio/СИЗ/sub_descr), downlink +Message (CP1251 ->
+                           Lora_Message для дисплея)
+                           (CONFIG_LORA = 0 - порт не подключён: PLAN.md п.25/27)
 Src/buffer.c               кольца приёма InputBuffer[TYPE_*]: строгий SPSC (ISR пишет end,
 Inc/buffer.h                 Receiver Task пишет begin), transmit_buffer по типу порта
 Src/Ble_vector.c           BLE: мастерская сторона модуля MK01 (v27, CONFIG_BLE) - порт
 Inc/Ble_vector.h             Ble_mk01.c из Avis: Ble_Init (AT/имя ADVBLENAMESET/BLEADDR?/
                            период/мощность/старт), Ble_TransmitReceive (4 попытки, OK/ERROR,
                            3 серии -> flag_err), вместо DATASET - периодический запрос
-                           ADVMSDDATAGET (ответ hex -> str_ble_data_set_t -> Connected_device);
+                           ADVMSDDATAGET (ответ hex -> пакет ПРОТОКОЛА ДАННЫХ v1, v28,
+                           docs/Mirax-Ble-protocol-v1.md: Header тип+версия; legacy Avis
+                           0x02 (6+5N, как есть) / BEACONS 0x11 / PPE 0x21 / SUBDEV 0x31 /
+                           AGG 0xF1 -> Connected_device + Ble_telemetry (shared_types.h,
+                           вне CONFIG_* - читает LoRa v4; свежесть TTL 5 мин);
                            кольцо TYPE_BLE читает только Ble_TransmitReceive (публичный
                            Ble_Receive пустой); состояние - ble_status
 Src/Menu_vector.c          ОСНОВА меню (v26/v27, CONFIG_DISPLAY): машина экранов screen_t +
