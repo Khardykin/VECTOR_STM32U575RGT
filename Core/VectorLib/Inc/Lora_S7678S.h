@@ -1,52 +1,11 @@
-/**
-  ******************************************************************************
-  * @file    Lora_S7678S.h
-  * @brief   LoRa-модуль S7678S: протокол и API драйвера (файл автора)
-  *
-  *          ПРОТОКОЛ v4 (MIRAX, docs/Mirax-Lora-protocol-v4.md; v28 - апгрейд
-  *          с v3 без переименования функций/структур): трекер агрегирует
-  *          телеметрию комплекта - контейнерные блоки (батарея/GPS/среда/
-  *          движение/СИЗ/BLE-маяки/журнал/история) + секции под-устройств
-  *          (SubID+SubMask; AVIS = SUB_TYPE_GAS, данные из Connected_device /
-  *          Ble_telemetry по BLE). ControlLora расширен до 16 бит (+бит 8
-  *          EVACUATION), downlink +блок Message (текст CP1251 на дисплей) и
-  *          uplink +MsgAck, TYPE_STATIC v4 (радиопараметры + СИЗ + под-
-  *          устройства), EventLog разделён: контейнерный (типизированный,
-  *          10-байтовые записи) и газовый (v3-формат, в секции AVIS).
-  *
-  *          Оглавление файла - ниже (разделы 1-9): аппаратная конфигурация
-  *          (USART_LORA, COUNT_CHAN_LORA от COUNT_CHAN), константы протокола,
-  *          статусы/состояния, флаги LORA_CFG, маски контейнера/под-устройств/
-  *          downlink, структуры payload (Static/Dynamic/ACK/Downlink/Message),
-  *          AT-строки.
-  *          Реализация - Lora_S7678S.c (компилируется под CONFIG_LORA; сейчас
-  *          CONFIG_LORA = 0: порт UART4 конфликтует с логом и не определён
-  *          USART_RF - PLAN.md п.25/27, этап 2 плана).
-  *          Контекст: Lora_Receive() - Receiver Task, Lora_Init()/Lora_Run() -
-  *          Measure Task (weak-заглушки в Vector_main.c замещаются драйвером).
-  ******************************************************************************
-  */
 #ifndef _LORA_S7678S_H_
 #define _LORA_S7678S_H_
 
 //===========================================================================================================================
-// ОГЛАВЛЕНИЕ ФАЙЛА:
-// 1. Аппаратная конфигурация (UART, количество каналов)
-// 2. Базовые константы протокола (Версии, Типы сообщений)
-// 3. Статусы и состояния (Enums, классы, запросы)
-// 4. Макросы конфигурации (Побитовое хранение флагов LORA_CFG)
-// 5. Маски полей (ContainerMask/SubMask v4 для Uplink и FieldMask для Downlink)
-// 6. Структуры данных (Payloads: Static, Dynamic, ACK, Downlink, Message)
-// 7. Команды и строковые константы для парсинга UART
-// 8. Глобальные переменные и буферы
-// 9. Public API (Прототипы функций, сгруппированные по назначению)
-//===========================================================================================================================
-#if CONFIG_LORA
-//===========================================================================================================================
 // 1. АППАРАТНАЯ КОНФИГУРАЦИЯ
 //===========================================================================================================================
-#if (DEVICE_NUMBER == Dev1)
-	#define USART_LORA		(huart4)
+#if(DEVICE_NUMBER == Dev1)
+    #define USART_LORA		(huart4)
 #endif
 
 #define COUNT_CHAN_LORA	(COUNT_CHAN)
@@ -55,21 +14,15 @@
 #define LORA_REGION_RU864    1
 #define LORA_MAX_CHANNELS    10
 
-/* v28: инициализация UART модуля (S7678S: 115200 8N1). Раньше символ
-   LORA_UART_Init() приходил из Avis-заголовков и в Vector не был определён -
-   теперь макрос поверх usart_init/Uart_SetBaudrate (main.h, vector_macros.c). */
-#define LORA_UART_BAUDRATE	(115200u)
-#define LORA_UART_Init()	usart_init(USART_LORA, LORA_UART_BAUDRATE, USART_DATA_8BITS, USART_STOP_1_BIT)
-//===========================================================================================================================
-// ТАЙМЕР ЗАНЯТОСТИ МОДЕМА (защита от "MAC TX running")
-// Тик Uart_Lora_Receive_Timer_Inc = 1 мс
-//===========================================================================================================================
-#define TX_BUSY_TIMEOUT_TX_MS      10000   // для ЛЮБОЙ отправки в эфир
-#define TX_BUSY_RX_WINDOW_MS        1500   //  защитное окно после ЛЮБОГО ответа модема (Ok, accepted, err)
+#define FLASH_ADDRESS_APPKEY    (0x080FF000)
+
+#define TX_BUSY_TIMEOUT_TX_MS      10000
+#define TX_BUSY_RX_WINDOW_MS        1500
+
 //===========================================================================================================================
 // 2. БАЗОВЫЕ КОНСТАНТЫ ПРОТОКОЛА
 //===========================================================================================================================
-#define DATA_STRUCT_LORA_VER 	(4)	// v28: протокол MIRAX v4 (docs/Mirax-Lora-protocol-v4.md)
+#define DATA_STRUCT_LORA_VER 	(4)
 
 typedef enum
 {
@@ -79,18 +32,8 @@ typedef enum
     TYPE_MSG_TURN_OFF 	= (0xC0)
 } TYPE_MSG_LORA;
 
-// 1 = Принудительно делать JOIN при каждом старте (даже если сессия сохранена)
-// 0 = Полагаться на сохраненную сессию и не делать JOIN явно
 #define LORA_FORCE_JOIN_ON_STARTUP    1
 
-/* v4 п.5: локальные индексы под-устройств комплекта (SubID в TYPE_STATIC и в
-   секциях TYPE_DYNAMIC). Газоанализатор AVIS - один (решение автора).       */
-#define LORA_SUBID_GAS_AVIS		(1)		// SUB_TYPE_GAS: газоанализатор AVIS (по BLE)
-#define LORA_SUBID_PULSE		(2)		// SUB_TYPE_PULSE: пульсометр (задел, ещё не подключается)
-
-/* v4 п.8.2 (пример): GasID кислорода в каталоге формул - для мёртвой зоны
-   20.85..20.95. СВЕРИТЬ с каталогом/Avis v3 (коды num_formula_gas).         */
-#define LORA_GAS_ID_O2			(68u)
 //===========================================================================================================================
 // 3. СТАТУСЫ И СОСТОЯНИЯ
 //===========================================================================================================================
@@ -103,99 +46,29 @@ typedef enum
 #define LORA_REQ_CLASS_A     1
 #define LORA_REQ_CLASS_C     2
 
-/* v4 п.4.2: ControlLora16 - биты 0..7 как в v3, бит 8 EVACUATION («Всем на
-   выход», RW от сервера, подтверждается эхом в uplink). SOS (бит 5) и
-   CURRENT_C (бит 7) защищены от перезаписи сервером (маска 0x00A0).        */
 enum STATUS_LORA
 {
-    ST_LORA_BIT_GROUP = 0,
-    ST_LORA_BIT_BACK_GROUP,
-    ST_LORA_BIT_SOS_GROUP,
-    ST_LORA_BIT_ACTIV_MOD,
-    ST_LORA_BIT_ZONE,
-    ST_LORA_BIT_SOS,
-    ST_LORA_BIT_ECHO,
-    ST_LORA_BIT_CURRENT_C = 7,
-    ST_LORA_BIT_EVACUATION = 8	// v28/v4: команда эвакуации от сервера
+    ST_LORA_BIT_GROUP       = 0,
+    ST_LORA_BIT_BACK_GROUP  = 1,
+    ST_LORA_BIT_SOS_GROUP   = 2,
+    ST_LORA_BIT_ACTIV_MOD   = 3,
+    ST_LORA_BIT_ZONE        = 4,
+    ST_LORA_BIT_SOS         = 5,
+    ST_LORA_BIT_ECHO        = 6,
+    ST_LORA_BIT_CURRENT_C   = 7,
+    ST_LORA_BIT_EVACUATION  = 8
 };
-#define ST_LORA_BIT_DATA_TYPE ST_LORA_BIT_CURRENT_C
 
-/* Биты ControlLora16, которые сервер НЕ может перезаписать (SOS | CURRENT_C) */
-#define ST_LORA16_PROTECTED_MASK	(0x00A0u)
-/* Биты ControlLora16, чьё изменение требует квитирования ACK-пакетом
-   (v3 маска 0x37 + v4 бит EVACUATION).                                     */
-#define ST_LORA16_ACK_MASK			(0x0137u)
+#define ST_LORA_BIT_DATA_TYPE ST_LORA_BIT_CURRENT_C
 
 enum STATUS_LORA_2
 {
     ST_LORA2_REQ_STATIC   = 0,
     ST_LORA2_SET_CLASS_C  = 3,
-    // Биты 1-2, 4-7 зарезервированы
 };
 
-/* v4 п.4.5: биты StatusBytes блока Motion */
-enum MOTION_BITS
-{
-    MOTION_POSTURE_MASK = 0x03,  // биты 0-1: поза (0 неизвестно, 1 вертикальное, 2 горизонтальное)
-    MOTION_BIT_FALL     = 2,     // зафиксировано падение
-    MOTION_BIT_IMPACT   = 3,     // зафиксирован удар (факт события)
-    MOTION_BIT_INACTIVE = 4,     // прибор неподвижен (отсутствие активности)
-    // биты 5-7 - зарезервировано
-};
-#define MOTION_POSTURE_UNKNOWN		(0u)
-#define MOTION_POSTURE_VERTICAL		(1u)
-#define MOTION_POSTURE_HORIZONTAL	(2u)
-
-/* v4 п.4.6: состояние заряда СИЗ (байт Charge[k]; те же коды у Battery маяка) */
-enum PPE_CHARGE_STATE
-{
-    PPE_CHARGE_LOW     = 0,  // разряжен
-    PPE_CHARGE_WARNING = 1,  // предупреждение
-    PPE_CHARGE_OK      = 2,  // в норме
-    // 3..255 - зарезервировано
-};
-
-/* v4 п.4.8: коды EventType контейнерного журнала (таблица ПРЕДВАРИТЕЛЬНАЯ -
-   не зафиксирована, сверять при согласовании перечня офлайн-событий).       */
-enum CONTAINER_EVENT_TYPE
-{
-    CONT_EV_AIR_QUALITY   = 0x01,  // качество воздуха (порог), Value = индекс
-    CONT_EV_HUMIDITY      = 0x02,  // влажность (порог), Value = %
-    CONT_EV_TEMPERATURE   = 0x03,  // температура (порог), Value = °C×10
-    CONT_EV_PULSE         = 0x04,  // пульс (порог), Value = уд/мин
-    CONT_EV_ALTITUDE      = 0x05,  // высота (порог), Value = м
-    CONT_EV_INACTIVE      = 0x10,  // отсутствие активности, Value = 0x8000
-    CONT_EV_POSTURE_HOR   = 0x11,  // горизонтальное положение, Value = 0x8000
-    CONT_EV_POSTURE_VER   = 0x12,  // вертикальное положение, Value = 0x8000
-    CONT_EV_FALL          = 0x13,  // зафиксировано падение, Value = 0x8000
-    CONT_EV_IMPACT        = 0x14,  // зафиксирован удар, Value = 0x8000
-    CONT_EV_SOS           = 0x15,  // сигнал SOS, Value = 0x8000
-    CONT_EV_PPE_OFF       = 0x20,  // СИЗ не надеты, Value = маска снятых
-    CONT_EV_PPE_OK        = 0x21,  // СИЗ в норме, Value = 0x8000
-    CONT_EV_PPE_CHARGE    = 0x22,  // заряд СИЗ (порог), Value = индекс единицы
-};
-#define CONT_EV_VALUE_NA	((int16_t)0x8000)	// "нет значения/нет фикса"
-
-/* v4 п.4.8: Severity контейнерного события */
-#define CONT_SEV_INFO		(0u)
-#define CONT_SEV_WARNING	(1u)
-#define CONT_SEV_CRITICAL	(2u)
-
-/* v4 п.5: типы под-устройств */
-enum SUB_TYPE
-{
-    SUB_TYPE_GAS   = 0,   // газоанализатор AVIS
-    SUB_TYPE_PULSE = 1,   // пульсометр (браслет)
-    // 2..255 - зарезервировано (новые носимые устройства)
-};
-
-/* v4 п.6/7: радиопараметры и прочее для TYPE_STATIC */
-#define LORA_RX1_DELAY_SEC		(3u)	// фактический Rx1Delay, с (Lora_Init: CMD_SET_RXDELAY)
-#define LORA_RX1_DR_OFFSET		(0u)	// EU868/RU864 по умолчанию (геттера в AT нет)
-#define LORA_TX_POWER_REPORT	(0u)	// TxPower для статики: 0 = по умолчанию модулем (TODO: геттер)
-#define LORA_MAX_DUTY_CYCLE		(0u)	// v4 п.7.1: комплекс работает с выключенным duty cycle
 //===========================================================================================================================
-// 4. МАКРОСЫ КОНФИГУРАЦИИ (Побитовое хранение в 2 байтах)
+// 4. МАКРОСЫ КОНФИГУРАЦИИ
 //===========================================================================================================================
 #define LORA_CFG_BIT_SAVED          (0)
 #define LORA_CFG_BIT_CLASS_C        (1)
@@ -211,61 +84,137 @@ enum SUB_TYPE
 
 #define LORA_CFG_GET_DR(flags)          (((flags) >> LORA_CFG_DR_SHIFT) & LORA_CFG_DR_MASK)
 #define LORA_CFG_SET_DR(flags, dr)      do { (flags) &= ~(LORA_CFG_DR_MASK << LORA_CFG_DR_SHIFT); (flags) |= (((dr) & LORA_CFG_DR_MASK) << LORA_CFG_DR_SHIFT); } while(0)
+
 #define LORA_CFG_GET_GPSFIX(flags)      (((flags) >> LORA_CFG_GPSFIX_SHIFT) & LORA_CFG_GPSFIX_MASK)
 #define LORA_CFG_SET_GPSFIX(flags, val) do { (flags) &= ~(LORA_CFG_GPSFIX_MASK << LORA_CFG_GPSFIX_SHIFT); (flags) |= (((val) & LORA_CFG_GPSFIX_MASK) << LORA_CFG_GPSFIX_SHIFT); } while(0)
 
 //===========================================================================================================================
-// 5. МАСКИ ПОЛЕЙ (FIELD MASKS)
+// 5. МАСКИ ПОЛЕЙ (MIRAX v4)
 //===========================================================================================================================
-// --- UPLINK v4 (Прибор -> Сервер): ContainerMask, биты по п.3.1 протокола ---
-// (v3-маски FIELD_MASK_* упразднены - в v4 биты переразделены;downlink-имя
-//  FieldMask сохранено, раскладка битов downlink в v4 НЕ изменилась)
-#define CONTAINER_MASK_BATTERY      (1u << 0)   // заряд трекера, 1 Б
-#define CONTAINER_MASK_GPS          (1u << 1)   // полная координата, 8 Б
-#define CONTAINER_MASK_GPS_TRACK    (1u << 2)   // текущий трек (дельты int8), 1+2N
-#define CONTAINER_MASK_TIME_REF     (1u << 3)   // опора абсолютного времени, 4 Б
-#define CONTAINER_MASK_DEV_STATUS   (1u << 4)   // ControlLora16, 2 Б (в v3 был бит 3, 1 Б)
-#define CONTAINER_MASK_ENVIRONMENT  (1u << 5)   // среда: AQI/T/H/P/Alt, 9 Б
-#define CONTAINER_MASK_MOTION       (1u << 6)   // положение/падение/активность, 2 Б
-#define CONTAINER_MASK_PPE          (1u << 7)   // СИЗ: PresenceMask + заряды, 1+K
-#define CONTAINER_MASK_BLE_BEACONS  (1u << 8)   // BLE-маяки: Count + 4K
-#define CONTAINER_MASK_EVENT_LOG    (1u << 9)   // контейнерный журнал, 1+10N
-#define CONTAINER_MASK_GPS_HISTORY  (1u << 10)  // история GPS, 6+2N
-#define CONTAINER_MASK_CONFIG_ACK   (1u << 11)  // AppliedRev, 1 Б (в v3 бит 8)
-#define CONTAINER_MASK_MSG_ACK      (1u << 12)  // MsgSeq доставленного сообщения, 1 Б
 
-// --- UPLINK v4: SubMask секции под-устройства (п.5) ---
-// Газоанализатор AVIS (SUB_TYPE_GAS):
-#define SUB_MASK_GAS_BATTERY        (1u << 0)   // uint8 заряд, %
-#define SUB_MASK_GAS_SENSORS        (1u << 1)   // Count + sensor_data_t[] (v3 п.4.3)
-#define SUB_MASK_GAS_EVENT_LOG      (1u << 2)   // Count + event_record_t[] (v3 п.4.8, канальный)
-// Пульсометр (SUB_TYPE_PULSE, задел):
-#define SUB_MASK_PULSE_BATTERY      (1u << 0)
-#define SUB_MASK_PULSE_HEARTRATE    (1u << 1)
-#define SUB_MASK_PULSE_SPO2         (1u << 2)
+// --- UPLINK CONTAINER MASK ---
+#define CONTAINER_MASK_BATTERY       (1u << 0)
+#define CONTAINER_MASK_GPS           (1u << 1)
+#define CONTAINER_MASK_GPS_TRACK     (1u << 2)
+#define CONTAINER_MASK_TIME_REF      (1u << 3)
+#define CONTAINER_MASK_DEV_STATUS    (1u << 4)
+#define CONTAINER_MASK_ENVIRONMENT   (1u << 5)
+#define CONTAINER_MASK_MOTION        (1u << 6)
+#define CONTAINER_MASK_PPE           (1u << 7)
+#define CONTAINER_MASK_BLE_BEACONS   (1u << 8)
+#define CONTAINER_MASK_EVENT_LOG     (1u << 9)
+#define CONTAINER_MASK_GPS_HISTORY   (1u << 10)
+#define CONTAINER_MASK_CONFIG_ACK    (1u << 11)
+#define CONTAINER_MASK_MSG_ACK       (1u << 12)
 
-// --- DOWNLINK (Сервер -> Прибор), v4 п.7: биты 0-6 как в v3, +бит 7 Message ---
-#define FIELD_MASK_DL_CONTROL       (1 << 0)  // Блок Control (Mask u16 + Value u16, v4: 4 Б)
-#define FIELD_MASK_DL_MODE          (1 << 1)  // Блок ControlLora2 (Mask + Value)
-#define FIELD_MASK_DL_PERIOD_NORM   (1 << 2)  // Штатный период
-#define FIELD_MASK_DL_PERIOD_ACT    (1 << 3)  // Аварийный период
-#define FIELD_MASK_DL_GPS_FIX       (1 << 4)  // Интервал фиксации GPS
-#define FIELD_MASK_DL_CONFIG_SEQ    (1 << 5)  // Версия конфигурации
-#define FIELD_MASK_DL_TIME          (1 << 6)  // Unix-время для RTC
-#define FIELD_MASK_DL_MESSAGE       (1 << 7)  // v28/v4 п.7.1: текст на дисплей (CP1251)
+// --- SUBDEVICE TYPES ---
+#define SUB_TYPE_GAS                 (0u)
+#define SUB_TYPE_PULSE               (1u)
+
+// --- SUBDEVICE IDS ---
+#define SUB_ID_PULSE_DEFAULT         (1u)
+#define SUB_ID_GAS_DEFAULT           (2u)
+
+// --- SUBDEVICE MASK: SUB_TYPE_GAS ---
+#define SUB_MASK_GAS_BATTERY         (1u << 0)
+#define SUB_MASK_GAS_SENSORS         (1u << 1)
+#define SUB_MASK_GAS_EVENT_LOG       (1u << 2)
+
+// --- SUBDEVICE MASK: SUB_TYPE_PULSE ---
+#define SUB_MASK_PULSE_BATTERY       (1u << 0)
+#define SUB_MASK_PULSE_HEART_RATE    (1u << 3)   // bit 3
+#define SUB_MASK_PULSE_SPO2          (1u << 4)   // bit 4
+
+// --- DOWNLINK FIELD MASK ---
+#define FIELD_MASK_DL_CONTROL        (1u << 0)
+#define FIELD_MASK_DL_MODE           (1u << 1)
+#define FIELD_MASK_DL_PERIOD_NORM    (1u << 2)
+#define FIELD_MASK_DL_PERIOD_ACT     (1u << 3)
+#define FIELD_MASK_DL_GPS_FIX        (1u << 4)
+#define FIELD_MASK_DL_CONFIG_SEQ     (1u << 5)
+#define FIELD_MASK_DL_TIME           (1u << 6)
+#define FIELD_MASK_DL_MESSAGE        (1u << 7)
 
 //===========================================================================================================================
-// 6. СТРУКТУРЫ ДАННЫХ (PAYLOADS)
+// MOTION (MIRAX v4)
 //===========================================================================================================================
-/* Конфигурация газового канала (v3 п.4.11 = v4 п.6 channel_cfg_t: GasID u16 +
-   Setting u8, 3 Б) - в TYPE_STATIC v4 идёт в Cfg[] дескриптора SUB_TYPE_GAS. */
+#define MOTION_POSTURE_MASK          (0x03u)
+
+#define MOTION_POSTURE_UNKNOWN       (0u)
+#define MOTION_POSTURE_VERTICAL      (1u)
+#define MOTION_POSTURE_HORIZONTAL    (2u)
+
+#define MOTION_BIT_FALL              (1u << 2)
+#define MOTION_BIT_IMPACT            (1u << 3)
+#define MOTION_BIT_INACTIVE          (1u << 4)
+
+//===========================================================================================================================
+// PPE (MIRAX v4)
+//===========================================================================================================================
+#define PPE_TYPE_HELMET              (0u)
+#define PPE_TYPE_HARNESS             (1u)
+#define PPE_TYPE_MASK                (2u)
+#define PPE_TYPE_GLOVES              (3u)
+#define PPE_TYPE_GLASSES             (4u)
+#define PPE_TYPE_BOOTS               (5u)
+
+#define PPE_CHARGE_LOW               (0u)
+#define PPE_CHARGE_WARNING           (1u)
+#define PPE_CHARGE_OK                (2u)
+
+//===========================================================================================================================
+// BLE BEACONS (MIRAX v4)
+//===========================================================================================================================
+#define BLE_BATTERY_LOW              (0u)
+#define BLE_BATTERY_WARNING          (1u)
+#define BLE_BATTERY_OK               (2u)
+
+//===========================================================================================================================
+// CONTAINER EVENT LOG (MIRAX v4)
+//===========================================================================================================================
+#define CONTAINER_EVENT_AQI_THRESHOLD        (0x01u)
+#define CONTAINER_EVENT_HUMIDITY_THRESHOLD   (0x02u)
+#define CONTAINER_EVENT_TEMP_THRESHOLD       (0x03u)
+#define CONTAINER_EVENT_PULSE_THRESHOLD      (0x04u)
+
+#define CONTAINER_EVENT_INACTIVITY           (0x10u)
+#define CONTAINER_EVENT_HORIZONTAL           (0x11u)
+#define CONTAINER_EVENT_VERTICAL             (0x12u)
+#define CONTAINER_EVENT_FALL                 (0x13u)
+#define CONTAINER_EVENT_IMPACT               (0x14u)
+#define CONTAINER_EVENT_SOS                  (0x15u)
+
+#define CONTAINER_EVENT_PPE_NOT_WORN         (0x20u)
+#define CONTAINER_EVENT_PPE_OK               (0x21u)
+#define CONTAINER_EVENT_PPE_CHARGE_THRESHOLD (0x22u)
+
+//===========================================================================================================================
+// РАЗМЕРЫ И ОПЦИИ
+//===========================================================================================================================
+#define LORA_MESSAGE_MAX_LEN          (237u)
+#define LORA_MAX_BLE_BEACONS          (8u)
+#define LORA_CONTAINER_EVENT_MAX      (16u)
+#define LORA_MAX_PPE                  (8u)
+
+// Если батарея одна на всё устройство, можно дублировать её
+// в контейнер и в газовый субдевайс.
+#define LORA_INCLUDE_GAS_SUB_BATTERY  (1)
+
+// Если пульсометра нет, оставляем 0.
+// Если будет, ставим 1 и заполняем pulse_state через API.
+#define LORA_INCLUDE_PULSE_SUBDEVICE  (0)
+
+//===========================================================================================================================
+// 6. СТРУКТУРЫ ДАННЫХ
+//===========================================================================================================================
 typedef struct
 {
     uint16_t num_formula_gas;
     uint8_t  Setting;
-} __attribute__ ((__packed__)) sensor_data_lora_1_t;
+} __attribute__((__packed__)) sensor_data_lora_1_t;
 
-/* v4 п.6: фактические радиопараметры трекера (ground truth, 9 Б) */
+typedef sensor_data_lora_1_t channel_cfg_t;
+
 typedef struct
 {
     uint8_t  Rx1DrOffset;
@@ -274,119 +223,176 @@ typedef struct
     uint8_t  Rx1DelaySec;
     uint8_t  TxPower;
     uint8_t  MaxDutyCycle;
-} __attribute__ ((__packed__)) radio_cfg_t;
+} __attribute__((__packed__)) radio_cfg_t;
 
-/* v4 п.6: описание единицы СИЗ (в порядке битов PPEEnabledMask, 3 Б) */
+// TYPE_MSG_DYNAMIC (MIRAX v4)
 typedef struct
 {
-    uint8_t  Type;             // тип СИЗ (приложение протокола: 0 каска, 1 привязь...)
-    uint16_t Serial;           // заводской идентификатор единицы
-} __attribute__ ((__packed__)) ppe_descr_t;
-
-/* TYPE_MSG_STATIC v4 (п.6): фиксированная часть + хвост переменной длины
-   (PPEEnabledMask описания СИЗ + SubCount + дескрипторы под-устройств с
-   CfgLen/Cfg[]). Хвост собирается побайтно в Tail[] (Lora_CompleteDataSet_1). */
-#define LORA_STATIC_TAIL_MAX	(64u)	// 8×ppe_descr_t + SubCount + 2×sub_descr(с Cfg) с запасом
-typedef struct
-{
-    uint8_t  data_struct_ver;	// Header: TYPE_MSG_STATIC | DATA_STRUCT_LORA_VER
-    uint16_t dev_id;			// заводской идентификатор трекера (TODO: DEVICE_NUMBER vs SerialLo - см. PLAN)
-    uint8_t  dev_hw_ver;
-    uint8_t  dev_fw_ver;
-    radio_cfg_t Radio;			// фактические радиопараметры (v4 п.6)
-    uint8_t  PPEEnabledMask;	// какие из 8 позиций СИЗ заведены в комплекте
-    uint8_t  Tail[LORA_STATIC_TAIL_MAX];	// ppe_descr_t[] + SubCount + sub_descr_t[]
-} __attribute__ ((__packed__)) str_lora_data_set_1_t;
-
-// TYPE_MSG_DYNAMIC v4 (основной пакет: контейнер + секции под-устройств)
-typedef struct
-{
-    uint8_t  Header;			// TYPE_MSG_DYNAMIC | DATA_STRUCT_LORA_VER
-    uint16_t ContainerMask;		// v4 п.3.1: состав контейнерной части
+    uint8_t  Header;
+    uint16_t ContainerMask;
     uint8_t  Payload[256 - 3];
-} __attribute__ ((__packed__)) str_lora_data_set_t;
+} __attribute__((__packed__)) str_lora_data_set_t;
 
-// TYPE_MSG_TURN_OFF (v4 п.9: статус расширен до uint16)
+// TYPE_MSG_TURN_OFF (MIRAX v4)
 typedef struct
 {
     uint8_t  data_struct_ver;
     uint16_t dev_id;
     uint8_t  dev_hw_ver;
     uint8_t  dev_fw_ver;
-    uint16_t ControlLora;		// v28/v4: ControlLora16
-} __attribute__ ((__packed__)) str_lora_data_set_2_t;
+    uint16_t ControlLora;
+} __attribute__((__packed__)) str_lora_data_set_2_t;
 
-// TYPE_MSG_ACK (v4 п.9: статус расширен до uint16)
+// TYPE_MSG_ACK (MIRAX v4)
 typedef struct
 {
     uint8_t  data_struct_ver;
-    uint16_t ControlLora;		// v28/v4: ControlLora16
-} __attribute__ ((__packed__)) str_lora_data_set_ack_t;
+    uint16_t ControlLora;
+} __attribute__((__packed__)) str_lora_data_set_ack_t;
 
-/* v4 п.4.4: блок Environment (9 Б). Единицы: Temperature °C×10, Pressure
-   гПа×10 (= sensors_status.Pressure напрямую), Altitude - барометрическая
-   высота, м (считается из давления; самостоятельная величина со своими
-   порогами). AirQualityIndex - задел (датчика AQI пока нет, шлём 0).        */
+// DOWNLINK (MIRAX v4)
+typedef struct
+{
+    uint8_t  Header;
+    uint16_t FieldMask;
+
+    uint16_t ControlLoraMask;
+    uint16_t ControlLoraValue;
+
+    uint8_t  ControlLora2Mask;
+    uint8_t  ControlLora2Value;
+
+    uint8_t  NewPeriodNorm;
+    uint8_t  NewPeriodAct;
+    uint8_t  GpsFixInterval;
+
+    uint8_t  ConfigSeq;
+    uint32_t UnixTime;
+
+    uint8_t  MsgPresent;
+    uint8_t  MsgSeq;
+    uint8_t  MsgLength;
+
+} __attribute__((__packed__)) str_lora_data_get_t;
+
+//===========================================================================================================================
+// БЛОКИ MIRAX v4
+//===========================================================================================================================
+typedef struct
+{
+    uint8_t Charge;
+} __attribute__((__packed__)) battery_block_t;
+
+typedef struct
+{
+    int32_t Latitude;
+    int32_t Longitude;
+} __attribute__((__packed__)) gps_block_t;
+
+typedef struct
+{
+    int8_t Dx;
+    int8_t Dy;
+} __attribute__((__packed__)) point_delta_t;
+
+typedef struct
+{
+    uint8_t Count;
+    point_delta_t Points[];
+} __attribute__((__packed__)) gps_track_t;
+
+typedef struct
+{
+    uint32_t UnixTime;
+} __attribute__((__packed__)) timeref_block_t;
+
+typedef struct
+{
+    int8_t Dx;
+    int8_t Dy;
+} __attribute__((__packed__)) history_point_t;
+
+typedef struct
+{
+    uint8_t  Count;
+    uint16_t Dt0;
+    uint16_t Step;
+    uint8_t  Scale;
+    history_point_t Points[];
+} __attribute__((__packed__)) gpshistory_block_t;
+
 typedef struct
 {
     uint16_t AirQualityIndex;
-    int16_t  Temperature;
-    uint8_t  Humidity;
-    uint16_t Pressure;
-    int16_t  Altitude;
-} __attribute__ ((__packed__)) environment_block_t;
+    int16_t  Temperature;      // °C × 10
+    uint8_t  Humidity;         // %
+    uint16_t Pressure;         // гПа × 10
+} __attribute__((__packed__)) environment_block_t;
 
-/* v4 п.4.5: блок Motion (2 Б) */
 typedef struct
 {
-    uint8_t StatusBits;			// enum MOTION_BITS
-    uint8_t ActivityLevel;		// 0..255 (задел: источник активности не определён, шлём 0)
-} __attribute__ ((__packed__)) motion_block_t;
+    uint8_t StatusBits;
+    uint8_t ActivityLevel;
+} __attribute__((__packed__)) motion_block_t;
 
-/* v4 п.4.8: запись контейнерного журнала (10 Б, на проводе) */
 typedef struct
 {
-    uint16_t Dt;				// секунд ВПЕРЁД от TimeRef
-    int16_t  Dx;				// смещение широты от опоры, м (0x8000 - нет фикса)
-    int16_t  Dy;				// смещение долготы от опоры, м (0x8000 - нет фикса)
-    uint8_t  EventType;			// enum CONTAINER_EVENT_TYPE
-    uint8_t  Severity;			// 0 инфо / 1 предупреждение / 2 критическое
-    int16_t  Value;				// значение величины (0x8000 - неприменимо)
-} __attribute__ ((__packed__)) container_event_t;
+    uint8_t  Type;
+    uint16_t Serial;
+} __attribute__((__packed__)) ppe_descr_t;
 
-/* v4 п.7.1: текстовое сообщение сервера на дисплей (CP1251). Максимум
-   текста = лимит payload DR - 5 (DR0: 46, DR3: 110, DR4-5: 237 символов).  */
-#define LORA_MSG_TEXT_MAX	(237u)
 typedef struct
 {
-    uint8_t  MsgSeq;			// идентификатор сообщения (квитируется в MsgAck)
-    uint8_t  Length;			// длина текста, байт (= символов CP1251)
-    uint8_t  New;				// 1 = принято НОВОЕ сообщение (не показанное); снимает потребитель (меню/индикация) через Lora_MessageShown()
-    uint8_t  Text[LORA_MSG_TEXT_MAX];
-} lora_msg_t;
-extern lora_msg_t Lora_Message;	// последнее принятое сообщение (экземпляр - Lora_S7678S.c)
+    uint8_t PresenceMask;
+    uint8_t Charge[];
+} __attribute__((__packed__)) ppe_block_t;
 
-// DOWNLINK (Сервер -> Прибор), v4 п.7
 typedef struct
 {
-    uint8_t  Header;              // 1 байт: 0x04 (TYPE_CONFIG + Version 4)
-    uint16_t FieldMask;           // 2 байта: маска присутствующих блоков (little-endian)
-    uint16_t ControlLoraMask;     // v28/v4: 2 байта - какие биты ControlLora16 изменить
-    uint16_t ControlLoraValue;    // v28/v4: 2 байта - новые значения битов ControlLora16
-    uint8_t  ControlLora2Mask;    // 1 байт: какие биты ControlLora2 изменить
-    uint8_t  ControlLora2Value;   // 1 байт: новые значения битов ControlLora2
-    uint8_t  NewPeriodNorm;       // 1 байт: штатный период (если бит 2 установлен)
-    uint8_t  NewPeriodAct;        // 1 байт: аварийный период (если бит 3 установлен)
-    uint8_t  GpsFixInterval;      // 1 байт: интервал фиксации GPS (если бит 4 установлен)
-    uint8_t  ConfigSeq;
-    uint32_t UnixTime;
-    uint8_t  MsgSeq;              // v28/v4 п.7.1: идентификатор сообщения
-    uint8_t  MsgLen;              // v28/v4 п.7.1: длина текста
-    uint8_t  MsgText[LORA_MSG_TEXT_MAX];	// текст CP1251
-} __attribute__ ((__packed__)) str_lora_data_get_t;
+    uint16_t ShortID;
+    int8_t   Rssi;
+    uint8_t  Battery;
+} __attribute__((__packed__)) ble_beacon_t;
+
+typedef struct
+{
+    uint8_t Count;
+    ble_beacon_t Beacons[];
+} __attribute__((__packed__)) blebeacons_block_t;
+
+typedef struct
+{
+    uint16_t Dt;
+    int16_t  Dx;
+    int16_t  Dy;
+    uint8_t  EventType;
+    int16_t  Value;
+} __attribute__((__packed__)) container_event_t;
+
+typedef struct
+{
+    uint8_t Count;
+    container_event_t Events[];
+} __attribute__((__packed__)) container_eventlog_block_t;
+
+typedef struct
+{
+    uint8_t MsgSeq;
+    uint8_t Length;
+    uint8_t Text[];
+} __attribute__((__packed__)) message_block_t;
+
+typedef struct
+{
+    uint8_t SubID;
+    uint8_t SubType;
+    uint16_t Serial;
+    uint8_t CfgLen;
+    uint8_t Cfg[];
+} __attribute__((__packed__)) sub_descr_t;
 
 //===========================================================================================================================
-// 7. КОМАНДЫ И СТРОКОВЫЕ КОНСТАНТЫ ДЛЯ ПАРСИНГА UART
+// 7. КОМАНДЫ И СТРОКОВЫЕ КОНСТАНТЫ
 //===========================================================================================================================
 typedef enum
 {
@@ -429,8 +435,9 @@ typedef enum
 #define RES_MAC_RUN 		("MAC TX running")
 #define RES_NOT_JOINED  	("not_joined")
 #define RES_NO_FREE_CH  	("no_free_ch")
-#define RES_TX_OK 			("tx_ok")
+#define RES_TX_OK  			("tx_ok")
 #define RES_RX 				("mac rx")
+#define RES_MAC_CMD 		("mac command (downlink)")
 #define RES_ERR  			("err")
 #define RES_INV_DATA_LEN	("invalid_data_length")
 #define RES_ACCEPTED		("accepted")
@@ -438,14 +445,11 @@ typedef enum
 //===========================================================================================================================
 // 8. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И БУФЕРЫ
 //===========================================================================================================================
-/* v28: receive увеличен 256->512 (downlink v4 с Message до 242 байт приходит
-   hex-строкой: 484 символа + префикс "mac rx NN "); transmit 400->560
-   (uplink до 253 байт: AT-команда + hex 506 символов).                     */
 typedef struct
 {
-    uint8_t receive[512];
-    uint8_t transmit[560];
-    uint16_t count_byter_r;   // v28: uint16 - receive увеличен до 512 (hex downlink v4)
+    uint8_t receive[256];
+    uint8_t transmit[400];
+    uint8_t count_byter_r;
     uint8_t TimeRX;
     uint8_t TimeFlagRX;
 } Message_buffer_uart_lora;
@@ -455,39 +459,39 @@ extern uint8_t deveui[8];
 extern uint8_t appkey[16];
 
 //===========================================================================================================================
-// 9. PUBLIC API (ПРОТОТИПЫ ФУНКЦИЙ)
+// 9. PUBLIC API
 //===========================================================================================================================
 
-// 9.1. Системные сообщения
+// Системные сообщения
 extern void     Lora_ack_system_set(void);
 extern void     Lora_turnoff_system_set(void);
 extern void     Lora_system_msg_clr(void);
 extern uint8_t  Lora_system_msg_read(void);
 
-// 9.2. Флаги инициализации и старта
+// Флаги инициализации и старта
 extern uint8_t  get_state_init_flag_lora(void);
 extern uint8_t  get_state_start_flag_lora(void);
 
-// 9.3. Флаги приема из UART и таймингов
+// Флаги приема
 extern void     Lora_flag_receive_set(void);
 extern void     Lora_flag_receive_clr(void);
 extern uint8_t  Lora_flag_receive_read(void);
 extern uint8_t  get_flag_receive_res_tx_lora(void);
 
-// 9.4. Флаги повтора и ошибок
+// Повторы и ошибки
 extern uint8_t  get_state_repeat_flag_lora(void);
 extern void     set_state_repeat_flag_lora(void);
 extern void     clr_state_repeat_flag_lora(void);
 extern uint8_t  get_state_err_lora(void);
 extern void     clr_state_err_lora(void);
 
-// 9.5. Управление флагами тревоги и каналов
+// Тревога и каналы
 extern uint8_t  get_state_alarm_flag_lora(void);
 extern void     set_state_alarm_flag_lora(void);
 extern void     clr_state_alarm_flag_lora(void);
 extern uint8_t  test_state_alarm_flag_lora(SNS_CFG *Cfg_struct);
 
-// 9.6. Основные системные функции модуля LoRa
+// Основные функции
 extern uint8_t  Lora_Init(SNS_CFG *Cfg_struct);
 extern void     Lora_DeInit(uint8_t init);
 extern void     Lora_DataSet(SNS_CFG *Cfg_struct);
@@ -497,28 +501,59 @@ extern void     Lora_Receive(void);
 extern void     Uart_Lora_Receive_Timer_Inc(void);
 extern void     Lora_Cfg_ApplyDefaults(SNS_CFG *Cfg_struct);
 
-// 9.7. API для работы с состоянием LoRa из ДРУГИХ файлов (Инкапсуляция)
-extern uint8_t 	Lora_IsTxBusy(void);
-extern uint16_t Lora_GetControlLora(void);	// v28/v4: ControlLora16 (биты enum STATUS_LORA)
+// Статус и управление
+extern uint8_t  Lora_IsTxBusy(void);
+extern uint16_t Lora_GetControlLora(void);
 extern void     Lora_SetControlLoraBit(uint8_t bit_num, uint8_t state);
 
-// 9.8. Сообщение сервера на дисплей (v28/v4 п.7.1): потребитель (меню/индикация)
-// при Lora_Message.New показывает Text[Length] (CP1251) и зовёт Lora_MessageShown().
-// Квитирование MsgAck уходит в uplink автоматически.
-extern void     Lora_MessageShown(void);
+// Time valid
+extern void     Lora_SetTimeValid(uint8_t valid);
+extern uint8_t  Lora_IsTimeValid(void);
 
-// 9.9. Опциональные модули (GPS, Debug)
+// Message
+extern uint8_t  Lora_MessageIsNew(void);
+extern void     Lora_MessageDisplayed(void);
+extern uint8_t  Lora_GetMessage(uint8_t **text, uint8_t *len, uint8_t *seq);
+
+// Motion
+extern void     Lora_SetMotionState(uint8_t posture, uint8_t inactive, uint8_t activity);
+extern void     Lora_SetMotionEvent(uint8_t event_bits);
+extern void     Lora_ClearMotionEvent(uint8_t event_bits);
+
+// Environment
+extern void     Lora_SetEnvironment(uint16_t aqi,
+                                    int16_t temperature_x10,
+                                    uint8_t humidity,
+                                    uint16_t pressure_hpa_x10);
+
+extern void     Lora_ClearEnvironment(void);
+
+// PPE
+extern void     Lora_SetPPEEnabledMask(uint8_t mask);
+extern void     Lora_SetPPEDescriptor(uint8_t bit_index, uint8_t type, uint16_t serial);
+extern void     Lora_SetPPEState(uint8_t presence_mask, const uint8_t *charge_by_bit);
+extern void     Lora_ClearPPEState(void);
+
+// BLE beacons
+extern void     Lora_ClearBleBeacons(void);
+extern uint8_t  Lora_AddBleBeacon(uint16_t short_id, int8_t rssi, uint8_t battery_state);
+
+// Container events
+extern void     Lora_AddContainerEvent(uint8_t event_type, int16_t value);
+
+// Pulse (опционально)
+extern void     Lora_SetPulsePresent(uint8_t present);
+extern void     Lora_SetPulseSerial(uint16_t serial);
+extern void     Lora_SetPulseData(uint8_t battery_percent, uint8_t heart_rate, uint8_t spo2_percent);
+
 #if CONFIG_GPS
 extern void Lora_UpdateGPSTrack(int32_t cur_lat, int32_t cur_lon);
 #endif
 
 #if LORA_DEBUG
 extern void Test_Lora_Parsing(void);
-#endif
-
-#if LORA_DEBUG
 extern void Lora_DebugPrintStatus(void);
 #endif
-#endif
+
 //===========================================================================================================================
 #endif /* _LORA_S7678S_H_ */

@@ -104,10 +104,9 @@ void Uart_SetBaudrate(UART_HandleTypeDef *huart, uint32_t baud);
 #define SET_ON(x)   		LL_GPIO_SetOutputPin(x##_GPIO_Port, x##_Pin);
 #define SET_TGL(x)			LL_GPIO_TogglePin(x##_GPIO_Port, x##_Pin);
 
-#define USART_COM			(huart4)
-#define USART_DEBUG			(huart4)
-#define USART_BLE			(huart3)	// BLE-модуль (PC4/PC5): v26 - определён (PLAN.md п.13);
-									// мастерская сторона (порт Ble_mk01) - Ble_vector.c (CONFIG_BLE, v27)
+#define USART_COM			(huart3)
+#define USART_DEBUG			(huart3)
+//#define USART_BLE			(huart3)
 
 
 #define BUTTON_1_EXTI_LINE 	LL_EXTI_LINE_1
@@ -144,10 +143,6 @@ void Error_Handler(void);
 #define USART2_RX_LTE_GPIO_Port GPIOA
 #define CS_FLASH_Pin GPIO_PIN_4
 #define CS_FLASH_GPIO_Port GPIOA
-#define USART3_TX_BLE_Pin GPIO_PIN_4
-#define USART3_TX_BLE_GPIO_Port GPIOC
-#define USART3_RX_BLE_Pin GPIO_PIN_5
-#define USART3_RX_BLE_GPIO_Port GPIOC
 #define STATE_LED_Pin GPIO_PIN_0
 #define STATE_LED_GPIO_Port GPIOB
 #define BUTTON_1_Pin GPIO_PIN_1
@@ -176,6 +171,8 @@ void Error_Handler(void);
 #define ALARM_LED_2_GPIO_Port GPIOA
 #define VIBRO_Pin GPIO_PIN_15
 #define VIBRO_GPIO_Port GPIOA
+#define USART3_TX_BLE_Pin GPIO_PIN_10
+#define USART3_TX_BLE_GPIO_Port GPIOC
 #define ACCEL_INT_Pin GPIO_PIN_11
 #define ACCEL_INT_GPIO_Port GPIOC
 #define BLE_RESET_Pin GPIO_PIN_12

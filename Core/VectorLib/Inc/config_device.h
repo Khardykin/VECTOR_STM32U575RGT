@@ -36,7 +36,7 @@
 #endif
 //===========================================================================================================================
 #define DEVICE_NUMBER_COM				(DEVICE_NUMBER + DEVICE_NUMBER_MODIF)
-#define BLE_DEBUG 1
+#define BLE_DEBUG 0
 #define LORA_DEBUG 0
 #define TEST_PROG						1
 

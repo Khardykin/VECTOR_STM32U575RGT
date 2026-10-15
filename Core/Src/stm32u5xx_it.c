@@ -485,12 +485,28 @@ void USART3_IRQHandler(void)
   /* USER CODE BEGIN USART3_IRQn 0 */
 	uint8_t data_uart = 0;
 	if (UART_IRQReceive(&huart3, &data_uart)){
+		add_to_buffer(&InputBuffer[TYPE_USART], data_uart);
 #if BLE_DEBUG
-		USART_DEBUG.Instance->TDR = data_uart;
+		huart3.Instance->TDR = data_uart;
 #endif
-#if CONFIG_BLE
-			add_to_buffer(&InputBuffer[TYPE_BLE], data_uart);
+#if LTE_DEBUG
+		huart2.Instance->TDR = data_uart;
 #endif
+#if LORA_DEBUG
+		huart4.Instance->TDR = data_uart;
+#endif
+//		buffer_uart[TYPE_USART].TimeRX = TIME_OUT_UART;
+#if CONFIG_UART
+//		SET_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);
+//		timer_end_data_exchange = TIME_END_DATA_EXCHANGE;                       // Запуск таймера автоматического окончания режима передачи данных
+//		START_TIMER_RTC(TIMER_RTC_UART_RX_WAKE_UP, TIME_RTC_UART_RX_WAKE_UP);	// Запуск таймера на вход в сон, когда передача не активна, но включена
+#endif
+//#if BLE_DEBUG
+//		USART_DEBUG.Instance->TDR = data_uart;
+//#endif
+//#if CONFIG_BLE
+//			add_to_buffer(&InputBuffer[TYPE_BLE], data_uart);
+//#endif
 	}
 	else{
   /* USER CODE END USART3_IRQn 0 */
@@ -508,19 +524,25 @@ void UART4_IRQHandler(void)
   /* USER CODE BEGIN UART4_IRQn 0 */
 	uint8_t data_uart = 0;
 	if (UART_IRQReceive(&huart4, &data_uart)){
-		add_to_buffer(&InputBuffer[TYPE_USART], data_uart);
-#if BLE_DEBUG
+#if LORA_DEBUG
 		huart3.Instance->TDR = data_uart;
 #endif
-#if LTE_DEBUG
-		huart2.Instance->TDR = data_uart;
+#if CONFIG_LORA
+		add_to_buffer(&InputBuffer[TYPE_LORA], data_uart);
 #endif
-//		buffer_uart[TYPE_USART].TimeRX = TIME_OUT_UART;
-#if CONFIG_UART
-//		SET_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);
-//		timer_end_data_exchange = TIME_END_DATA_EXCHANGE;                       // Запуск таймера автоматического окончания режима передачи данных
-//		START_TIMER_RTC(TIMER_RTC_UART_RX_WAKE_UP, TIME_RTC_UART_RX_WAKE_UP);	// Запуск таймера на вход в сон, когда передача не активна, но включена
-#endif
+//		add_to_buffer(&InputBuffer[TYPE_USART], data_uart);
+//#if BLE_DEBUG
+//		huart3.Instance->TDR = data_uart;
+//#endif
+//#if LTE_DEBUG
+//		huart2.Instance->TDR = data_uart;
+//#endif
+////		buffer_uart[TYPE_USART].TimeRX = TIME_OUT_UART;
+//#if CONFIG_UART
+////		SET_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);
+////		timer_end_data_exchange = TIME_END_DATA_EXCHANGE;                       // Запуск таймера автоматического окончания режима передачи данных
+////		START_TIMER_RTC(TIMER_RTC_UART_RX_WAKE_UP, TIME_RTC_UART_RX_WAKE_UP);	// Запуск таймера на вход в сон, когда передача не активна, но включена
+//#endif
 	}
 	else{
   /* USER CODE END UART4_IRQn 0 */

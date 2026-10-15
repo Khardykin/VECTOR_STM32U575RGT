@@ -51,6 +51,7 @@ void MX_USART3_UART_Init(void);
 
 /* USER CODE BEGIN Prototypes */
 uint8_t UART_IRQReceive(UART_HandleTypeDef *huart, uint8_t *data_uart);
+void LORA_UART_Init(void);
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus
