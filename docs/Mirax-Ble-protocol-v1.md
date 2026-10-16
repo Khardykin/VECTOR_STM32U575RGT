@@ -148,9 +148,10 @@ typedef struct {
 ### 5.1 Legacy AVIS (`BLE_PKT_GAS_LEGACY`) — байт-в-байт Avis
 
 ```c
-typedef struct {                 // 5 байт, как sensor_data_t в Avis
+typedef struct {                 // 6 байт, как sensor_data_t в Avis
+    uint8_t SensorIndex;
     uint8_t Type_gas;            // код газа/канала (num_formula_gas)
-    uint8_t Concentration[2];    // концентрация LE (единицы отправителя)
+    uint16_t Concentration;      // концентрация LE (единицы отправителя)
     uint8_t State_channel;       // StateErr & 0x7F отправителя
     uint8_t Setting_channel;     // DeviceSetting & (MEASURE_MASK|MEASURE_DISK)
 } ble_sensor_data_t;
@@ -161,13 +162,12 @@ typedef struct {                 // как str_ble_data_set_t в Avis Ble_mk01.h
     uint8_t dev_hw_ver;
     uint8_t dev_fw_ver;
     uint8_t charge;              // заряд батареи отправителя, %
-    uint8_t sensors_enabled:5;   // маска включённых каналов (бит0 = канал0)
-    uint8_t rfu:3;
-    ble_sensor_data_t sensors[7];
-} str_ble_data_set_t;            // максимум 6 + 5×7 = 41 байт
+    uint8_t active_sensors;    // 
+    ble_sensor_data_t sensors[8];
+} str_ble_data_set_t;            // максимум 6 + 6×8 = 54 байт
 ```
 
-Отправитель передаёт `6 + 5×popcount(sensors_enabled)` байт. Шапка —
+Отправитель передаёт `6 + 6×popcount(active_sensors)` байт. Шапка —
 «базовая информация» отправителя (решение автора: шапка с базовой
 информацией сохраняется). Серийный номер legacy-пакет НЕ несёт — для
 `sub_descr_t.Serial` в LoRa TYPE_STATIC используется `dev_id` (TODO:
@@ -213,46 +213,6 @@ typedef struct {
 `PresenceMask`/`PPEEnabledMask` в LoRa v4 (стабильность порядка обеспечивает
 модуль по Serial; при изменении состава комплекта сервер сверяется с
 `TYPE_STATIC`).
-
-### 5.4 Под-устройство расширенное (`BLE_PKT_SUBDEV`, Header `0x31`) — задел
-
-То же, что legacy AVIS, ПЛЮС заводской серийник (для новой прошивки AVIS;
-трекер принимает оба формата):
-
-```c
-typedef struct {
-    uint8_t  Header;             // 0x31
-    uint16_t SerialLo;           // заводской номер (младшая часть), LE
-    uint16_t SerialHi;           // (старшая часть — задел 32 бит)
-    uint8_t  dev_hw_ver;
-    uint8_t  dev_fw_ver;
-    uint8_t  charge;
-    uint8_t  sensors_enabled:5;
-    uint8_t  rfu:3;
-    ble_sensor_data_t sensors[7];
-} ble_pkt_subdev_t;              // шапка 9 байт, максимум 9 + 5×7 = 44 байта
-```
-
-### 5.5 Агрегат (`BLE_PKT_AGG`, Header `0xF1`) — предпочтительный вариант
-
-«Всё одним пакетом» (решение автора): после `BlockMask` блоки идут **по
-возрастанию битов**, внутренние Header-байты блоков BEACONS/PPE опускаются:
-
-```c
-typedef struct {
-    uint8_t Header;              // 0xF1
-    uint8_t BlockMask;           // бит0 GAS, бит1 BEACONS, бит2 PPE
-    uint8_t Blocks[];
-} ble_pkt_agg_t;
-```
-
-| Бит BlockMask | Блок | Содержимое |
-|---------------|------|------------|
-| 0 | GAS | `str_ble_data_set_t` ЦЕЛИКОМ (41 байт, неиспользованные слоты каналов — нули) |
-| 1 | BEACONS | `Count + 4×Count` (без байта Header) |
-| 2 | PPE | `Count + 6×Count` (без байта Header) |
-
----
 
 ## 6. Обработка на трекере
 
