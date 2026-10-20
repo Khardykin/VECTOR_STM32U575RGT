@@ -10,8 +10,8 @@
   */
 #include "vector_macros.h"
 #include "main.h"          /* Uart_SetBaudrate, usart-макросы, HAL */
-#include "rtc.h"           /* hrtc: RTC_ReadTime/RTC_WriteTime (календарь, v28) */
-#include <time.h>          /* mktime/gmtime: календарь RTC <-> Unix-секунды (v28) */
+#include "rtc.h"           /* hrtc: RTC_ReadTime/RTC_WriteTime (календарь) */
+#include <time.h>          /* mktime/gmtime: календарь RTC <-> Unix-секунды  */
 #include <string.h>
 
 /* Busy-wait в условных итерациях (volatile - чтобы компилятор не свернул). */
@@ -92,13 +92,13 @@ void Uart_SetBaudrate(UART_HandleTypeDef *huart, uint32_t baud)
 
 /* ============================================================================
  * ЧАСЫ ПРИБОРА: календарный RTC -> Unix-секунды (подход автора, коммит "6";
- * v28 - исправлены база года, порядок Time/Date и контроль ошибок HAL)
+ * исправлены база года, порядок Time/Date и контроль ошибок HAL)
  *
  * В Avis счётчик секунд жил в свободном 32-битном счётчике RTC
  * (rtc_counter_get/rtc_counter_set, AT32). У STM32U5 RTC - КАЛЕНДАРЬ
  * (TR/DR + прескалеры от LSE 32.768 кГц), весь календарь живёт в backup-
  * домене и идёт от VBAT при снятом VDD - т.е. "вечность" обеспечивает сам
- * календарь, BKP-регистр под счётчик больше не нужен (v26-подход с BKP0
+ * календарь, BKP-регистр под счётчик больше не нужен (подход с BKP0
  * заменён автором на преобразование календарь <-> time_t, как в AN4759).
  *
  * Доступ к backup-домену разрешён постоянно: HAL_PWR_EnableBkUpAccess()

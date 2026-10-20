@@ -21,7 +21,7 @@
 #define BME280_I2C_ADDR    		UINT8_C(0x76)
 
 extern int8_t bme280_init_com(void);
-extern int8_t bme280_measure(SNS_CFG *pSnsCfg);  /* 0 = данные обновлены (пишет в sensors_status, v25; pSnsCfg не используется), 1 = не готово, <0 = ошибка */
+extern int8_t bme280_measure(SNS_CFG *pSnsCfg);  /* 0 = данные обновлены (пишет в sensors_status; pSnsCfg не используется), 1 = не готово, <0 = ошибка */
 #if VECTOR_BME_CALIBRATION
 extern void Calib_bme280_Temp(float temperature);
 #endif

@@ -110,7 +110,7 @@
  * Flash одна и у звука (чтение, поток Audio Player), и у журнала/конфига
  * (запись, Measure Task). Бесконечное ожидание мьютекса замораживало бы поток
  * измерений вместе с датчиками и *_Run() (бывшие TODO в extstore.c и
- * Vector_main.c), поэтому все ожидания ограничены (схема «окно тишины», v22):
+ * Vector_main.c), поэтому все ожидания ограничены (схема «окно тишины»):
  *   VECTOR_EXT_LOCK_READ_MS  - сколько читателю (ext_read плеера, cfg_load,
  *                              log_read/log_find_by_time журнала) разрешено
  *                              ждать шину, мс. 250 мс
@@ -320,8 +320,8 @@
 #define VECTOR_TASKS_MEASURE_DELAY_MS    50u
 #endif
 
-/* --- BLE: мастерская сторона модуля MK01 (Ble_vector.c, v27) ---------------
- * v27 (замечание автора п.2): роли НЕ менялись - как и Avis, мы ХОЗЯИН своего
+/* --- BLE: мастерская сторона модуля MK01 (Ble_vector.c) ---------------
+ *  (замечание автора п.2): роли НЕ менялись - как и Avis, мы ХОЗЯИН своего
  * BLE-модуля (порт Ble_mk01.c: AT/ADVBLENAMESET/BLEADDR?/ADVPERIODMS/
  * ADVPOWER/ADVSTART/SLEEP/SYSTEMOFF/DFU/MODINFO?). Отличие одно: вместо пуша
  * своих данных (ADVMSDDATASET) - периодический ЗАПРОС принятых данных
@@ -329,12 +329,12 @@
  * hex-структура str_ble_data_set_t (данные отправителя, прибора Avis) ->
  * Connected_device. Тайминги обмена (BLE_WAIT_UART_TIMEOUT/DELAY, повторы) -
  * в Ble_vector.h, все как в Avis.
- * v26-переключатели VECTOR_BLE_FRAME_TMO_MS / VECTOR_BLE_MAX_LINE /
+ * переключатели VECTOR_BLE_FRAME_TMO_MS / VECTOR_BLE_MAX_LINE /
  * VECTOR_BLE_DEV_ID УДАЛЕНЫ: неблокирующая строковая машина больше не нужна
  * (обмен синхронный, команды фиксированные), а dev_id - поле принимаемой
  * структуры, а не наша настройка.                                            */
 
-/* --- Основа меню (Menu_vector.c, v26; v27) ----------------------------------
+/* --- Основа меню (Menu_vector.c) ----------------------------------
  * Жесты кнопок декодируются из button_count (счёт в TIM3 1 кГц = мс,
  * ставит EXTI) по образцу Button_1/2/3_Menu из Avis_Menu_2.c:
  *   SHORT  - нажатие дольше антидребезга, отпущено до LONG;
@@ -344,7 +344,7 @@
  *   FAKE   - слишком короткое (дребезг).
  * Авто-возврат на главный экран: любой жест перезапускает TIMER_RTC_MAIN_RESET
  * (секундный таймер прибора), по его expiry Menu_Run() возвращает SCREEN_MAIN.
- * v27: приоритет жестов ПОСТОЯННЫЙ - Button1 > Button2 > Button3 (автор, п.3);
+ * приоритет жестов ПОСТОЯННЫЙ - Button1 > Button2 > Button3 (автор, п.3);
  * Menu_Run() вызывается из потока LVGL Task по timer.flag_100ms через
  * Vector_Run_Indication() (аналог indication_task_function из Avis_main.c,
  * автор п.5), НЕ из Measure Task; хука Menu_EnterScreen нет (п.1) - экран
@@ -369,7 +369,7 @@
 #endif
 
 /* --- РАБОЧЕЕ: экран TFT (ST7789P3 172x320, SPI2 + GPDMA1 Channel8) ---------
- * Драйвер - Core/VectorLib/Src/TFT/LCD_platform.c (v17 переведён с AT32 на HAL,
+ * Драйвер - Core/VectorLib/Src/TFT/LCD_platform.c (переведён с AT32 на HAL,
  * названия функций сохранены). Периферию задаёт CubeMX: SPI2 8 бит Simplex TX,
  * GPDMA1 Channel8 = SPI2_TX (Normal mode), пины LCD_CS PB14 / LCD_DC PB10 /
  * LCD_RST PB12 / LCD_LED PC6. Модель панели и размеры - CONFIG_MODEL_LCD в
@@ -415,7 +415,7 @@
 /* --- РАБОЧЕЕ: датчики на I2C1 (BME280, LIS3DH, MAX17048) -------------------
  * Чтение - sensors_read() в Vector_main.c: конфигурационные измерения (T/H/P,
  * батарея) -> Sns_Cfg_struct.Config_common, живость чипов -> маска
- * sensors_status.Sensors_ok (v25); runtime-данные (оси Accel_x/y/z, статусы падения,
+ * sensors_status.Sensors_ok; runtime-данные (оси Accel_x/y/z, статусы падения,
  * копия Orientation/Screen_rotation) и счётчики диагностики шины I2C1 ->
  * sensors_status (Vector_main.h).
  * Включение каждой микросхемы - CONFIG_BME / CONFIG_LIS3DH / CONFIG_MAX17048 в
@@ -423,7 +423,7 @@
  *
  * VECTOR_SCREEN_ROTATION   1 = при смене 6D-ориентации LIS3DH (прерывание
  *                          ACCEL_INT, PC11) Measure Task вызывает
- *                          TFT_Rotation(sensors_status.Screen_rotation) (v25).
+ *                          TFT_Rotation(sensors_status.Screen_rotation).
  *                          0 = ориентация считается, экран не крутится.
  * VECTOR_BME_CALIBRATION   1 = калибровка температуры BME280 с записью поправки
  *                          во flash (Calib_bme280_Temp из Avis). Сейчас 0:
@@ -515,6 +515,21 @@
 /* Какие модули печатаем по умолчанию: VLOG_M_SYS | _FLASH | _AUDIO */
 #ifndef VECTOR_LOG_MASK
 #define VECTOR_LOG_MASK           0xFFFFFFFFu
+#endif
+
+/* --- [ВРЕМЕННЫЙ ТЕСТ - УДАЛИТЬ ПОСЛЕ ПРОВЕРКИ] звук + журнал одновременно ---
+ * 1 = в потоке measure раз в секунду работает SndLogTest_Run1s()
+ *     (Core/VectorLib/Src/Test/*/snd_log_test.*):
+ *       - громкость 0%, звук SND_ZVONOK_1 зациклен с паузой 1 с
+ *         (период между звуками 1 с);
+ *       - каждую секунду взводится TYPE_LOG_PARAM_NOP -> SaveEvent (запись
+ *         штатным Vector_RunFlashMemory в окно тишины);
+ *       - раз в 5 с отчёт в терминал (VLOG_M_TASKS): req/lost/written/
+ *         defers/errors, ext_dbg_*, контрольное чтение последней записи.
+ * УДАЛЕНИЕ: этот блок, include в Vector_main.h, вызов в Vector_main.c
+ * (помечены "[ВРЕМЕННЫЙ ТЕСТ]") и оба файла snd_log_test.*.                 */
+#ifndef VECTOR_SND_LOG_TEST
+#define VECTOR_SND_LOG_TEST       1   /* 1 = тест включён, 0 = выключен */
 #endif
 
 #endif /* VECTOR_CONFIG_H */

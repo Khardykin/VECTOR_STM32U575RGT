@@ -15,7 +15,7 @@
 #include "Vector_main.h"
 #if (CONFIG_TYPE_LCD_TFT == 2)   /* слой индикации Avis: ждёт переноса (SNS_CFG_Type,
                                     CALIB_CFG, COUNT_CHAN, DEVICE_NUMBER Device2/3_Pro).
-                                    v24: макрос объединён автором - прежний guard
+                                    макрос объединён автором - прежний guard
                                     CONFIG_TYPE_LCD в config_device.h не определён;
                                     значения CONFIG_TYPE_LCD_TFT: 0 = экран выключен,
                                     1 = драйвер панели (TFT.c/LCD_platform.c),
@@ -1840,7 +1840,7 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
             values[total_count++] = val_high[ch];
         }
 
-        // 4.4 Ошибки (Отображаются всегда, даже если "-" )
+        // 4.4 Ошибки (Отображаются всегда, даже если "-")
         str_err_buf[ch][0] = '\0';
         bool has_err = false;
         uint32_t state_err_chan = pSnsCfg->Sensor[ch].StateErr;

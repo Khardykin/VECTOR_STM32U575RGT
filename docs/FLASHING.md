@@ -24,14 +24,14 @@ SPI flash. Собирается один раз в STM32CubeIDE (5–10 мину
    имя проекта — например `ExtLoader_MX25R64`, Targeted Language = C.
 2. В появившейся вкладке **CubeMX** (`.ioc` проекта лоадера) настроить:
 
-   | Раздел | Что поставить | Зачем |
-   |---|---|---|
-   | System Core → SYS | Debug = **Serial Wire**; Timebase Source = SysTick | SWD остаётся живым |
-   | Connectivity → **SPI1** | Mode = **Full-Duplex Master**; пины займутся сами: **PA5=SCK, PA6=MISO, PA7=MOSI** (как в основной прошивке) | шина внешней flash |
-   | SPI1 → Parameter Settings | Frame = 8 Bits, MSB first, **CPOL = Low, CPHA = 1 Edge** (SPI mode 0), Baud Rate Prescaler = **8**, NSS = **Software (Disable)** | режим чипа MX25R |
-   | Connectivity → **RCC** | SYSCLK Mux = **HSI16** (PLL/HSE не нужны) | детерминированные 16 МГц; SPI1 = 2 Мбит/с |
-   | **PA4** | Signal = **GPIO_Output**, User Label = **CS_FLASH**, GPIO output level = **High** | программный CS внешней flash (метка обязательна: код лоадера использует `CS_FLASH_Pin/CS_FLASH_GPIO_Port`) |
-   | NVIC | ничего не включать (SysTick по умолчанию) | лоадер работает опросом |
+ | Раздел | Что поставить | Зачем |
+ |---|---|---|
+ | System Core → SYS | Debug = **Serial Wire**; Timebase Source = SysTick | SWD остаётся живым |
+ | Connectivity → **SPI1** | Mode = **Full-Duplex Master**; пины займутся сами: **PA5=SCK, PA6=MISO, PA7=MOSI** (как в основной прошивке) | шина внешней flash |
+ | SPI1 → Parameter Settings | Frame = 8 Bits, MSB first, **CPOL = Low, CPHA = 1 Edge** (SPI mode 0), Baud Rate Prescaler = **8**, NSS = **Software (Disable)** | режим чипа MX25R |
+ | Connectivity → **RCC** | SYSCLK Mux = **HSI16** (PLL/HSE не нужны) | детерминированные 16 МГц; SPI1 = 2 Мбит/с |
+ | **PA4** | Signal = **GPIO_Output**, User Label = **CS_FLASH**, GPIO output level = **High** | программный CS внешней flash (метка обязательна: код лоадера использует `CS_FLASH_Pin/CS_FLASH_GPIO_Port`) |
+ | NVIC | ничего не включать (SysTick по умолчанию) | лоадер работает опросом |
 
    `Project Manager → Code Generator`: можно поставить галку
    «Generate peripheral initialization as a pair of ‘.c/.h’ files per
@@ -47,11 +47,11 @@ SPI flash. Собирается один раз в STM32CubeIDE (5–10 мину
 | Файл | Куда |
 |---|---|
 | `Src/Loader_Src.c` | `Core/Src/` |
-| `Src/Dev_Inf.c`    | `Core/Src/` |
-| `Src/mx25r_drv.c`  | `Core/Src/` |
-| `Inc/Dev_Inf.h`    | `Core/Inc/` |
-| `Inc/mx25r_drv.h`  | `Core/Inc/` |
-| `linker.ld`        | в корень проекта |
+| `Src/Dev_Inf.c` | `Core/Src/` |
+| `Src/mx25r_drv.c` | `Core/Src/` |
+| `Inc/Dev_Inf.h` | `Core/Inc/` |
+| `Inc/mx25r_drv.h` | `Core/Inc/` |
+| `linker.ld` | в корень проекта |
 
 Свой сгенерированный `main.c` можно оставить как есть (он не используется:
 точка входа лоадера — `Init()` из `Loader_Src.c`).
@@ -177,17 +177,17 @@ Run/Debug в CubeIDE захватывает SWD и **удерживает отл
 
 ```
 0x000000 +------------------------------------------+
-         | SOUNDS  4 МБ   sounds.bin целиком        |  <- шьётся лоадером с адреса 0x0
+ | SOUNDS  4 МБ   sounds.bin целиком |  <- шьётся лоадером с адреса 0x0
 0x400000 +------------------------------------------+
-         | CONFIG  4 КБ   рабочий конфиг            |  <- пишется только прошивкой
+ | CONFIG  4 КБ   рабочий конфиг |  <- пишется только прошивкой
 0x401000 +------------------------------------------+
-         | CFG_DEF 4 КБ   заводской конфиг (v23)    |  <- пишется только прошивкой
+ | CFG_DEF 4 КБ   заводской конфиг |  <- пишется только прошивкой
 0x402000 +------------------------------------------+
-         | LOG     2 МБ   кольцевой журнал          |  <- пишется только прошивкой
+ | LOG     2 МБ   кольцевой журнал |  <- пишется только прошивкой
 0x602000 +------------------------------------------+
-         | LOG_PTR 4 КБ   кольцо указателей архива  |  <- пишется только прошивкой (v27)
+ | LOG_PTR 4 КБ   кольцо указателей архива |  <- пишется только прошивкой
 0x603000 +------------------------------------------+
-         | резерв  ~2 МБ                            |
+ | резерв  ~2 МБ |
 0x800000 +------------------------------------------+
 ```
 

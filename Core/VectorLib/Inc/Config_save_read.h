@@ -22,7 +22,7 @@ typedef enum {
 }TYPE_LOG;
 
 /* Запись журнала событий = СЛОТ кольца LOG фиксированной длины 64 байта
-   (схема автора, v25: длина одинаковая у всех записей, поэтому per-record
+   (схема автора, длина одинаковая у всех записей, поэтому per-record
    заголовок LOG_REC_HDR не нужен; assert sizeof == 64 в Config_save_read.c).
    Поля берутся из SNS_CFG и sensors_status на момент записи; working_hours -
    ВРЕМЯ записи (ключ поиска log_find_by_time). Reserve - под каналы
@@ -34,11 +34,11 @@ typedef struct
 	uint32_t CurrentAddrFile;		// номер записи (логический счётчик журнала)
 	uint32_t State;					// Config_common.State
 	uint32_t StateErr;				// Config_common.StateErr
-	uint32_t working_hours;			// суммарное время, с (offset + working_hours конфига, v24)
+	uint32_t working_hours;			// суммарное время, с (offset + working_hours конфига)
 	uint16_t battery_charge_percent;
 	uint16_t battery_charge_volt;	// мВ
-	int16_t  temperature;			// °C×100 (= sensors_status.Temperature, int32-драйвер BME280; v28: без повторного *100)
-	uint16_t Reserve[19];			// добивает слот до РОВНО 64 байт (v25)
+	int16_t temperature;			// °C×100 (= sensors_status.Temperature, int32-драйвер BME280; без повторного *100)
+	uint16_t Reserve[19];			// добивает слот до РОВНО 64 байт
 }EVENT_LOG;
 
 //===========================================================================================================================
@@ -49,11 +49,11 @@ typedef struct
 // (SaveConfig, загрузка при старте), SF_CONFIG_DEFAULT = заводской конфиг
 // (SaveConfigDefault записывает туда текущий; ReadConfigDefault - СБРОС К
 // ЗАВОДСКИМ: читает область через буфер Cfg_structdef_read и копирует его
-// в рабочий Sns_Cfg_struct, v23).
+// в рабочий Sns_Cfg_struct).
 extern int      save_param(uint8_t * RamData, uint16_t len, uint32_t addr);     // Сохранение параметров
 extern uint8_t  read_param(uint8_t * RamData, uint16_t len, uint32_t addr);     // Чтение параметров (1 = CRC верен)
 //--------------------------------------------------------------------------------------------------------------
-// КОЛЬЦЕВОЙ ЖУРНАЛ (схема автора, v25): область LOG (sfmap.h) поделена на
+// КОЛЬЦЕВОЙ ЖУРНАЛ (схема автора): область LOG (sfmap.h) поделена на
 // слоты по 64 байта (= sizeof(EVENT_LOG), assert в .c); кольцо 0x8000 (32768)
 // слотов, позиция в памяти = указатель & LOG_RING_MASK (0x7FFF). Указатели -
 // в SNS_CFG.Config_archive: CurrentAddrFile (куда писать следующую) и
@@ -86,7 +86,7 @@ extern int      log_find_by_time(SNS_CFG *pSnsCfg, uint32_t t_from, uint32_t t_t
 //--------------------------------------------------------------------------------------------------------------
 extern void     DefaultConfig(SNS_CFG *pSnsCfg);                                // Начальная или тестовая конфигурация
 //--------------------------------------------------------------------------------------------------------------
-// v27: бренд прибора (MIRAX/BACS) и страница-кольцо указателей архива.
+// бренд прибора (MIRAX/BACS) и страница-кольцо указателей архива.
 // Init_Build_Type(): прочитать current_build_type из последней страницы
 // внутренней flash (FLASH_ADDRESS_BUILD_TYPE). КОНТЕКСТ: Measure Task
 // (Vector_Run_Pre_Init). Возврат: нет.
@@ -105,8 +105,8 @@ extern volatile uint32_t log_ptr_dbg_saves;   // счётчики для Express
 extern volatile uint32_t log_ptr_dbg_defers;
 //===========================================================================================================================
 extern uint8_t  SaveConfig;              	// 1 = сохранить конфигурацию (снимает Vector_RunFlashMemory)
-extern uint8_t  SaveConfigDefault;       	// 1 = записать ТЕКУЩИЙ конфиг в заводскую область SF_CONFIG_DEFAULT (v23)
-extern uint8_t  ReadConfigDefault;		// 1 = СБРОС К ЗАВОДСКИМ: прочитать рабочий Sns_Cfg_struct из области SF_CONFIG_DEFAULT (v23)
+extern uint8_t SaveConfigDefault;       	// 1 = записать ТЕКУЩИЙ конфиг в заводскую область SF_CONFIG_DEFAULT
+extern uint8_t ReadConfigDefault;		// 1 = СБРОС К ЗАВОДСКИМ: прочитать рабочий Sns_Cfg_struct из области SF_CONFIG_DEFAULT
 extern uint8_t	SaveEvent;			// 1 = отложенная запись события в журнал
 extern TYPE_LOG	TypeLogEvent;			// тип отложенного события
 //===========================================================================================================================

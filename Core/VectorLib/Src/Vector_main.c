@@ -177,7 +177,7 @@ void Timer_Tick_1s(void)
 	Sns_Cfg_struct.Working_data.working_hours += 1;
 
 	/* Часы: +1 каждую секунду (автор). В резервный регистр RTC BKP0 счётчик
-	   из ISR НЕ пишем (v26): сверку и запись раз в секунду делает
+	   из ISR НЕ пишем: сверку и запись раз в секунду делает
 	   Vector_Options_System() по flag_start_work_bat_sys через
 	   RTC_WriteTime() (vector_macros.c) - поток, а не прерывание.
 	   При включении Pre_Init читает BKP0 ПОСЛЕ конфигурации.                */
@@ -219,7 +219,7 @@ void Vector_Run_Board_Init(void)
         забыть биты SRAM4PD/SRAM4PDS.                                        */
   __HAL_RCC_SRAM4_CLK_ENABLE();
 
-  /* 0b. Разрешить доступ к backup-домену (снять PWR DBP): с v28 часы прибора
+  /* 0b. Разрешить доступ к backup-домену (снять PWR DBP): ранее часы прибора
         working_hours - Unix-секунды из КАЛЕНДАРЯ RTC (RTC_ReadTime/
         RTC_WriteTime из vector_macros.c, подход автора; календарь живёт от
         VBAT). Без этого бита запись в календарь/BKP МОЛЧА игнорируется.
@@ -299,21 +299,21 @@ uint8_t          SoftResetProgram = 0;   /* 1 = команда мягкой пе
 SNS_Dev_Type     Connected_device;   /* свод подключённого под-устройства AVIS
                                         (каналы Sensor[COUNT_CHAN] + статусы/
                                         батарея/версии); extern - shared_types.h
-                                        (v25); заполняет Ble_vector.c из пакета
-                                        ADVMSDDATAGET (v27/v28); читает LoRa v4
+                                        ; заполняет Ble_vector.c из пакета
+                                        ADVMSDDATAGET; читает LoRa v4
                                         (секция SUB_TYPE_GAS) и индикация    */
 
-BLE_TELEMETRY    Ble_telemetry;      /* v28: телеметрия BLE-окружения (маяки/
+BLE_TELEMETRY Ble_telemetry;      /* телеметрия BLE-окружения (маяки/
                                         СИЗ/признак AVIS) - заполняет
                                         Ble_vector.c, читает Lora_S7678S.c
                                         (контейнерные блоки LoRa v4 и
                                         TYPE_STATIC); типы - shared_types.h  */
 
-uint8_t          deveui_com[8];      /* v28: копия DevEUI для модулей COM/LTE
+uint8_t deveui_com[8];      /* копия DevEUI для модулей COM/LTE
                                         (как в Avis); заполняет Lora_InitDeveui
                                         (Lora_S7678S.c) при CONFIG_LORA      */
 
-/* v28: коэффициент пересчёта концентрации для RF-пакетов (LoRa/BLE). В Avis -
+/* коэффициент пересчёта концентрации для RF-пакетов (LoRa/BLE). В Avis -
    таблица conversion_factor_rf[] из Avis_Menu_Functionality.c (пересчёт
    мг/м³ <-> PPM <-> %НКПР по настройкам канала); порт таблицы - за автором.
    Слабая заглушка: 1.0 (данные AVIS приходят по BLE УЖЕ масштабированными -
@@ -339,7 +339,7 @@ static void measure_task_function(ULONG thread_input);
  * задаются здесь, дальше поля правят потоки и заглушки модулей.
  * ВНИМАНИЕ: определение было случайно удалено в коммите 6b3df8b - сборка
  * теряла линковку (undefined reference to `tasks_status` во всех потоках);
- * восстановлено в v24. Экземпляр объявляет vector_tasks.h (extern).         */
+ * восстановлено ранее. Экземпляр объявляет vector_tasks.h (extern).         */
 volatile tasks_status_t tasks_status =
 {
   .receiver_running   = 0u,
@@ -469,10 +469,13 @@ static void measure_task_function(ULONG thread_input)
       tasks_status.last_measure_ms = VTICK_MS();
 
       Vector_Run_Measure();
+#if VECTOR_SND_LOG_TEST
+      SndLogTest_Run1s();   /* [ВРЕМЕННЫЙ ТЕСТ] звук+журнал - удалить после проверки */
+#endif
     }
     Vector_RunFlashMemory();
 
-    /* v27 (замечание автора п.5): меню/индикация здесь НЕ живут - они в
+    /*  (замечание автора п.5): меню/индикация здесь НЕ живут - они в
        потоке LVGL Task по образцу indication_task_function из Avis_main.c
        (timer.flag_100ms -> Vector_Run_Indication(), затем lv_timer_handler).
        См. app_azure_rtos.c и Menu_vector.c.                               */
@@ -493,7 +496,7 @@ void Vector_Run_Pre_Init(void)
   LOG_I(VLOG_M_TASKS, "pre init");
 
   /* Бренд прибора (MIRAX/BACS) из последней страницы внутренней flash -
-     первой строкой, как Init_Build_Type() в Avis_Run_Pre_Init (v27).      */
+     первой строкой, как Init_Build_Type() в Avis_Run_Pre_Init.      */
   Init_Build_Type();
 
   //----------------------------------------------------------------------------
@@ -526,7 +529,7 @@ void Vector_Run_Pre_Init(void)
     DefaultConfig(&Sns_Cfg_struct);
   }
 
-  /* v27 (замечание автора п.4): указатели архива хранятся ОТДЕЛЬНО от конфига
+  /*  (замечание автора п.4): указатели архива хранятся ОТДЕЛЬНО от конфига
      в странице-кольце SF_LOG_PTR и сохраняются после каждой записи журнала.
      При старте страница сканируется всегда (позиция следующей записи), а в
      конфиг cur/beg переносятся только если конфиг прочитался - аналог
@@ -547,7 +550,7 @@ void Vector_Run_Pre_Init(void)
   /* Датчики на I2C1: BME280 / LIS3DH / MAX17048 (включаются CONFIG_*).
      Результат - в sensors_status.*_ok и в логе.                            */
   /* MAX17048: quickStart + лимиты напряжения от BAT_MIN/BAT_MAX конфига
-     (автор, v25) - до sensors_init(), конфиг к этому моменту прочитан.     */
+     (автор) - до sensors_init(), конфиг к этому моменту прочитан.     */
   Battery_Init();
 
   sensors_init();
@@ -570,7 +573,7 @@ void Vector_Run_Pre_Init(void)
 #endif
 
 #if CONFIG_DISPLAY
-  /* Основа меню (v26): машина экранов + декодер жестов кнопок. Экраны/статусы
+  /* Основа меню: машина экранов + декодер жестов кнопок. Экраны/статусы
      определит автор - каркас уже считает кнопки и ходит по screen_t.        */
   Menu_Init();
 #endif
@@ -604,7 +607,7 @@ void Vector_Run_Measure(void)
 #if (CONFIG_TYPE_LCD_TFT && VECTOR_SCREEN_ROTATION)
   if (sensors_rotation_changed() != 0u)
   {
-    TFT_Rotation(sensors_status.Screen_rotation);   /* v25: из sensors_status */
+    TFT_Rotation(sensors_status.Screen_rotation);   /* из sensors_status */
   }
 #endif
 
@@ -628,7 +631,7 @@ void Vector_Run_Measure(void)
    КОНТЕКСТ: поток measure_task, каждый проход (VECTOR_TASKS_MEASURE_DELAY_MS
    = 50 мс). Шина flash защищена мьютексом extstore (ext_mtx).
 
-   Схема «окно тишины» (v22, закрывает прежний TODO о зависании на SPI):
+   Схема «окно тишины» (закрывает прежний TODO о зависании на SPI):
    - пока звук звучит (audio_is_busy()), во внешнюю flash НЕ заходим: флаги
      не гасятся, повтор на следующем проходе. Окна: пауза повтора плеера
      (VECTOR_AUDIO_LOOP_PAUSE_MS = 500 мс) и тишина после конца звука;
@@ -665,7 +668,7 @@ void Vector_RunFlashMemory(void)
   }
 
   /* ЕДИНЫЙ журнал (кольцо LOG) содержит записи ДВУХ видов - обе идут через
-     save_event() -> слот кольца LOG 64 байта (v25: указатели CurrentAddrFile/
+     save_event() -> слот кольца LOG 64 байта (указатели CurrentAddrFile/
      BegginAddrFile в Config_archive, маска 0x7FFF - см. Config_save_read.c):
        а) ЕДИНИЧНЫЕ СОБЫТИЯ - этот блок: флаг SaveEvent/TypeLogEvent ставят
           те, кто обнаружил событие (Pre_Init - TYPE_TURN_ON, обработчик
@@ -718,7 +721,7 @@ void Vector_RunFlashMemory(void)
     }
   }
 
-  /* Сохранение конфигурации по запросу (решение автора, v23 - области sfmap.h):
+  /* Сохранение конфигурации по запросу (решение автора, области sfmap.h):
      SaveConfig        - записать ТЕКУЩИЙ конфиг в РАБОЧУЮ область
                          SF_CONFIG_BASE (оттуда же загрузка при старте);
      SaveConfigDefault - записать ТЕКУЩИЙ конфиг в ЗАВОДСКУЮ область
@@ -766,7 +769,7 @@ void Vector_RunFlashMemory(void)
   }
   else if (ReadConfigDefault != 0u)
   {
-    /* СБРОС К ЗАВОДСКИМ (подтверждено автором, v23): заводской конфиг из
+    /* СБРОС К ЗАВОДСКИМ (подтверждено автором): заводской конфиг из
        области SF_CONFIG_DEFAULT читается в РАБОЧИЙ Sns_Cfg_struct. Область
        пуста/бита (заводские ещё не записывались, либо шина была занята -
        EXT_BUSY) -> рабочий конфиг НЕ изменяется (read_param/cfg_load буфер
@@ -778,12 +781,12 @@ void Vector_RunFlashMemory(void)
     if (read_param((uint8_t *)&Cfg_structdef_read, (uint16_t)sizeof(SNS_CFG),
                    SF_CONFIG_DEFAULT) != 0u)
     {
-      /* Часы при сбросе СОХРАНЯЕМ (уточнение автора, v24): время - это
+      /* Часы при сбросе СОХРАНЯЕМ (уточнение автора): время - это
          Working_data.working_hours (секунды, +1/с из Timer_Tick_1s),
          заводская область его затирать не должна. working_hours_offset -
          СМЕЩЕНИЕ (не часы), оно заменяется вместе с остальным конфигом.
          Потеря ≤1 с из-за гонки с RTC-ISR здесь допустима.
-         Указатели КОЛЬЦА ЖУРНАЛА (v25) сохраняем по той же логике: журнал -
+         Указатели КОЛЬЦА ЖУРНАЛА сохраняем по той же логике: журнал -
          история, а не настройка; заводские CurrentAddrFile/BegginAddrFile
          отмотали бы кольцо (вплоть до Beggin > Current и поломки инварианта
          стираний).                                                          */
@@ -824,10 +827,10 @@ __attribute__((weak)) void Avis_Battery_System(void)
    Аналог Avis_Options_System(). КОНТЕКСТ: поток receiver_task.               */
 void Vector_Options_System(void)
 {
-  /* Реализовано (автор, v26): мягкая перезагрузка прошивки (SoftResetProgram
+  /* Реализовано (автор): мягкая перезагрузка прошивки (SoftResetProgram
      + таймер TIMER_RTC_SOFT_RESET_PROGRAM -> событие TYPE_FW_UPDATE ->
      NVIC_SystemReset) и секундное обслуживание батареи (Avis_Battery_System,
-     weak-заглушка) со сверкой часов с календарём RTC (RTC_ReadTime/WriteTime, v28).
+     weak-заглушка) со сверкой часов с календарём RTC (RTC_ReadTime/WriteTime).
      TODO: по образцу Avis_Options_System():
      - стирание внутренней flash по команде (FlashErase);
      - окончание режима обмена данными: очистить ST_COMMON_BIT_DATA_EXCHANGE
@@ -889,7 +892,7 @@ void Vector_Options_System(void)
 // Функция инициализации батареи (вызывать при старте системы)
 void Battery_Init(void)
 {
-#if (CONFIG_MAX17048)   /* v25: было CONFIG_BME - опечатка: код внутри про MAX17048 */
+#if (CONFIG_MAX17048)   /* было CONFIG_BME - опечатка: код внутри про MAX17048 */
     if (max17048_init()) {
         max17048_quickStart();
 
@@ -933,7 +936,7 @@ __attribute__((weak)) void command_message(void)
 #endif
 }
 
-/* BLE-модуль (USART3): weak-заглушка приёма. ВНИМАНИЕ (v27): с подключённым
+/* BLE-модуль (USART3): weak-заглушка приёма. ВНИМАНИЕ: с подключённым
    Ble_vector.c (CONFIG_BLE=1) замещается ПУСТЫМ strong-символом - обмен с
    модулем синхронный внутри Ble_TransmitReceive (Measure Task), он и есть
    единственный читатель кольца TYPE_BLE (как в Avis: Receiver Task BLE не
@@ -1130,7 +1133,7 @@ volatile sensors_status_t sensors_status = {0};
 static volatile uint8_t rotation_pending = 0u;
 
 /* Поднять все включённые конфигурацией датчики. Результат - биты
-   sensors_status.Sensors_ok (v25), счётчик sensors_status.cnt_init_ok и лог.
+   sensors_status.Sensors_ok, счётчик sensors_status.cnt_init_ok и лог.
    КОНТЕКСТ: поток Measure Task (из Vector_Run_Pre_Init).                     */
 void sensors_init(void)
 {
@@ -1186,7 +1189,7 @@ void sensors_init(void)
 }
 
 /* Прочитать всё, что включено. ВСЕ измеренные данные (T/H/P, батарея, оси,
-   ориентация/поворот, падение) -> sensors_status (v25, решение автора:
+   ориентация/поворот, падение) -> sensors_status (решение автора:
    в SNS_CFG остаётся только то, что сохраняется в конфигурацию).
    КОНТЕКСТ: поток Measure Task (раз в секунду).                              */
 void sensors_read(void)
@@ -1197,7 +1200,7 @@ void sensors_read(void)
   if ((sensors_status.Sensors_ok & SENSORS_OK_BME) != 0u)
   {
     /* 0 = данные обновлены (модуль сам пишет Temperature/Humidity/Pressure в
-       sensors_status, v25), 1 = измерение не готово, <0 = ошибка шины.       */
+       sensors_status), 1 = измерение не готово, <0 = ошибка шины.       */
     if (bme280_measure(&Sns_Cfg_struct) == 0)
     {
       sensors_status.cnt_bme_reads++;
@@ -1236,7 +1239,7 @@ void sensors_read(void)
             (uint32_t)sensors_status.cnt_fall_events);
     }
 
-    sensors_status.Orientation = (uint8_t)lis3dh_get_orientation();  /* v25: источник истины - sensors_status */
+    sensors_status.Orientation = (uint8_t)lis3dh_get_orientation();  /* источник истины - sensors_status */
 
     /* Смена ориентации -> новый поворот экрана (0 или 2). Сам экран модуль не
        трогает: TFT_Rotation() зовёт Vector_Run_Measure().                    */
@@ -1246,7 +1249,7 @@ void sensors_read(void)
 
       if (st != sensors_status.Screen_rotation)
       {
-        sensors_status.Screen_rotation = st;   /* v25: единственный владелец */
+        sensors_status.Screen_rotation = st;   /* единственный владелец */
         sensors_status.cnt_rotation_events++;
         rotation_pending = 1u;
         LOG_I(VLOG_M_SYS, "sensors: orientation=%u -> rotation=%u",
@@ -1319,7 +1322,7 @@ const char *task_module_name(task_module_t mod)
     case TASK_MOD_BLE:    return "ble";
     case TASK_MOD_LTE:    return "lte";
     case TASK_MOD_GPS:    return "gps";
-    case TASK_MOD_SENSOR: return "sensor";   /* BME/LIS3DH/MAX17048 (v24) */
+    case TASK_MOD_SENSOR: return "sensor";   /* BME/LIS3DH/MAX17048  */
     default:              return "?";
   }
 }

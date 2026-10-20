@@ -60,7 +60,7 @@ int cfg_load(void *data, uint16_t max_len, uint16_t *out_len, uint32_t addr);
                                                               /* 0 = ok,
      EXT_BUSY = шину не дождались (повторить), -1 = конфига ещё нет/ошибка */
 
-/* --- кольцевой журнал (v25) -------------------------------------------------
+/* --- кольцевой журнал  -------------------------------------------------
  * Слой журнала (записи фиксированной длины EVENT_LOG = 64 байта, кольцо
  * 0x8000 слотов, указатели CurrentAddrFile/BegginAddrFile в SNS_CFG.
  * Config_archive) ПЕРЕНЕСЁН в Config_save_read.c: save_event() /
@@ -73,7 +73,7 @@ int cfg_load(void *data, uint16_t max_len, uint16_t *out_len, uint32_t addr);
 extern volatile uint32_t ext_dbg_cfg_seq;      /* seq последнего конфига      */
 extern volatile uint32_t ext_dbg_busy;         /* шина была занята при попытке
                                                   взять ext_mtx (lock_ms)     */
-/* (v25: ext_dbg_log_sector/_offset удалены вместе со секторным журналом -
+/* (ext_dbg_log_sector/_offset удалены вместе со секторным журналом -
    состояние кольца теперь в Sns_Cfg_struct.Config_archive.CurrentAddrFile /
    BegginAddrFile, смотреть в отладчике их)                                  */
 extern volatile uint32_t ext_dbg_erase_defer;  /* стираний отложено, потому

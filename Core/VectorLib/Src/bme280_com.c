@@ -5,7 +5,7 @@
   *
   *          Обёртка над вендорным Src/BME280/bme280.c (Bosch). API:
   *          bme280_init_com(), bme280_measure(SNS_CFG*) - 0 = данные обновлены
-  *          (Temperature/Humidity/Pressure в sensors_status, v25), 1 = не готово,
+  *          (Temperature/Humidity/Pressure в sensors_status), 1 = не готово,
   *          <0 = ошибка; Calib_bme280_Temp() - калибровка температуры (при
   *          VECTOR_BME_CALIBRATION 0 выключена). Владелец шины - Measure Task:
   *          init из sensors_init(), измерение раз в секунду из sensors_read()
@@ -133,11 +133,11 @@ static void bme280_interface_selection(struct bme280_dev *dev)
 }
 
 
-int8_t bme280_measure(SNS_CFG *pSnsCfg) /* v25: pSnsCfg не используется - данные в sensors_status */	/* 0 = данные обновлены, 1 = не готово, <0 = ошибка */
+int8_t bme280_measure(SNS_CFG *pSnsCfg) /* pSnsCfg не используется - данные в sensors_status */	/* 0 = данные обновлены, 1 = не готово, <0 = ошибка */
 {
 	uint8_t status_reg = 0;
 
-	(void)pSnsCfg;   /* v25: измеренные данные пишутся в sensors_status */
+	(void)pSnsCfg;   /* измеренные данные пишутся в sensors_status */
 
 	rslt = bme280_get_regs(BME280_REG_STATUS, &status_reg, 1, &dev);
 	if(rslt != BME280_OK){
@@ -156,9 +156,9 @@ int8_t bme280_measure(SNS_CFG *pSnsCfg) /* v25: pSnsCfg не используе�
 		Calib_bme280_Temp(comp_data.temperature);
 		comp_data.temperature = comp_data.temperature + sensors_status.Temperature_calib_offset;
 #endif
-		sensors_status.Temperature = comp_data.temperature;   /* v25 */      /* ��C  */
-		sensors_status.Humidity = comp_data.humidity;         /* v25 */           /* %   */
-		sensors_status.Pressure = comp_data.pressure/1000.0;  /* v25 */          /* hPa: 1 мм рт. ст. = 133,3 Па*/
+		sensors_status.Temperature = comp_data.temperature;   /*  */      /* ��C  */
+		sensors_status.Humidity = comp_data.humidity;         /*  */           /* %   */
+		sensors_status.Pressure = comp_data.pressure/1000.0;  /*  */          /* hPa: 1 мм рт. ст. = 133,3 Па*/
 		return 0;
 	}
 	else{

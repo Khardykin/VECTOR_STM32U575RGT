@@ -21,14 +21,14 @@
 
 ```
 Inc/vector_config.h        ВСЕ переключатели проекта (тест/рабочее, DMA, подтяжка кнопок,
-                           политика мьютекса flash VECTOR_EXT_LOCK_*, v22)
+                           политика мьютекса flash VECTOR_EXT_LOCK_*)
 Inc/config_device.h        сборочная конфигурация прибора: маски CONFIG_* (UART/LORA/BLE/
                            G4/G2/GPS/BME/LIS3DH/MAX17048/LCD/SAVE_PARAM_LOG), DEVICE_NUMBER,
                            FIRMWARE_VERSION, MIRAX_BACS_BUILD
 Inc/shared_types.h         общие типы автора: ID таймеров TIMER_*/TIMER_RTC_* и длительности
                            TIME_RTC_*, DOWN_TIMER[_RTC] и volatile-экземпляры, SNS_CFG
                            (конфиг прибора, хранится во внешней flash), SNS_Dev_Type/
-                           SNS_DevChan_Type (резерв под каналы измерения, v23), DEVICE_TURNED,
+                           SNS_DevChan_Type (резерв под каналы измерения), DEVICE_TURNED,
                            COUNT_CHAN (10), пороги батареи/LED
 Inc/shared_macros.h        агрегатор макросов для перенесённого кода (main.h + статусы + время):
                            маски ошибок, SET/TEST/RESET_STATUS_COMMON_BIT, таймеры START/TEST/
@@ -39,10 +39,10 @@ Inc/Vector_main.h          агрегатор приложения: CubeMX-пе�
 Audio/Inc, Audio/Src
   spiflash.[ch]            драйвер MX25R6435F: команды, чтение (опрос/DMA), запись, стирание
   sfmap.h                  КАРТА внешней flash: SOUNDS/CONFIG/CONFIG_DEFAULT/LOG/LOG_PTR
-                           (v23/v27) + compile-time assert границ
+                           + compile-time assert границ
   extstore.[ch]            мьютекс шины (bounded-ожидание, TX_INHERIT) + конфиг (2 страницы:
                            рабочая 0x400000 / заводская 0x401000) + кольцевой журнал (0x402000, 2 МБ)
-                           + страница-кольцо указателей архива LOG_PTR (0x602000, v27)
+                           + страница-кольцо указателей архива LOG_PTR (0x602000)
                            + ретраи чтения
   audio_player.[ch]        ПЛЕЕР: поток, очередь команд, повтор звука, громкость, стриминг в SAI-DMA
   audio_image.h            формат образа sounds.bin: заголовок SNDI, таблица записей,
@@ -51,16 +51,15 @@ Audio/Inc, Audio/Src
   audio_beep.[ch]          аварийный писк (const PCM 44.1 кГц во внутренней flash)
 Src/Vector_main.c          ПОТОКИ ПРИБОРА: receiver_task (приём/парсинг UART), measure_task,
                            Vector_Run_Measure/Pre_Init, датчики I2C1 (sensors_init/read), SNS_CFG
-Src/Config_save_read.c     конфиг и КОЛЬЦЕВОЙ журнал (v21/v23/v25/v27): save_param/read_param
+Src/Config_save_read.c     конфиг и КОЛЬЦЕВОЙ журнал: save_param/read_param
 Inc/Config_save_read.h       с адресом области (sfmap.h), save_event (слот 64 Б + СОХРАНЕНИЕ
-                           указателей архива отдельной страницей-кольцом SF_LOG_PTR, v27:
-                           log_ptr_save/log_ptr_load, запись 16 Б {seq,cur,beg,crc16,pad}),
+                           указателей архива отдельной страницей-кольцом SF_LOG_PTR, log_ptr_save/log_ptr_load, запись 16 Б {seq,cur,beg,crc16,pad}),
                            log_read(ptr), log_find_by_time(диапазон), DefaultConfig, флаги
                            SaveConfig/SaveConfigDefault/ReadConfigDefault/SaveEvent/TypeLogEvent,
-                           Init_Build_Type/current_build_type (бренд, v27)
+                           Init_Build_Type/current_build_type (бренд)
 Src/Gps.c                  GPS/GNSS: NMEA (GLL/GGA/RMC), автоопределение чипа, координаты для LoRa
 Src/Lora_S7678S.c          LoRa S7678S: AT-драйвер, машина состояний, payload uplink/downlink
-Inc/Lora_S7678S.h            ПРОТОКОЛ v4 (v28, docs/Mirax-Lora-protocol-v4.md): контейнерные
+Inc/Lora_S7678S.h            ПРОТОКОЛ v4 (docs/Mirax-Lora-protocol-v4.md): контейнерные
                            блоки трекера (Battery/GPS/Environment/Motion/PPE/BLEBeacons/
                            EventLog/GPSHistory/ControlLora16/ConfigAck/MsgAck) + секции
                            под-устройств (AVIS = SUB_TYPE_GAS из Connected_device/Ble_telemetry);
@@ -69,32 +68,33 @@ Inc/Lora_S7678S.h            ПРОТОКОЛ v4 (v28, docs/Mirax-Lora-protocol-
                            (CONFIG_LORA = 0 - порт не подключён: PLAN.md п.25/27)
 Src/buffer.c               кольца приёма InputBuffer[TYPE_*]: строгий SPSC (ISR пишет end,
 Inc/buffer.h                 Receiver Task пишет begin), transmit_buffer по типу порта
-Src/Ble_vector.c           BLE: мастерская сторона модуля MK01 (v27, CONFIG_BLE) - порт
+Src/Ble_vector.c           BLE: мастерская сторона модуля MK01 (CONFIG_BLE) - порт
 Inc/Ble_vector.h             Ble_mk01.c из Avis: Ble_Init (AT/имя ADVBLENAMESET/BLEADDR?/
                            период/мощность/старт), Ble_TransmitReceive (4 попытки, OK/ERROR,
                            3 серии -> flag_err), вместо DATASET - периодический запрос
-                           ADVMSDDATAGET (ответ hex -> пакет ПРОТОКОЛА ДАННЫХ v1, v28,
-                           docs/Mirax-Ble-protocol-v1.md: Header тип+версия; legacy Avis
-                           0x02 (6+5N, как есть) / BEACONS 0x11 / PPE 0x21 / SUBDEV 0x31 /
-                           AGG 0xF1 -> Connected_device + Ble_telemetry (shared_types.h,
-                           вне CONFIG_* - читает LoRa v4; свежесть TTL 5 мин);
+                           ADVMSDDATAGET (ответ hex -> пакет; код реализован по
+                           ПРЕЖНЕЙ редакции протокола; действующая спецификация -
+                           docs/Mirax-Ble-protocol-v1.md: MAC-фильтр по слотам,
+                           MSDGETALL/MSDGET, мост конфигуратора Modbus RTU - код будет
+                           приведён к ней) -> Connected_device + Ble_telemetry
+                           (shared_types.h, вне CONFIG_* - читает LoRa v4; TTL 5 мин);
                            кольцо TYPE_BLE читает только Ble_TransmitReceive (публичный
                            Ble_Receive пустой); состояние - ble_status
-Src/Menu_vector.c          ОСНОВА меню (v26/v27, CONFIG_DISPLAY): машина экранов screen_t +
+Src/Menu_vector.c          ОСНОВА меню (CONFIG_DISPLAY): машина экранов screen_t +
 Inc/Menu_vector.h            декодер жестов кнопок (SHORT/LONG/DOUBLE/SHORT_LONG/FAKE - логика
-                           Avis_Menu_2), ПОСТОЯННЫЙ приоритет B1>B2>B3 (v27), авто-возврат
+                           Avis_Menu_2), ПОСТОЯННЫЙ приоритет B1>B2>B3, авто-возврат
                            TIMER_RTC_MAIN_RESET, dirty_data -> SaveConfig; отрисовка - weak
-                           Menu_Draw() (подставит LVGL-порт; хука входа на экран нет - v27);
+                           Menu_Draw() (подставит LVGL-порт; хука входа на экран нет - );
                            Vector_Run_Indication() - аналог Avis_Run_Indication (поток LVGL)
 Src/lis3dh.c               акселерометр LIS3DH: 6D-ориентация, кэш ускорений, ACCEL_INT
 Src/bme280_com.c           BME280: T/H/P (обёртка над Src/BME280/bme280.c от Bosch)
 Src/MAX17048.c             топливный счётчик MAX17048 (I2C): SOC, VCELL, ALRT
 Src/BME280/, Src/Lis3dh_reg/  вендорские драйверы (тела закрыты CONFIG_BME / CONFIG_LIS3DH)
-Src/TFT/LCD_platform.[ch]  ДРАЙВЕР ПАНЕЛИ: SPI2 + GPDMA1 Ch8 (HAL, v17), LCD_writeBulk/flush;
-                           реально компилируется с v24 (до того тело выпадало:
+Src/TFT/LCD_platform.[ch]  ДРАЙВЕР ПАНЕЛИ: SPI2 + GPDMA1 Ch8 (HAL), LCD_writeBulk/flush;
+                           реально компилируется ранее (до того тело выпадало:
                            guard не видел CONFIG_TYPE_LCD_TFT без config_device.h)
 Src/TFT/TFT.[ch]           инициализация ST7789P3 172x320, окно, поворот, TFT_FlushBuffer
-Src/TFT/TFT_indicator.[ch] индикация прибора из Avis - ВЫКЛЮЧЕНА (CONFIG_TYPE_LCD_TFT == 2, v24), ждёт переноса
+Src/TFT/TFT_indicator.[ch] индикация прибора из Avis - ВЫКЛЮЧЕНА (CONFIG_TYPE_LCD_TFT == 2), ждёт переноса
 Common/Src/vector_macros.c Delay/DelayInt/GetTick/Search_text + Uart_SetBaudrate
 Inc/vector_macros.h        макросы и хелперы проекта: TIME_DEL_1, TIME_OUT_LORA,
                            VECTOR_DEVICE_IS_ON (статусы - в shared_macros.h)
@@ -115,7 +115,7 @@ Test/  audio_demo.[ch]     ТЕСТ: кнопки PB1/PB2/PB3 как пульт 
 STM32CubeProgrammer (запись `sounds.bin` во внешнюю flash через ST-LINK,
 см. `FLASHING.md`). В прошивку MCU он не линкуется.
 
-`Drivers/ui_Vector/` (в git с v24, `.gitignore`: `/Drivers/*` + `!/Drivers/ui_Vector/`) —
+`Drivers/ui_Vector/` (в git ранее, `.gitignore`: `/Drivers/*` + `!/Drivers/ui_Vector/`) —
 экспорт SquareLine Studio 1.6.0 под LVGL 9.2.2: `ui.[ch]` (ui_init, экраны
 Start/HeadMain), `ui_events.h`, `ui_helpers.*`, темы (`ui_themes.*`,
 `ui_theme_manager.*`), `screens/`, `fonts/` (number11/16/18/36), `images/`,
@@ -147,7 +147,7 @@ main()
  ├─ MX_ICACHE_Init()        ICache (DCache на U5 нет — когерентность DMA не нужна)
  ├─ Vector_Run_Board_Init():
  │    ├─ DBG_TIM6_STOP      (VECTOR_DBG_FREEZE_TICK) тайм-база HAL стоит под halt'ом отладчика
- │    ├─ SD_MODE = 1, 5 мс  включить оконечный усилитель (страховка до настройки в кубе)
+ │    ├─ SD_MODE = 1, 5 мс включить оконечный усилитель (страховка до настройки в кубе)
  │    ├─ sf_probe()         JEDEC ID + статус внешней flash -> sf_jedec / sf_probe_rc
  │    └─ audio_selftest() x VECTOR_AUDIO_SELFTEST (по умолчанию 0)
  └─ MX_ThreadX_Init() -> tx_kernel_enter() -> tx_application_define()
@@ -170,9 +170,9 @@ main()
 | Поток | Приоритет | Стек | Что делает |
 |---|---|---|---|
 | `Audio Player` (`ap_thread_entry`) | 10 | 4096 | **единственный владелец** SAI/DMA и `ap_buf[]`: ждёт `ap_wake` (heartbeat или будильник паузы повтора), разбирает команды, дозагружает половины стрим-буфера, запускает DMA, повторяет последний звук по кругу |
-| `Receiver Task` (`receiver_task_function`) | 12 | 2048 | **единственный потребитель** колец приёма `InputBuffer[TYPE_USART/TYPE_LORA/TYPE_BLE/TYPE_LTE/TYPE_SENSOR]` (GPS — исключение: байты из ISR идут прямо в `Gps_Data_Verification()`, а `Gps_Receive()` разбирает внутренний буфер `Gps.c`): `command_message()`, `Lora_Receive()`, `Ble_Receive()` (v27: strong-реализация в `Ble_vector.c` ПУСТАЯ — обмен с модулем синхронный внутри `Ble_TransmitReceive` (Measure Task), он единственный читатель кольца `TYPE_BLE`; в Avis Receiver Task BLE тоже не обслуживает), `Lte_Receive()`, `Gps_Receive()`, `Uart_Channel_Receive()`, затем `Vector_Options_System()`; пауза `VECTOR_TASKS_RECEIVER_DELAY_MS` |
-| `Measure Task` (`measure_task_function`) | 13 | 4096 | `Vector_Run_Pre_Init()` один раз (`sensors_init()`, биты включения модулей), затем по флагу `timer.flag_1s` (такт 1 с от TIM3): `Vector_Run_Measure()` → `sensors_read()` (BME280/LIS3DH/MAX17048), поворот экрана по 6D-ориентации, `Ble_Run/Lora_Run/Lte_Run/Gps_Run`; и `Vector_RunFlashMemory()` каждый проход — журнал/конфиг во внешнюю flash только в «окно тишины» (пока звучит звук, флаги живут до следующего прохода, v22); `Ble_Run()` — обмен с BLE-модулем (v27: потенциально блокирующий до ~0.5 с на команду, как в Avis); меню здесь БОЛЬШЕ НЕ живёт (v27 — переехало в LVGL Task) |
-| `LVGL Task` | 15 | 4096 | ПОТОК ИНДИКАЦИИ (v27, аналог `indication_task_function` Avis): ждёт `cnt_pre_init`, затем по `timer.flag_100ms` (100 мс) — `Vector_Run_Indication()` (switch `device_turn` → `Menu_Run()`: жесты кнопок, навигация, авто-возврат, отрисовка), при `TFT_Initialized==1` — `lv_timer_handler()`; цикл 10 мс. Стек поднять до 8–16 КБ при подключении LVGL (PLAN п.48е) |
+| `Receiver Task` (`receiver_task_function`) | 12 | 2048 | **единственный потребитель** колец приёма `InputBuffer[TYPE_USART/TYPE_LORA/TYPE_BLE/TYPE_LTE/TYPE_SENSOR]` (GPS — исключение: байты из ISR идут прямо в `Gps_Data_Verification()`, а `Gps_Receive()` разбирает внутренний буфер `Gps.c`): `command_message()`, `Lora_Receive()`, `Ble_Receive()` (strong-реализация в `Ble_vector.c` ПУСТАЯ — обмен с модулем синхронный внутри `Ble_TransmitReceive` (Measure Task), он единственный читатель кольца `TYPE_BLE`; в Avis Receiver Task BLE тоже не обслуживает), `Lte_Receive()`, `Gps_Receive()`, `Uart_Channel_Receive()`, затем `Vector_Options_System()`; пауза `VECTOR_TASKS_RECEIVER_DELAY_MS` |
+| `Measure Task` (`measure_task_function`) | 13 | 4096 | `Vector_Run_Pre_Init()` один раз (`sensors_init()`, биты включения модулей), затем по флагу `timer.flag_1s` (такт 1 с от TIM3): `Vector_Run_Measure()` → `sensors_read()` (BME280/LIS3DH/MAX17048), поворот экрана по 6D-ориентации, `Ble_Run/Lora_Run/Lte_Run/Gps_Run`; и `Vector_RunFlashMemory()` каждый проход — журнал/конфиг во внешнюю flash только в «окно тишины» (пока звучит звук, флаги живут до следующего прохода); `Ble_Run()` — обмен с BLE-модулем (потенциально блокирующий до ~0.5 с на команду, как в Avis); меню здесь БОЛЬШЕ НЕ живёт (переехало в LVGL Task) |
+| `LVGL Task` | 15 | 4096 | ПОТОК ИНДИКАЦИИ (аналог `indication_task_function` Avis): ждёт `cnt_pre_init`, затем по `timer.flag_100ms` (100 мс) — `Vector_Run_Indication()` (switch `device_turn` → `Menu_Run()`: жесты кнопок, навигация, авто-возврат, отрисовка), при `TFT_Initialized==1` — `lv_timer_handler()`; цикл 10 мс. Стек поднять до 8–16 КБ при подключении LVGL (PLAN п.48е) |
 
 Мёртвый поток `Audio Task` и семафор `audio_done_sem` удалены: звуком владеет
 только `Audio Player`. Потоки прибора создаёт `vector_tasks_init()` (файл
@@ -193,7 +193,7 @@ main()
 | `EXTI11` (`ACCEL_INT`, PC11) | `lis3dh_irq_handler()` — только флаг; фронт переключается `LL_EXTI_*Trig_0_31` | да |
 | `SPI2` + `GPDMA1_Channel8` | выдача кадра на экран → `HAL_SPI_TxCpltCallback` → `LCD_transferCpltCallback()` → `lv_display_flush_ready(disp)` | да |
 | `TIM3_UP` (1 кГц) | `Timer_Tick_1ms()` (`Vector_main.c`): `countdown_time[]`, флаги `timer.flag_1ms/10ms/100ms/1s`, счётчики кнопок, таймауты кадров COM/GPS/LoRa | только счёт и флаги |
-| `RTC WakeUp` (1 Гц) | `Timer_Tick_1s()` (`Vector_main.c`): `countdown_time_rtc[]`, часы `Working_data.working_hours` (+ зеркало в RTC BKP0 каждую секунду, v25; `working_hours_offset` — смещение, его ISR не трогает), `flag_start_work`, `timer_end_data_exchange` | только счёт и флаги |
+| `RTC WakeUp` (1 Гц) | `Timer_Tick_1s()` (`Vector_main.c`): `countdown_time_rtc[]`, часы `Working_data.working_hours` (+ зеркало в RTC BKP0 каждую секунду, ; `working_hours_offset` — смещение, его ISR не трогает), `flag_start_work`, `timer_end_data_exchange` | только счёт и флаги |
 | `TIM6_UP` | только `HAL_IncTick()` — внутренняя тайм-база HAL (тик ThreadX — SysTick от порта, 100 Гц) | — |
 
 > Порт ThreadX для Cortex-M33 маскирует критические секции через **PRIMASK**
@@ -244,7 +244,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 
 | Ресурс | Владелец | Защита |
 |---|---|---|
-| SPI1 + внешняя flash | `extstore` | `ext_mtx` (TX_INHERIT, на всю операцию включая стирание), ожидание ограниченное (v22): чтения — до `VECTOR_EXT_LOCK_READ_MS` (250 мс), записи — try-lock (`VECTOR_EXT_LOCK_WRITE_MS` = 0), занято → `EXT_BUSY (-2)`, вызывающий повторяет. Стирания не стартуют, пока звучит звук (`audio_is_busy()`), — откладываются в «окно тишины» (пауза повтора 500 мс / конец звука); `Vector_RunFlashMemory()` заходит во flash тоже только в тишину |
+| SPI1 + внешняя flash | `extstore` | `ext_mtx` (TX_INHERIT, на всю операцию включая стирание), ожидание ограниченное: чтения — до `VECTOR_EXT_LOCK_READ_MS` (250 мс), записи — try-lock (`VECTOR_EXT_LOCK_WRITE_MS` = 0), занято → `EXT_BUSY (-2)`, вызывающий повторяет. Стирания не стартуют, пока звучит звук (`audio_is_busy()`), — откладываются в «окно тишины» (пауза повтора 500 мс / конец звука); `Vector_RunFlashMemory()` заходит во flash тоже только в тишину |
 | SAI1_A + GPDMA ch11 + `ap_buf[]` (2 × 4096 сэмплов = 16 КБ) | поток `Audio Player` | один владелец: ISR ставит только флаги «половина освободилась» и счётчик, дозагружает всегда поток |
 | USART1/UART4 (лог) | `vector_log.c` (`VECTOR_LOG_ENABLE`) | только инициализация/поток, из ISR вызов отбрасывается; UART4 занят только логом |
 | Кольца приёма `InputBuffer[TYPE_*]` | поток `Receiver Task` | SPSC: производитель — ISR UART (`add_to_buffer`), потребитель — **только** `receiver_task_function()` (напрямую или через `Lora_Receive()`) |
@@ -255,16 +255,16 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 
 Внешняя flash поделена без пересечений (`sfmap.h`): `SOUNDS 0..4 МБ` (пишет
 программатор), `CONFIG 0x400000 (4 КБ)` — РАБОЧАЯ конфигурация `SNS_CFG`
-(`cfg_save/cfg_load` с явным `addr`, v23), `CONFIG_DEFAULT 0x401000 (4 КБ)` —
+(`cfg_save/cfg_load` с явным `addr`), `CONFIG_DEFAULT 0x401000 (4 КБ)` —
 ЗАВОДСКАЯ конфигурация (флаг `SaveConfigDefault` пишет туда текущий конфиг,
 `ReadConfigDefault` — сброс к заводским: читает её через буфер
 `Cfg_structdef_read` и при валидном CRC копирует в рабочий `Sns_Cfg_struct`,
-СОХРАНЯЯ часы `Working_data.working_hours` (v24) и указатели кольца журнала
-`Config_archive.CurrentAddrFile/BegginAddrFile` (v25 — журнал история, а не
-настройка); пустая/битая область → конфиг не тронут; v27: сброс СРАЗУ
+СОХРАНЯЯ часы `Working_data.working_hours` и указатели кольца журнала
+`Config_archive.CurrentAddrFile/BegginAddrFile` (журнал история, а не
+настройка); пустая/битая область → конфиг не тронут; сброс СРАЗУ
 закрепляется в рабочей области (`SaveConfig = 1`) и включается
 `ST_COMMON_BIT_DATA_EXCHANGE` — один в один `Avis_RunFlashMemory`),
-`LOG 0x402000, 2 МБ` — КОЛЬЦЕВОЙ журнал событий (v25, схема автора): слоты
+`LOG 0x402000, 2 МБ` — КОЛЬЦЕВОЙ журнал событий (схема автора): слоты
 фиксированной длины 64 байта (= `sizeof(EVENT_LOG)`, без per-record заголовка),
 кольцо 0x8000 (32768) слотов, позиция в памяти = указатель & 0x7FFF;
 переполнение — стирание сектора, начало сдвигается на 64 записи (чётное,
@@ -272,7 +272,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 `log_find_by_time(t_from,t_to)` (бинпоиск по времени записи), всё в
 `Config_save_read.c`; `extstore` даёт журналу только сырые
 `ext_read/ext_write/ext_erase_sector`.
-`LOG_PTR 0x602000 (4 КБ)` — СТРАНИЦА-КОЛЬЦО указателей архива (v27, замечание
+`LOG_PTR 0x602000 (4 КБ)` — СТРАНИЦА-КОЛЬЦО указателей архива (замечание
 автора п.4): указатели `CurrentAddrFile/BegginAddrFile` (RAM-копия живёт в
 `SNS_CFG.Config_archive`) сохраняются после КАЖДОЙ записи журнала ОТДЕЛЬНО от
 конфига — запись 16 байт `{seq u32, cur u32, beg u32, crc16, pad}` append-ом
@@ -283,12 +283,12 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 сканирует страницу ВСЕГДА (позиция следующей записи), а в конфиг cur/beg
 переносятся только после успешного `read_param` — аналог
 `ReadCurrentAddrFile()` в `Avis_Run_Pre_Init`. Хвост чипа `0x603000..8 МБ` —
-резерв. Владелец конфигов — `Config_save_read.c` (v21), запись
+резерв. Владелец конфигов — `Config_save_read.c`, запись
 только из потока `Measure Task` (`Vector_Run_Pre_Init` / `Vector_RunFlashMemory`)
 и только в «окно тишины» — пока звучит звук, `Vector_RunFlashMemory()` не пишет,
-а стирания откладываются и внутри `extstore` (v22; `compare_param()` событие не
+а стирания откладываются и внутри `extstore` (`compare_param()` событие не
 пишет сам, а взводит `SaveEvent`/`TypeLogEvent`). Журнал единый для обоих видов
-записей (v23): единичные события (`SaveEvent`/`TypeLogEvent`: включение/
+записей: единичные события (`SaveEvent`/`TypeLogEvent`: включение/
 выключение/обновление параметров) и периодический архив (`TYPE_READINGS` по
 `TIMER_RTC_LOG` при `ArchiveRecording == 1`).
 Внутренняя flash: последняя страница `0x080FE000` — заводские данные
@@ -315,13 +315,13 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | `audio_status.last_error` / `sai_error_code` | код `audio_err_t` и сырой `SAI.ErrorCode` (больше не смешаны в одном числе) |
 | `audio_status.loop_enabled` / `loop_index` / `loop_next_at_ms` | повтор: включён ли, какой звук, когда следующий |
 | `tasks_status` | потоки прибора: `receiver_running` / `measure_running`, `cnt_receiver_passes`, `cnt_measure_runs`, `cnt_flash_runs` / `cnt_flash_defers` / `cnt_flash_errors` (записи во flash / отложено до окна тишины или `EXT_BUSY` / жёсткие ошибки), по модулям `mod[0..5]` (com/lora/ble/lte/gps/sensor) — `cnt_receive_calls`, `cnt_run_calls`, `cnt_rx_bytes`, `cnt_rx_frames`, `cnt_tx_frames`, `cnt_errors`, `last_*_ms` |
-| `sensors_status` | ВСЕ ИЗМЕРЕННЫЕ ДАННЫЕ (v25, решение автора — в `SNS_CFG` остаётся только сохраняемое в конфиг): `Temperature/Humidity/Pressure` (BME280), `battery_charge_percent/volt` (MAX17048), `Orientation/Screen_rotation` (LIS3DH 6D), `Temperature_calib_offset`, оси `Accel_x/y/z` (g), падение `fall_detected`/`cnt_fall_events`, живость чипов — маска `Sensors_ok` (`SENSORS_OK_BME/_LIS3DH/_MAX17048`), диагностика I2C1: `cnt_init_ok`, `cnt_bme_reads`, `cnt_accel_reads`, `cnt_battery_reads`, `cnt_rotation_events`, `cnt_read_ms`, `last_read_ms` |
-| `current_build_type`, `SaveConfig`, `SaveConfigDefault`, `ReadConfigDefault`, `SaveEvent`, `Sns_Cfg_struct.Config_common.working_hours[_offset]` | бренд (MIRAX/BACS из внутренней flash), флаги отложенных операций с внешней flash (снимает `Vector_RunFlashMemory` в окно тишины, v23): `SaveConfig` — рабочий конфиг в 0x400000, `SaveConfigDefault` — текущий конфиг в заводскую область 0x401000, `ReadConfigDefault` — сброс к заводским (0x401000 → рабочий), `SaveEvent` — событие журнала; часы: `working_hours` — время в секундах (+1/с от RTC), `working_hours_offset` — смещение (не часы, v24); сброс к заводским часы сохраняет |
+| `sensors_status` | ВСЕ ИЗМЕРЕННЫЕ ДАННЫЕ (решение автора — в `SNS_CFG` остаётся только сохраняемое в конфиг): `Temperature/Humidity/Pressure` (BME280), `battery_charge_percent/volt` (MAX17048), `Orientation/Screen_rotation` (LIS3DH 6D), `Temperature_calib_offset`, оси `Accel_x/y/z` (g), падение `fall_detected`/`cnt_fall_events`, живость чипов — маска `Sensors_ok` (`SENSORS_OK_BME/_LIS3DH/_MAX17048`), диагностика I2C1: `cnt_init_ok`, `cnt_bme_reads`, `cnt_accel_reads`, `cnt_battery_reads`, `cnt_rotation_events`, `cnt_read_ms`, `last_read_ms` |
+| `current_build_type`, `SaveConfig`, `SaveConfigDefault`, `ReadConfigDefault`, `SaveEvent`, `Sns_Cfg_struct.Config_common.working_hours[_offset]` | бренд (MIRAX/BACS из внутренней flash), флаги отложенных операций с внешней flash (снимает `Vector_RunFlashMemory` в окно тишины): `SaveConfig` — рабочий конфиг в 0x400000, `SaveConfigDefault` — текущий конфиг в заводскую область 0x401000, `ReadConfigDefault` — сброс к заводским (0x401000 → рабочий), `SaveEvent` — событие журнала; часы: `working_hours` — время в секундах (+1/с от RTC), `working_hours_offset` — смещение (не часы); сброс к заводским часы сохраняет |
 | `lcd_status` | экран: `busy`, `dma_active`, `cnt_cmd/data8/data16/bulk`, `cnt_flush_ready` (0 при растущем `cnt_bulk` = нет прерывания DMA), `cnt_dma_fail`, `cnt_wait_timeout`, `last_hal_error` |
 | `sf_dbg_dma_chunks` / `_fallback` / `_tmo` | работает ли SPI-DMA и сколько раз откатились на опрос |
-| `ext_dbg_busy` / `ext_dbg_erase_defer` | шина была занята при попытке взять `ext_mtx` (try-lock/bounded) / стираний отложено, потому что звучал звук (v22) |
-| `Sns_Cfg_struct.Config_archive.CurrentAddrFile` / `BegginAddrFile` | указатели кольца журнала (v25): следующая запись / самая старая доступная; разница = число записей (ёмкость 32704). Во flash с v27 хранятся ОТДЕЛЬНО в странице-кольце `SF_LOG_PTR 0x602000` (сохранение после каждой записи журнала, `log_ptr_save/load`) |
-| `Sns_Cfg_struct.Working_data.working_hours` и RTC `BKP0` | часы (с): тикают от RTC wakeup, каждую секунду дублируются в резервный регистр BKP0, при старте читаются ОТТУДА (v25) |
+| `ext_dbg_busy` / `ext_dbg_erase_defer` | шина была занята при попытке взять `ext_mtx` (try-lock/bounded) / стираний отложено, потому что звучал звук |
+| `Sns_Cfg_struct.Config_archive.CurrentAddrFile` / `BegginAddrFile` | указатели кольца журнала: следующая запись / самая старая доступная; разница = число записей (ёмкость 32704). Во flash хранятся ОТДЕЛЬНО в странице-кольце `SF_LOG_PTR 0x602000` (сохранение после каждой записи журнала, `log_ptr_save/load`) |
+| `Sns_Cfg_struct.Working_data.working_hours` и RTC `BKP0` | часы (с): тикают от RTC wakeup, каждую секунду дублируются в резервный регистр BKP0, при старте читаются ОТТУДА |
 | `vlog_dbg_lines` | сколько строк ушло в лог |
 
 ---
@@ -584,7 +584,7 @@ TIM6 = 10 (`TICK_INT_PRIORITY` в `stm32u5xx_hal_conf.h` и NVIC в `.ioc`).
 `VECTOR_DBG_FREEZE_TICK`. Если нужна точность — снизить до 5 (для ThreadX
 безопасно: порт маскирует критические секции через PRIMASK).
 
-### 9.x. Экран, GPS, акселерометр (v17)
+### 9.x. Экран, GPS, акселерометр
 
 * **SPI2**: Simplex Bidirectional Master, 8 бит, MSB, PB13 SCK / PB15 MOSI;
   **Baud Rate Prescaler — поставить /4 или /8** (сейчас /2 = 80 МГц, что выше
@@ -597,7 +597,7 @@ TIM6 = 10 (`TICK_INT_PRIORITY` в `stm32u5xx_hal_conf.h` и NVIC в `.ioc`).
   `EXTI11_IRQn` (в `main.h` есть `ACCEL_INT_EXINT_LINE LL_EXTI_LINE_11`);
 * **TIM3**: 1 кГц (Prescaler 159, Period 1000), `TIM3_IRQn` — такт таймеров
   прибора `Timer_Tick_1ms()` (включая таймауты кадров COM/GPS/LoRa);
-* **TIM8** (v21, автор настроил в кубе): CH1 PWM, Prescaler 159 / Period 39 →
+* **TIM8** (автор настроил в кубе): CH1 PWM, Prescaler 159 / Period 39 →
   25 кГц — подсветка экрана; NVIC не нужен;
 * пины экрана: PB14 `LCD_CS`, PB10 `LCD_DC`, PB12 `LCD_RST`, PC6 `LCD_LED` =
   **TIM8_CH1 (AF3)** — ШИМ подсветки, `backlight_set(%)` в `LCD_platform.c`

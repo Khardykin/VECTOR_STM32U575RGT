@@ -1,16 +1,16 @@
 /**
  * @file Ble_vector.h
  * @brief BLE-модуль MK01: AT-протокол (сторона УПРАВЛЕНИЯ модулем) + ПРОТОКОЛ
- *        ОБМЕНА v1 (docs/Mirax-Ble-protocol-v1.md, v28).
+ *        ОБМЕНА v1 (docs/Mirax-Ble-protocol-v1.md).
  *
  * Часть 1 - управление модулем: порт Ble_mk01.c/h из Avis по решению автора
- * (v27, п.2): "полностью копируешь весь функционал, кроме BLE_CMD_ADVMSDDATASET,
+ * (п.2): "полностью копируешь весь функционал, кроме BLE_CMD_ADVMSDDATASET,
  * которую заменяем обычным запросом BLE_CMD_ADVMSDDATAGET, и на которую нам
  * отвечают структурой. И так периодически опрашиваем". Полный набор команд
  * модуля сохранён (AT/имя/период/мощность/старт/сон/DFU/SYSTEMOFF/BLEADDR?/
  * MODINFO?/ADVMSDDATAGET).
  *
- * Часть 2 - ПРОТОКОЛ ДАННЫХ v1 (v28): что именно приходит в ответе
+ * Часть 2 - ПРОТОКОЛ ДАННЫХ v1: что именно приходит в ответе
  * ADVMSDDATAGET. Трекер читает по BLE данные, которые затем уходят в LoRa v4
  * (Mirax-Lora-protocol-v4.md): BLE-маяки (блок BLEBeacons), СИЗ (блок PPE) и
  * под-устройства (одно из них - газоанализатор AVIS, секция SUB_TYPE_GAS).
@@ -44,12 +44,11 @@
  * %04d%04d как у Avis Device2_1). НАБОР МЕТКИ VECTOR - за автором (TODO,
  * временно "VEC").
  *
- * Версии: v26 - первая версия (отклик на DATASET); v27 - полный порт Ble_mk01
- * (мастерская сторона своего модуля), DATASET заменён на периодический
- * DATAGET-опрос -> Connected_device; v28 - протокол данных v1 (пакеты
- * BEACONS/PPE/SUBDEV/AGG + legacy Avis), str_ble_data_set_t приведена к
- * РЕАЛЬНОМУ проводному формату Avis (6+5N байт, Ble_mk01.h), хранилище
- * Ble_telemetry для LoRa v4.
+ * ВНИМАНИЕ: файл реализует ПРЕЖНЮЮ редакцию протокола данных BLE (ответ
+ * DATAGET с Header-байтом, пакеты BEACONS/PPE/SUBDEV/AGG + legacy Avis).
+ * ДЕЙСТВУЮЩАЯ спецификация - docs/Mirax-Ble-protocol-v1.md (MAC-фильтр по
+ * слотам, MSDGETALL/MSDGET, маяки Eddystone, мост конфигуратора Modbus RTU);
+ * код будет приведён к ней, комментарии ниже описывают ТЕКУЩЕЕ состояние.
  */
 #ifndef __BLE_VECTOR_H
 #define __BLE_VECTOR_H
@@ -59,19 +58,19 @@ extern "C" {
 #endif
 
 #include "stm32u5xx_hal.h"
-#include "config_device.h"   /* CONFIG_BLE - ОБЯЗАТЕЛЬНО до #if (v27: без него
+#include "config_device.h"   /* CONFIG_BLE - ОБЯЗАТЕЛЬНО до #if (без него
                                 макрос не определён в точке #if и весь модуль
                                 молча вырезается даже при CONFIG_BLE=1)       */
 #include <stdint.h>
 #include <string.h>
 
 #if CONFIG_BLE
-#include "shared_types.h"    /* ble_beacon_t/ble_ppe_item_t/BLE_TELEMETRY (v28) */
+#include "shared_types.h"    /* ble_beacon_t/ble_ppe_item_t/BLE_TELEMETRY  */
 
 #define BLE_TRANSMIT_REPEAT		(4)			// Количество попыток отправить пакет
 #define BLE_ERROR_DATA_REPEAT	(3)			// Допустимое количество серий с ошибками
 
-// Максимальный размер пакета протокола v1 (ограничение автора, v28). Ответ
+// Максимальный размер пакета протокола v1 (ограничение автора). Ответ
 // ADVMSDDATAGET приходит hex-ASCII (2 символа на байт + эхо + "OK") - буфер
 // приёма модуля 520 байт (см. Ble_vector.c).
 #define BLE_DATA_SET_MAX_SIZE	(256)
@@ -243,8 +242,8 @@ typedef struct {
 	uint32_t cnt_noanswer;		// нет ответа за BLE_WAIT_UART_TIMEOUT
 	uint32_t cnt_unknown;		// прочий мусор вместо OK/ERROR
 	uint32_t cnt_datasets;		// успешно принятых пакетов AVIS (legacy/SUBDEV)
-	uint32_t cnt_beacons;		// принятых пакетов BEACONS/AGG с маяками (v28)
-	uint32_t cnt_ppe;			// принятых пакетов PPE/AGG с СИЗ (v28)
+	uint32_t cnt_beacons;		// принятых пакетов BEACONS/AGG с маяками
+	uint32_t cnt_ppe;			// принятых пакетов PPE/AGG с СИЗ
 	uint8_t  init_flag;			// модуль инициализирован (Ble_Init вернул 1)
 	uint8_t  flag_err;			// ошибка обмена (Avis: Ble_flag_err)
 	uint8_t  counter_err;		// серии ошибок подряд (>= BLE_ERROR_DATA_REPEAT -> общая ошибка)
@@ -258,7 +257,7 @@ extern ble_status_t ble_status;
 // --- API (повторяет Ble_mk01.h; DatSet заменён на DatGet) ------------------
 extern uint8_t Ble_Init(uint32_t serial);
 extern void Ble_DeInit(uint8_t init);
-extern void Ble_MsdDataGet(void);		// периодический опрос принятых данных (v27)
+extern void Ble_MsdDataGet(void);		// периодический опрос принятых данных
 extern void Ble_MsdDataSleep(void);
 extern void Ble_AdvStart(uint8_t data);
 extern void Ble_AdvPeriodms(uint16_t data);

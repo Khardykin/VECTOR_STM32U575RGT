@@ -66,7 +66,7 @@ uint16_t Search_text(uint8_t *data1, const char *data2);
 /* Смена скорости UART на ходу - см. макрос usart_init() и прототип
    Uart_SetBaudrate() в main.h (реализация в vector_macros.c).                */
 
-/* --- ЧАСЫ прибора: календарный RTC <-> Unix-секунды (v28, подход автора) ----
+/* --- ЧАСЫ прибора: календарный RTC <-> Unix-секунды (подход автора) ----
  * Замена AT32 rtc_counter_get/set из Avis: на U5 RTC - календарь (LSE,
  * backup-домен, идёт от VBAT при снятом VDD). RTC_ReadTime() преобразует
  * календарь в Unix-секунды (mktime, AN4759), RTC_WriteTime() - обратно

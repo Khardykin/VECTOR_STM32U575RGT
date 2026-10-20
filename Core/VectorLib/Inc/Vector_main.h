@@ -55,17 +55,18 @@
 #include "Config_save_read.h"
 
 #include "audio_demo.h"
+#include "snd_log_test.h"  /* [ВРЕМЕННЫЙ ТЕСТ] звук+журнал - удалить после проверки */
 #include "audio_player.h"
 #include "vector_tasks.h"
-#include "Ble_vector.h"     /* BLE-модуль MK01: мастерская сторона, порт Ble_mk01 (CONFIG_BLE, v27) */
-#include "Menu_vector.h"    /* основа слоя меню: экраны + жесты кнопок (CONFIG_DISPLAY, v26) */
+#include "Ble_vector.h"     /* BLE-модуль MK01: мастерская сторона, порт Ble_mk01 (CONFIG_BLE) */
+#include "Menu_vector.h"    /* основа слоя меню: экраны + жесты кнопок (CONFIG_DISPLAY) */
 
 
 /* Карта ВНУТРЕННЕЙ flash. Заводские данные - последняя страница банка 2
    (0x080FE000..0x080FFFFF, 8 КБ): линкерный скрипт ограничивает код 1016K,
    поэтому страница не занята прошивкой (STM32U575RGTX_FLASH.ld - правка
    слетает при регенерации куба, проверить!). Конфигурация SNS_CFG и журнал -
-   во ВНЕШНЕЙ flash (extstore/sfmap.h, v23: CONFIG 0x400000 рабочий,
+   во ВНЕШНЕЙ flash (extstore/sfmap.h, CONFIG 0x400000 рабочий,
    CONFIG_DEFAULT 0x401000 заводской, LOG 0x402000).
    Страницу 8 КБ NOR стирает целиком, пишет по 16 байт, поэтому запись
    заводских полей идёт через RAM-окно 64 Б (Internal_Flash_Write).        */
@@ -97,7 +98,7 @@ typedef struct
   volatile float    Accel_y;
   volatile float    Accel_z;
 
-  /* Ориентация и поворот экрана - источник истины ЗДЕСЬ (v25: из SNS_CFG
+  /* Ориентация и поворот экрана - источник истины ЗДЕСЬ (из SNS_CFG
      перенесены сюда); Screen_rotation читает TFT_Rotation() в Measure Task. */
   volatile uint8_t  Orientation;        /* lis3dh_orientation_t              */
   volatile uint8_t  Screen_rotation;    /* 0 или 2 -> TFT_Rotation()         */
@@ -107,9 +108,9 @@ typedef struct
   volatile uint8_t  fall_detected;
   volatile uint32_t cnt_fall_events;
 
-  /* --- ИЗМЕРЕННЫЕ ДАННЫЕ (v25, решение автора: всё СЧИТАННОЕ живёт здесь,
+  /* --- ИЗМЕРЕННЫЕ ДАННЫЕ (решение автора: всё СЧИТАННОЕ живёт здесь,
      в SNS_CFG остаётся только то, что сохраняется в конфигурацию).
-     Orientation/Screen_rotation - выше (единственный экземпляр, v25: дубль
+     Orientation/Screen_rotation - выше (единственный экземпляр, дубль
      из пула автора убран - член структуры объявлялся дважды).            */
   volatile uint16_t battery_charge_percent; /* MAX17048: заряд, %            */
   volatile uint16_t battery_charge_volt;    /* MAX17048: напряжение, мВ      */
@@ -124,7 +125,7 @@ typedef struct
 
 extern volatile sensors_status_t sensors_status;
 
-/* Биты sensors_status.Sensors_ok (v25: маска переехала из Config_common) -
+/* Биты sensors_status.Sensors_ok (маска переехала из Config_common) -
    какие микросхемы ответили при инициализации (выставляет sensors_init()). */
 #define SENSORS_OK_BME        (1u)
 #define SENSORS_OK_LIS3DH     (2u)
@@ -132,13 +133,13 @@ extern volatile sensors_status_t sensors_status;
 
 void    sensors_init(void);             /* из Vector_Run_Pre_Init (один раз) */
 void    Battery_Init(void);             /* MAX17048: quickStart + лимиты напряжения
-                                           от BAT_MIN/BAT_MAX конфига (v25); зовёт
+                                           от BAT_MIN/BAT_MAX конфига; зовёт
                                            Vector_Run_Pre_Init после чтения конфига */
 void    sensors_read(void);             /* из Vector_Run_Measure (1 с)       */
 uint8_t sensors_rotation_changed(void);
 uint8_t sensors_fall_event(void);       /* 1 = было падение, флаг сбрасывается */
 
-/* --- сервис (v26, по образцу Avis) ------------------------------------------
+/* --- сервис (по образцу Avis) ------------------------------------------
  * SoftResetProgram: 1 = команда мягкой перезагрузки прошивки (взводит COM/
  *   BLE-модуль ВМЕСТЕ с START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, N));
  *   отрабатывает Vector_Options_System(): событие TYPE_FW_UPDATE в журнал ->
@@ -148,7 +149,7 @@ uint8_t sensors_fall_event(void);       /* 1 = было падение, флаг
 extern uint8_t SoftResetProgram;
 void Avis_Battery_System(void);
 
-/* --- v28: общие данные модулей обмена --------------------------------------
+/* --- общие данные модулей обмена --------------------------------------
  * deveui_com[8]: копия DevEUI LoRa-модуля для COM/LTE-протокола (как в Avis);
  *   заполняет Lora_InitDeveui() (Lora_S7678S.c), экземпляр - Vector_main.c.
  * Get_Conversion_factor_rf(chan): коэффициент пересчёта концентрации для RF

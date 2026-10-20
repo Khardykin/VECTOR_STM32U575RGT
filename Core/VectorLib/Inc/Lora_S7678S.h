@@ -1,11 +1,13 @@
 #ifndef _LORA_S7678S_H_
 #define _LORA_S7678S_H_
 
+#include "shared_types.h"   /* ble_beacon_t - единственное определение (общий тип) */
+
 //===========================================================================================================================
 // 1. АППАРАТНАЯ КОНФИГУРАЦИЯ
 //===========================================================================================================================
 #if(DEVICE_NUMBER == Dev1)
-    #define USART_LORA		(huart4)
+    #define USART_LORA		(USART_RF)
 #endif
 
 #define COUNT_CHAN_LORA	(COUNT_CHAN)
@@ -347,17 +349,15 @@ typedef struct
     uint8_t Charge[];
 } __attribute__((__packed__)) ppe_block_t;
 
-typedef struct
-{
-    uint16_t ShortID;
-    int8_t   Rssi;
-    uint8_t  Battery;
-} __attribute__((__packed__)) ble_beacon_t;
+/* ble_beacon_t (запись блока BLEBeacons, байт-в-байт LoRa v4 п.4.7) определена
+   В ОДНОМ МЕСТЕ - shared_types.h: тип МЕЖМОДУЛЬНЫЙ (кэш BLE
+   Ble_telemetry.beacons[] читает этот модуль). Повторное определение здесь
+   запрещено - конфликт typedef при включении обоих заголовков (Vector_main.h). */
 
 typedef struct
 {
     uint8_t Count;
-    ble_beacon_t Beacons[];
+    ble_beacon_t Beacons[];   /* из shared_types.h */
 } __attribute__((__packed__)) blebeacons_block_t;
 
 typedef struct

@@ -13,24 +13,24 @@ components, images, fonts). Ниже — что где лежит, чего в g
 | Что | Где | В git? |
 |---|---|---|
 | LVGL 9.2 (библиотека) | `Drivers/lvgl` | **нет** (`.gitignore`: `/Drivers/*`) — из пака CubeMX |
-| UI от SquareLine Studio 1.6.0 / LVGL 9.2.2 (`ui.h`, `ui.c`, `ui_events.h`, `ui_helpers.*`, темы, `screens/`, `components/`, `images/`, `fonts/`) | `Drivers/ui_Vector` | **да** (v24: `.gitignore` = `/Drivers/*` + `!/Drivers/ui_Vector/`) |
+| UI от SquareLine Studio 1.6.0 / LVGL 9.2.2 (`ui.h`, `ui.c`, `ui_events.h`, `ui_helpers.*`, темы, `screens/`, `components/`, `images/`, `fonts/`) | `Drivers/ui_Vector` | **да** (`.gitignore` = `/Drivers/*` + `!/Drivers/ui_Vector/`) |
 | `lv_conf.h` (конфигурация LVGL) | должен лежать в include path (рекомендуется `Core/Inc/lv_conf.h`) | **нет** |
 | Переводы (исходники) | `Core/translations/ru-RU.yml`, `en-GB.yml` | да |
 | Сгенерированный i18n | `Core/ui/lv_i18n/lv_i18n.c/h` | да |
 | Скрипт перегенерации переводов | `Core/update_lang.bat` | да |
 | Драйвер панели (HAL, SPI2+DMA) | `Core/VectorLib/Src/TFT/LCD_platform.c/h` | да |
 | Инициализация контроллера ST7789P3 | `Core/VectorLib/Src/TFT/TFT.c/h` | да |
-| Индикация прибора (меню/экраны Avis) | `Core/VectorLib/Src/TFT/TFT_indicator.c/h` | да, **выключена** (`CONFIG_TYPE_LCD_TFT == 2`, v24 — макрос объединён, ждёт переноса) |
+| Индикация прибора (меню/экраны Avis) | `Core/VectorLib/Src/TFT/TFT_indicator.c/h` | да, **выключена** (`CONFIG_TYPE_LCD_TFT == 2`, макрос объединён, ждёт переноса) |
 
 Что уже настроено в проекте (`.cproject`, обе конфигурации Debug и Release):
 
 * `Drivers` — source path с исключением `lvgl/tests|lvgl/examples|lvgl/demos`
   (иначе LVGL тянет в сборку свои тесты и примеры);
-* include paths: `../Drivers/lvgl`, `../Drivers/ui_Vector` (v24 — без него сборка падала: `ui.h: No such file or directory`), `../Drivers/ui` (исторический, каталога нет), `../Core/ui`,
+* include paths: `../Drivers/lvgl`, `../Drivers/ui_Vector` (без него сборка падала: `ui.h: No such file or directory`), `../Drivers/ui` (исторический, каталога нет), `../Core/ui`,
   `../Core/ui/lv_i18n`, `../Core/VectorLib/Src/TFT`, `../Core/VectorLib/Src/BME280`,
   `../Core/VectorLib/Src/Lis3dh_reg`.
 
-> **Про `.gitignore` (решено в v24)**: исключение работает только в форме
+> **Про `.gitignore` (решено ранее )**: исключение работает только в форме
 > `/Drivers/*` + `!/Drivers/ui_Vector/` (git не заходит внутрь каталога,
 > исключённого целиком, — прежняя строка `/Drivers/` не позволяла добавить UI в git).
 > UI SquareLine Studio теперь В GIT.
@@ -82,7 +82,7 @@ components, images, fonts). Ниже — что где лежит, чего в g
 Если Studio экспортирует UI со своими шрифтами — включите в `lv_conf.h` именно
 их, иначе линкер не найдёт `lv_font_montserrat_*`.
 
-**Что реально использует UI-экспорт `Drivers/ui_Vector` (в git с v24)** —
+**Что реально использует UI-экспорт `Drivers/ui_Vector` (в git ранее )** —
 по нему и выставляйте `lv_conf.h`:
 * виджеты: `lv_obj`, `lv_label`, `lv_image` (`LV_USE_OBJ/LABEL/IMAGE`);
 * шрифт LVGL: только `lv_font_montserrat_14` → `LV_FONT_MONTSERRAT_14 1`;

@@ -1,7 +1,7 @@
 /**
   ******************************************************************************
   * @file    Menu_vector.c
-  * @brief   ОСНОВА слоя меню (v26, v27): машина экранов + декодер жестов кнопок
+  * @brief ОСНОВА слоя меню: машина экранов + декодер жестов кнопок
   *
   *          Логика кнопок перенесена из Button_1/2/3_Menu (docs/Avis_Menu_2.c)
   *          один-в-один по смыслу, но БЕЗ блокирующих ожиданий и без графики:
@@ -16,19 +16,19 @@
   *               экранах SquareLine (см. menu_screens[]);
   *            4) Menu_Draw() - WEAK аналог DisplayIndication/LCD_Fill_Template:
   *               LVGL-порт подставит обновление виджетов; сам каркас графики
-  *               не требует. Хука «входа на экран» НЕТ (v27, замечание автора
+  *               не требует. Хука «входа на экран» НЕТ (замечание автора
   *               п.1): в Avis LCD_Fill_Template перерисовывает шаблон КАЖДЫЙ
   *               цикл, поэтому screen load/тексты порт сделает внутри
   *               Menu_Draw() при смене menu_status.screen.
   *
-  *          КОНТЕКСТ (v27, замечание автора п.5 - по образцу
+  *          КОНТЕКСТ (замечание автора п.5 - по образцу
   *          indication_task_function из Avis_main.c): Menu_Init() - Measure
   *          Task (Vector_Run_Pre_Init, один раз); Vector_Run_Indication() -
   *          поток LVGL Task (app_azure_rtos.c) по timer.flag_100ms (100 мс),
   *          внутри по device_turn -> Menu_Run(). В Measure Task меню НЕ живёт.
   *          Из ISR не вызывать (тут таймеры прибора и SaveConfig).
   *
-  *          v27 (замечание автора п.3): приоритет жестов ПОСТОЯННЫЙ -
+  *           (замечание автора п.3): приоритет жестов ПОСТОЯННЫЙ -
   *          Button1 > Button2 > Button3 (внутри кнопки LONG > SHORT >
   *          DOUBLE), единая цепочка else-if на экран начинается с g1.
   ******************************************************************************
@@ -94,7 +94,7 @@ __attribute__((weak)) void Menu_Draw(void)
 /* Перейти на экран: только состояние/счётчики/лог. Отрисовку (включая
    lv_screen_load при смене screen) делает Menu_Draw() в следующем цикле -
    как в Avis, где DisplayIndication/LCD_Fill_Template перерисовывает всё
-   каждый проход (v27, замечание автора п.1). КОНТЕКСТ: поток LVGL Task.    */
+   каждый проход (замечание автора п.1). КОНТЕКСТ: поток LVGL Task.    */
 void Menu_GoTo(uint8_t screen)
 {
   if (screen >= (uint8_t)SCREEN_COUNT)
@@ -212,10 +212,10 @@ static void menu_navigate(void)
   uint8_t g2 = Menu_Gesture(2u);
   uint8_t g3 = Menu_Gesture(3u);
 
-  /* ПРИОРИТЕТ ЖЕСТОВ ПОСТОЯННЫЙ (v27, замечание автора п.3): на каждом
+  /* ПРИОРИТЕТ ЖЕСТОВ ПОСТОЯННЫЙ (замечание автора п.3): на каждом
      экране цепочка else-if ВСЕГДА начинается с Button1 (вход/назад - важнее
      скролла), затем Button2 (вниз), затем Button3 (вверх); внутри кнопки
-     LONG важнее SHORT. Так g1 не может «стать последним», как в v26.       */
+     LONG важнее SHORT. Так g1 не может «стать последним», как ранее.       */
   switch (menu_status.screen)
   {
     /* Заставка: любое короткое нажатие - на главный. */
@@ -271,7 +271,7 @@ static void menu_navigate(void)
       break;
 
     /* Меню: Button1 SHORT - войти в пункт, Button1 LONG - назад на главный
-       (ВСЕГДА раньше скролла - v27); Button2 вниз, Button3 вверх (Avis:
+       (ВСЕГДА раньше скролла - ); Button2 вниз, Button3 вверх (Avis:
        scroll_down/scroll_up). Пункты и куда они ведут - таблица автора
        (пока цикл по экранам).                                               */
     case SCREEN_MENU:
@@ -352,7 +352,7 @@ void Menu_Init(void)
         (uint32_t)VECTOR_MENU_AUTO_RETURN_S);
 }
 
-/* Цикл меню (v27: вызывается из Vector_Run_Indication(), поток LVGL Task,
+/* Цикл меню (вызывается из Vector_Run_Indication(), поток LVGL Task,
    по timer.flag_100ms - 100 мс): жесты -> навигация -> авто-возврат ->
    dirty_data -> отрисовка. НЕ блокируется.                                 */
 void Menu_Run(void)

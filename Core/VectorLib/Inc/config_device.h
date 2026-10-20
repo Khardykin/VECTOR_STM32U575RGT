@@ -44,13 +44,13 @@
 #define CONFIG_UART                   	1               // Включение конфигурации с USART
 #define CONFIG_CALIB_RTC				0
 #define CONFIG_BLE						0				// Конфигурация включающая BLE
-#define CONFIG_LORA						0				// Конфигурация включающая LORA
+#define CONFIG_LORA						1				// Конфигурация включающая LORA
 #define CONFIG_G4						0				// Конфигурация включающая G4
 #define CONFIG_GPS						1				// Конфигурация включающая GPS
 #define CONFIG_SLEEP                    1               // Включение конфигурации со сном
 #define CONFIG_SAVE_PARAM_LOG           1               // Включение конфигурации с использованием микросхемы памяти
 #define CONFIG_DISPLAY                  1               // Включение конфигурации с использованием управления дисплеем
-#define CONFIG_TYPE_LCD_TFT				1				// 0 = экран выключен; 1 = драйвер панели ST7789P3 (TFT.c + LCD_platform.c); 2 = слой индикации Avis (TFT_indicator.c) вместо драйвера. Значения 1 и 2 взаимоисключающи: TFT.c/LCD_platform.c собираются при ненулевом макросе, TFT_indicator.c - только при ==2 (v24, PLAN.md п.29)
+#define CONFIG_TYPE_LCD_TFT				1				// 0 = экран выключен; 1 = драйвер панели ST7789P3 (TFT.c + LCD_platform.c); 2 = слой индикации Avis (TFT_indicator.c) вместо драйвера. Значения 1 и 2 взаимоисключающи: TFT.c/LCD_platform.c собираются при ненулевом макросе, TFT_indicator.c - только при ==2 (PLAN.md п.29)
 #define CONFIG_MODEL_LCD				0				// 0 = ST7789P3 172x320 (портрет, подсветка вкл/выкл PC6), 1 = 320x240 ILI9341 (ШИМ)
 
 #define CONFIG_LIS3DH					1

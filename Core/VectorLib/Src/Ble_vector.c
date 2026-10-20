@@ -1,7 +1,7 @@
 /**
  * @file Ble_vector.c
  * @brief BLE-модуль MK01: порт Ble_mk01.c из Avis (сторона управления модулем),
- *        v27 по замечанию автора: "полностью копируешь весь функционал, кроме
+ *         по замечанию автора: "полностью копируешь весь функционал, кроме
  *        BLE_CMD_ADVMSDDATASET, которую заменяем обычным запросом
  *        BLE_CMD_ADVMSDDATAGET, и на которую нам отвечают структурой. И так
  *        периодически опрашиваем".
@@ -35,7 +35,7 @@
  *    предварительно "VEC" (TODO автор);
  *  - диагностический счётчик ble_status (поле "ble" в tasks_status).
  *
- * ПРОТОКОЛ ДАННЫХ v1 (v28, docs/Mirax-Ble-protocol-v1.md): первый байт пакета
+ * ПРОТОКОЛ ДАННЫХ v1 (docs/Mirax-Ble-protocol-v1.md): первый байт пакета
  * — Header (биты 7..4 тип BLE_PKT_*, 3..0 версия). Legacy-пакет Avis (0x02) —
  * байт-в-байт str_ble_data_set_t из Ble_mk01.h (6+5N); пакеты v1: BEACONS
  * (0x11), PPE (0x21), SUBDEV (0x31, с серийником), AGG (0xF1, BlockMask +
@@ -50,14 +50,14 @@
  * запускается, см. PLAN); Ble_Receive (публичный) — Receiver Task (пусто).
  * Возврат: см. функции. Управление: CONFIG_BLE (сейчас 0 — отладка на столе).
  *
- * Версии: v26 — первая версия; v27 — полный порт мастерской стороны Ble_mk01,
- * DATAGET-опрос вместо DATASET (замечание автора п.2); v28 — протокол данных
+ * Версии: первая версия; полный порт мастерской стороны Ble_mk01,
+ * DATAGET-опрос вместо DATASET (замечание автора п.2); протокол данных
  * v1 (маяки/СИЗ/под-устройства/агрегат), str_ble_data_set_t приведена к
  * реальному проводному формату Avis (6+5N), хранилище Ble_telemetry (задача
  * автора п.2: "по ble считать данные, которые потом пойдут на lora —
  * BLEBeacons, PPE и под-устройства").
  */
-#include "config_device.h"   /* CONFIG_BLE до #if - см. Ble_vector.h (v27) */
+#include "config_device.h"   /* CONFIG_BLE до #if - см. Ble_vector.h  */
 #include "Ble_vector.h"
 
 #if CONFIG_BLE
@@ -89,7 +89,7 @@ const char *str_BLE_CMD[] = {
 		"AT",					// Проверка связи
 		"AT+MODINFO?",			// Запрос информации о модуле
 		"AT+ADVBLENAMESET=",	// Задать имя модуля в сети
-		"AT+ADVMSDDATAGET",		// Запрос принятых данных (v27, вместо ...DATASET=)
+		"AT+ADVMSDDATAGET",		// Запрос принятых данных (вместо ...DATASET=)
 		"AT+ADVSTART=",			// Включить/выключить рекламу
 		"AT+ADVPERIODMS=",		// Период рекламы
 		"AT+ADVPOWER=",			// Мощность рекламы
@@ -110,11 +110,11 @@ static uint8_t Ble_init_flag = 0;		// модуль инициализирова�
 static uint8_t Ble_flag_err = 0;		// ошибка обмена (серия >= 3)
 static uint8_t Ble_counter_err = 0;		// серии ошибок подряд
 static char Ble_string[80];				// строка команды/имени
-static uint8_t ble_rx_raw[BLE_DATA_SET_MAX_SIZE];	// сырые байты пакета DATAGET (<= 256, v28)
+static uint8_t ble_rx_raw[BLE_DATA_SET_MAX_SIZE];	// сырые байты пакета DATAGET (<= 256)
 static uint16_t ble_rx_raw_len = 0;
 
 // Буфер одного ответа модуля (аналог buffer_uart_ble в Ble_mk01.c).
-// v28: 520 байт — ответ DATAGET = эхо(2) + hex(2*256=512) + "\r\nOK\r"(5);
+// 520 байт — ответ DATAGET = эхо(2) + hex(2*256=512) + "\r\nOK\r"(5);
 // пакет протокола v1 ограничен 256 байтами (BLE_DATA_SET_MAX_SIZE, автор).
 typedef struct {
 	uint8_t receive[520];
@@ -159,7 +159,7 @@ static uint16_t Ble_HexToBin(const uint8_t *hex, uint16_t len)
  * и индикация (100 мс цикл); struct-копирование на Cortex-M33 атомарно
  * пословно, частичное обновление практически исключено.
  *
- * Соответствие полей (v28, формат Avis байт-в-байт) -> SNS_Dev_Type:
+ * Соответствие полей (формат Avis байт-в-байт) -> SNS_Dev_Type:
  *   dev_id -> dev_id; charge -> battery_charge_percent;
  *   dev_hw_ver -> HardwareVersion; dev_fw_ver -> FirmwareVersion;
  *   sensors[i].Type_gas -> Sensor[i].num_formula_gas (код газа/формулы);
@@ -171,7 +171,7 @@ static uint16_t Ble_HexToBin(const uint8_t *hex, uint16_t len)
  *   State/StateErr сводные = OR по включённым каналам (маска sensors_enabled),
  *   StateErr дополнительно фильтруется ERROR_MASK_ST_1.
  * Выключенные каналы помечаются channel = 0xFF, чтобы признак "channel ==
- * индекс" не срабатывал на нулевом слоте (v28). data_struct_ver/rfu остаются
+ * индекс" не срабатывал на нулевом слоте. data_struct_ver/rfu остаются
  * в ble_rx_data_set (сырая копия ответа, Expressions/отладка).
  */
 static void Ble_ApplyConnectedDevice(const str_ble_data_set_t *src)
@@ -199,13 +199,13 @@ static void Ble_ApplyConnectedDevice(const str_ble_data_set_t *src)
 			state_or |= src->sensors[i].State_channel;
 			err_or   |= ((uint32_t)src->sensors[i].State_channel & ERROR_MASK_ST_1);
 		} else {
-			Connected_device.Sensor[i].channel = 0xFFu;		// канал отсутствует (v28)
+			Connected_device.Sensor[i].channel = 0xFFu;		// канал отсутствует
 		}
 	}
 	Connected_device.State    = state_or;
 	Connected_device.StateErr = err_or;
 
-	/* v28: свежесть данных под-устройства для LoRa v4 (секция SUB_TYPE_GAS и
+	/* свежесть данных под-устройства для LoRa v4 (секция SUB_TYPE_GAS и
 	   TYPE_STATIC собираются из Connected_device, пока gas_ms не устарел).  */
 	Ble_telemetry.gas_online = 1u;
 	Ble_telemetry.gas_ms     = GetTick();
@@ -547,7 +547,7 @@ static uint8_t Ble_ReadAnswer(BLE_CMD_t command)
 	buffer_uart_ble.len = 0;
 
 	uint32_t time_data_start = GetTick();
-	uint16_t len = 0;	/* v28: uint16 - буфер приёма 520 (uint8 обрезал бы границу) */
+	uint16_t len = 0;	/* uint16 - буфер приёма 520 (uint8 обрезал бы границу) */
 	while ((check_buffer(&InputBuffer[TYPE_BLE]) == 0u) &&
 		   ((GetTick() - time_data_start) <= BLE_WAIT_UART_TIMEOUT)) {
 		// ждём первый байт ответа (ISR USART3 кладёт байты в InputBuffer[TYPE_BLE])
@@ -595,7 +595,7 @@ static uint8_t Ble_ReadAnswer(BLE_CMD_t command)
 			}
 		}
 		break;
-	case CMD_ADVMSDDATAGET: {						// v28: пакет протокола v1 (hex)
+	case CMD_ADVMSDDATAGET: {						// пакет протокола v1 (hex)
 		uint16_t n = Ble_HexToBin(&buffer_uart_ble.receive[2],
 								  (uint16_t)(len > 2u ? len - 2u : 0u));
 		ble_rx_raw_len = n;
@@ -700,7 +700,7 @@ void Ble_DeInit(uint8_t init)
 }
 
 /**
- * @brief  Периодический ОПРОС принятых данных (v27, замена Ble_MsdDataSet).
+ * @brief Периодический ОПРОС принятых данных (замена Ble_MsdDataSet).
  * @param  Нет. @retval Нет.
  * Контекст: Measure Task (Ble_Run по SET-таймеру, TIME_RTC_BLE_DATA_SET=60 с).
  * AT+ADVMSDDATAGET -> ответ hex -> str_ble_data_set_t -> Connected_device.
@@ -810,7 +810,7 @@ uint8_t get_state_init_flag_ble(void)
 }
 
 /**
- * @brief  Публичный Ble_Receive() — заглушка для Receiver Task (v27).
+ * @brief Публичный Ble_Receive() — заглушка для Receiver Task.
  * @param  Нет. @retval Нет.
  * В Avis Receiver Task BLE не обслуживает: обмен с модулем синхронный внутри
  * Ble_TransmitReceive (Measure Task), он и есть ЕДИНСТВЕННЫЙ читатель ring
@@ -852,7 +852,7 @@ void Ble_Run(void)
 			}
 			if (TEST_TIMER_RTC(TIMER_RTC_BLE_DATA_SET)) {
 				RESET_TIMER_RTC(TIMER_RTC_BLE_DATA_SET);
-				Ble_MsdDataGet();					// периодический опрос (v27)
+				Ble_MsdDataGet();					// периодический опрос
 				START_TIMER_RTC(TIMER_RTC_BLE_DATA_SLEEP, TIME_RTC_BLE_DATA_SLEEP);
 				START_TIMER_RTC(TIMER_RTC_BLE_DATA_SET, TIME_RTC_BLE_DATA_SET);
 			}

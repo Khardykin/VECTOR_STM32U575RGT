@@ -4,7 +4,7 @@
  *  Created on: Nov 5, 2024
  *      Author: me
  *
- *  v17: STM32 HAL вместо AT32. НАЗВАНИЯ ФУНКЦИЙ СОХРАНЕНЫ - TFT.c,
+ *  STM32 HAL вместо AT32. НАЗВАНИЯ ФУНКЦИЙ СОХРАНЕНЫ - TFT.c,
  *  TFT_indicator.c и flush-callback LVGL править не нужно.
  *
  *  Что изменилось по сравнению с AT32-версией:
@@ -33,10 +33,10 @@
 
 #include "LCD_platform.h"
 /* CONFIG_TYPE_LCD_TFT живёт в config_device.h; LCD_platform.h его НЕ включает
-   (только vector_config.h), и с v17 guard ниже молча вычислялся в 0 -
+   (только vector_config.h), и ранее guard ниже молча вычислялся в 0 -
    ВСЁ тело файла выпадало из сборки (link: undefined reference to
    LCD_writeCommand8Bit/LCD_writeData8Bit из TFT.c). Каждый .c включает то,
-   что использует сам (правило проекта) - macro нужен именно здесь. (v24)   */
+   что использует сам (правило проекта) - macro нужен именно здесь.    */
 #include "config_device.h"
 
 #if (CONFIG_TYPE_LCD_TFT)

@@ -8,12 +8,12 @@
   *          DOWN_TIMER/DOWN_TIMER_RTC и volatile-экземпляры countdown_time/
   *          countdown_time_rtc (пишут Timer_Tick_1ms/1s из TIM3 1 кГц и RTC
   *          wakeup 1 Гц - Vector_main.c, читают потоки); DEVICE_TURNED
-  *          (включён/выключен); COUNT_CHAN (10, решение автора v20); пороги
+  *          (включён/выключен); COUNT_CHAN (10, решение автора); пороги
   *          батареи/LED по умолчанию (BAT_*_DEF, TIME_RTC_LED_STATE_*);
   *          SNS_CFG_Type_common/SNS_CFG - конфигурация прибора (хранится во
-  *          внешней flash, extstore cfg_save/cfg_load, v23 - области
+  *          внешней flash, extstore cfg_save/cfg_load, области
   *          SF_CONFIG_BASE/SF_CONFIG_DEFAULT); SNS_DevChan_Type/SNS_Dev_Type -
-  *          данные измерительных каналов (резерв под перенос модулей, v23).
+  *          данные измерительных каналов (резерв под перенос модулей).
   ******************************************************************************
   */
 #ifndef __SHARED_TYPES_H
@@ -185,7 +185,7 @@ extern volatile DOWN_TIMER_RTC 		countdown_time_rtc;	 /* секундные (RTC
 #define TIME_RTC_LORA_DATA_SET		(120u)
 #define TIME_RTC_LORA_DATA_SLEEP	(60u)
 /* Держать питание/приём после принятого downlink (mac rx), с: окно RX2 +
-   запас; Lora_Receive() взводит TIMER_RTC_LORA_DATA_SLEEP этим значением (v28). */
+   запас; Lora_Receive() взводит TIMER_RTC_LORA_DATA_SLEEP этим значением. */
 #define TIME_RTC_LORA_DATA_SLEEP_AFTER_DL	(10u)
 #define TIME_RTC_LED_STATE_RUN_PULSE	(1u)	// пульс зеленого светодиода, с
 #define TIME_RTC_LED_STATE_RUN_PERIOD	(5u)	// период зеленого светодиода, с
@@ -201,7 +201,7 @@ extern volatile DOWN_TIMER_RTC 		countdown_time_rtc;	 /* секундные (RTC
 #define BAT_LIM_1               (Sns_Cfg_struct.Config_common.battery_charge_volt_lim_1)//
 #define BAT_LIM_2               (Sns_Cfg_struct.Config_common.battery_charge_volt_lim_2)//
 //--------------------------------------------------------------------------------------------------------------
-/* Данные измерительных каналов (добавлено автором, v23) - РЕЗЕРВ под перенос
+/* Данные измерительных каналов (добавлено автором) - РЕЗЕРВ под перенос
    модели каналов с другого прибора (Avis/газоанализатор): экземпляр пока не
    создан. SNS_DevChan_Type - ОДИН канал (номер, настройки, формула газа,
    ошибки/пороги, концентрация), SNS_Dev_Type - свод устройства:
@@ -230,7 +230,7 @@ typedef struct//
 extern SNS_Dev_Type		Connected_device;
 
 //--------------------------------------------------------------------------------------------------------------
-/* v28: ТЕЛЕМЕТРИЯ BLE-ОКРУЖЕНИЯ - хранилище данных, которые BLE-модуль читает
+/* ТЕЛЕМЕТРИЯ BLE-ОКРУЖЕНИЯ - хранилище данных, которые BLE-модуль читает
    из эфира и которые затем уходят в КОНТЕЙНЕРНЫЕ блоки LoRa v4
    (Mirax-Lora-protocol-v4.md пп. 4.6-4.7) и в TYPE_STATIC (п. 6):
    - beacons[]  -> блок BLEBeacons (бит 8 ContainerMask): видимые маяки нашей
