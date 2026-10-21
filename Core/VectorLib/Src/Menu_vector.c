@@ -388,11 +388,12 @@ void Menu_Run(void)
 
 /* Аналог Avis_Run_Indication (Avis_main.c) - вызывается из потока LVGL Task
    (app_azure_rtos.c) по timer.flag_100ms. КОНТЕКСТ: поток LVGL Task.
-   device_turn: ON/ON_1 -> Menu_Run() (кнопки/меню/отрисовка); OFF -> пока
-   ничего (в Avis здесь DisplayChargeIndicationTurnOff + Button_Run_Start -
-   экран заряда при выключенном приборе, появится с продуктовой кнопкой
-   включения, PLAN этап 6). PRE_INIT-фаза сюда не попадает: поток ждёт
-   cnt_pre_init в app_azure_rtos.c.                                          */
+   device_turn: ON/ON_1 -> Menu_Run() (кнопки/меню/отрисовка); OFF и
+   OFF_PRE_INIT -> ничего (в Avis при OFF здесь DisplayChargeIndicationTurnOff
+   + Button_Run_Start - экран заряда при выключенном приборе, появится с
+   продуктовой кнопкой включения, PLAN этап 6). PRE_INIT сюда не попадает:
+   LVGL Task (когда будет создан) ждёт завершения Vector_Run_Pre_Init
+   (device_turn/cnt_pre_init) - как receiver в Vector_main.c (PLAN п.60).     */
 void Vector_Run_Indication(void)
 {
   switch (device_turn)
@@ -404,6 +405,10 @@ void Vector_Run_Indication(void)
     case DEVICE_TURNED_OFF:
       /* TODO(автор): индикация заряда при выключенном приборе (Avis:
          DisplayChargeIndicationTurnOff) и обработка кнопки включения.   */
+      break;
+    case DEVICE_TURNED_OFF_PRE_INIT:
+      /* старт: потоки ещё не допущены в рабочий режим (PLAN п.60) - сюда
+         вызов в норме не попадает, ветка - страховка.                     */
       break;
     default:
       break;

@@ -1,16 +1,20 @@
 /*
- * Config_save_read.c - конфигурация прибора и КОЛЬЦЕВОЙ журнал событий (
- * журнал перенесён сюда из extstore: слоты фиксированной длины 64 байта,
- * кольцо 0x8000 слотов по маске 0x7FFF, указатели в SNS_CFG.Config_archive,
- * чтение по номеру (log_read) и поиск по времени (log_find_by_time);
- * СТРАНИЦА-КОЛЬЦО указателей архива SF_LOG_PTR (замечание автора п.4:
- * cur/beg сохраняются после КАЖДОЙ записи журнала отдельно, чтобы не
- * перезаписывать всю конфигурацию - аналог SaveCurrentAddrFile/
- * ReadCurrentAddrFile из Avis) + Init_Build_Type()/current_build_type
+ * Config_save_read.c - конфигурация прибора и КОЛЬЦЕВОЙ журнал событий v2
+ * (LOG_FORMAT.md): слот 40 байт (заголовок 12 Б + payload 28 Б), 102 слота
+ * в секторе, кольцо 52224 записи = 2 МБ; RAM-очередь 16×40 Б со снимком НА
+ * МОМЕНТ СОБЫТИЯ (§6) - писатель (Vector_RunFlashMemory, 50 мс) переносит
+ * её во flash: program под звуком разрешён, erase только в окно тишины,
+ * LOG_PTR - один раз на пачку. Чтение по номеру (log_read) и поиск по
+ * времени (log_find_by_time, ключ working_hours на +4).
+ * СТРАНИЦА-КОЛЬЦО указателей архива SF_LOG_PTR (cur/beg после каждой ПАЧКИ
+ * записей; запись 16 Б c маркером формата v2 в поле pad - записи прежней
+ * прошивки игнорируются, «миграции нет», §2/§8.10: первый старт v2
+ * переинициализирует кольцо) + Init_Build_Type()/current_build_type
  * (бренд прибора, последняя страница внутренней flash - как в Avis;
- * закрывает висячую ссылку TFT_indicator.c и нужна имени BLE-модуля)).
+ * закрывает висячую ссылку TFT_indicator.c и нужна имени BLE-модуля).
  */
 #include "Vector_main.h"          /* HAL, SNS_CFG, макросы статусов/таймеров, лог */
+#include "tx_api.h"               /* TX_DISABLE/TX_RESTORE: критические секции очереди */
 #include "extstore.h"             /* cfg_save/cfg_load + ext_read/ext_write/ext_erase_sector */
 #include "sfmap.h"                /* SF_CONFIG_BASE / SF_CONFIG_DEFAULT - области */
 #include "spiflash.h"             /* SF_SECTOR_SIZE / SF_TOTAL_SIZE: геометрия кольца журнала */
@@ -33,14 +37,12 @@
           }									\
         }
 
-EVENT_LOG               Event_log;                      // Структура хранения лога журнала
-// todo то записать водну структуру
 uint8_t SaveConfig = 0;                 // Сохранение конфигурации
 uint8_t	SaveConfigDefault = 0;          // Сохранение заводской конфигурации
 uint8_t	ReadConfigDefault = 0;		// Чтение заводской конфигурации
-uint8_t	SaveEvent = 0;			// Отложенная запись события в журнал
-
-TYPE_LOG TypeLogEvent = TYPE_TURN_ON;	// Тип отложенного события
+/* SaveEvent/TypeLogEvent (однослотовое отложенное событие прежней схемы)
+   УДАЛЕНЫ: журнал v2 работает через RAM-очередь log_post()/log_flush()
+   (LOG_FORMAT.md §6) - снимок на момент события, всплески не теряются.  */
 
 //===========================================================================================================================
 // Бренд прибора: current_build_type читается Init_Build_Type() из
@@ -62,9 +64,15 @@ typedef struct __attribute__((packed)) {
 	uint32_t cur;		// CurrentAddrFile
 	uint32_t beg;		// BegginAddrFile
 	uint16_t crc;		// CRC16 (полином 0xA001, как CALC_CRC_CONFIG) по seq+cur+beg
-	uint16_t pad;		// 0xFFFF (NOR: записанные биты остаются 1)
+	uint16_t pad;		// маркер формата: LOG_PTR_FMT2 (CRC его НЕ покрывает)
 } log_ptr_rec_t;
 typedef char log_ptr_rec_assert[(sizeof(log_ptr_rec_t) == 16u) ? 1 : -1];
+
+// Маркер формата v2 в поле pad: у записей прежней прошивки pad=0xFFFF, и они
+// ИГНОРИРУЮТСЯ загрузчиком - «миграции нет» (LOG_FORMAT.md §2/§8.10): первый
+// старт прошивки с журналом v2 переинициализирует кольцо (cur=beg=0), старые
+// 64-байтные записи стираются лениво (blank-проба на границе сектора).
+#define LOG_PTR_FMT2	0x0002u
 
 #define LOG_PTR_SLOTS	(SF_LOG_PTR_SIZE / sizeof(log_ptr_rec_t))	// 256
 
@@ -128,7 +136,8 @@ int log_ptr_load(SNS_CFG *pSnsCfg, uint8_t apply)
 		{
 			break;	// первый пустой слот - записи кончились
 		}
-		if ((rec.crc == crc16_ptr(&rec)) && (rec.seq > best_seq))
+		if ((rec.crc == crc16_ptr(&rec)) && (rec.pad == LOG_PTR_FMT2)
+				&& (rec.seq > best_seq))
 		{
 			found   = 1;
 			best_seq = rec.seq;
@@ -138,12 +147,26 @@ int log_ptr_load(SNS_CFG *pSnsCfg, uint8_t apply)
 	}
 	log_ptr_slot = slot;
 	log_ptr_seq  = best_seq;
-	if ((found != 0u) && (apply != 0u))
+	if (apply != 0u)
 	{
-		pSnsCfg->Config_archive.CurrentAddrFile = best_cur;
-		pSnsCfg->Config_archive.BegginAddrFile  = best_beg;
-		LOG_I(VLOG_M_SYS, "log_ptr: cur=%u beg=%u (seq %u)",
-			  best_cur, best_beg, best_seq);
+		if (found != 0u)
+		{
+			pSnsCfg->Config_archive.CurrentAddrFile = best_cur;
+			pSnsCfg->Config_archive.BegginAddrFile  = best_beg;
+			LOG_I(VLOG_M_SYS, "log_ptr: cur=%u beg=%u (seq %u)",
+				  best_cur, best_beg, best_seq);
+		}
+		else if ((pSnsCfg->Config_archive.CurrentAddrFile != 0u)
+		      || (pSnsCfg->Config_archive.BegginAddrFile != 0u))
+		{
+			// ПЕРВЫЙ СТАРТ формата v2: валидных записей v2 в странице нет, а
+			// конфиг несёт указатели ПРЕЖНЕГО формата (слот 64 Б, кольцо
+			// 32768) - в новой геометрии они бессмысленны. Кольцо
+			// переинициализируется (LOG_FORMAT.md §2 «миграции нет»).
+			pSnsCfg->Config_archive.CurrentAddrFile = 0u;
+			pSnsCfg->Config_archive.BegginAddrFile  = 0u;
+			LOG_W(VLOG_M_SYS, "log v2: ring reinit (old ptrs dropped)");
+		}
 	}
 	return (int)found;
 #else
@@ -152,10 +175,11 @@ int log_ptr_load(SNS_CFG *pSnsCfg, uint8_t apply)
 #endif
 }
 
-// Сохранение указателей архива после записи журнала (аналог
-// SaveCurrentAddrFile из Avis). Страница заполнилась -> стирание (только в
+// Сохранение указателей архива (аналог SaveCurrentAddrFile из Avis) - ОДИН
+// РАЗ НА ПАЧКУ записей журнала (из log_flush, §6: износ страницы указателей
+// не зависит от частоты записей). Страница заполнилась -> стирание (только в
 // "окне тишины": EXT_BUSY = звук/шина, сохранение повторится со следующей
-// записью - указатели живут в RAM). КОНТЕКСТ: Measure Task (из save_event).
+// пачкой - указатели живут в RAM). КОНТЕКСТ: Measure Task.
 // Возврат: 0 = ok, EXT_BUSY = отложено, -1 = ошибка flash.
 int log_ptr_save(const SNS_CFG *pSnsCfg)
 {
@@ -183,7 +207,7 @@ int log_ptr_save(const SNS_CFG *pSnsCfg)
 	rec.seq = log_ptr_seq;
 	rec.cur = pSnsCfg->Config_archive.CurrentAddrFile;
 	rec.beg = pSnsCfg->Config_archive.BegginAddrFile;
-	rec.pad = 0xFFFFu;
+	rec.pad = LOG_PTR_FMT2;	// маркер формата v2 (старые записи: 0xFFFF)
 	rec.crc = crc16_ptr(&rec);
 
 	rc = ext_write(SF_LOG_PTR_BASE + (uint32_t)log_ptr_slot * sizeof(log_ptr_rec_t),
@@ -278,55 +302,58 @@ uint8_t read_param(uint8_t * RamData, uint16_t len, uint32_t addr)
 
 //===========================================================================================================================
 //===========================================================================================================================
-// КОЛЬЦЕВОЙ ЖУРНАЛ (схема автора)
+// КОЛЬЦЕВОЙ ЖУРНАЛ v2 (LOG_FORMAT.md): слот 40 байт (заголовок 12 Б +
+// payload 28 Б), 102 слота в секторе 4 КБ (хвост 16 Б не используется),
+// кольцо 52224 записи = 2 МБ (SF_LOG_BASE..SF_LOG_PTR_BASE). Геометрия и
+// очередь - static inline в Config_save_read.h: тот же код исполняет
+// хост-тест tools/test_logq/ (регрессия арифметики кольца и FIFO).
+// Указатели CurrentAddrFile/BegginAddrFile монотонные u32 (в
+// SNS_CFG.Config_archive + зеркало-кольцо SF_LOG_PTR), физическая позиция -
+// log_slot_addr_v2() (phys = ptr mod 52224). Доступный диапазон чтения:
+// [BegginAddrFile, CurrentAddrFile).
+// ПЕРЕПОЛНЕНИЕ: на границе сектора (log_erase_decision): кольцо полное ->
+// стирание сектора + сдвиг начала на 102 записи; слот не пуст (мусор старого
+// 64-байтного формата или прошлых кругов) -> стирание БЕЗ сдвига. Первый
+// старт v2: кольцо переинициализировано (log_ptr_load), flash не чистая -
+// каждый сектор стирается при первом пересечении (лениво).
+// ПОЛИТИКА ЗАПИСИ (§6): program (1-6 мс) разрешён ПОД ЗВУКОМ (93-мс запас
+// буфера плеера поглощает; шина - под мьютексом extstore, try-lock);
+// erase - только в окно тишины (ext_erase_sector -> EXT_BUSY -> записи ЖДУТ
+// В ОЧЕРЕДИ, писатель повторит через 50 мс). RAM-очередь 16×40 Б хранит
+// снимок события (время/состояние/данные НА МОМЕНТ СОБЫТИЯ) - задержка
+// записи время НЕ искажает; номер записи (CurrentAddrFile) проставляет
+// ПИСАТЕЛЬ позиционно (нумерация непрерывна даже при потерях в очереди).
+#define log_slot_addr(ptr)   log_slot_addr_v2(SF_LOG_BASE, (ptr))
+
 //---------------------------------------------------------------------------------------------------------------------------
-// Область LOG (sfmap.h) поделена на слоты ФИКСИРОВАННОЙ длины sizeof(EVENT_LOG)
-// = 64 байта: длина записи одинаковая, поэтому per-record заголовок (LOG_REC_HDR
-// прежней схемы) не нужен. Кольцо - LOG_RING_SLOTS (0x8000 = 32768) слотов;
-// физическая позиция записи = (указатель & LOG_RING_MASK) * 64. Указатели
-// монотонно растут (u32, естественный заворот) и живут в SNS_CFG.Config_archive:
-//   CurrentAddrFile - куда пишется следующая запись;
-//   BegginAddrFile  - самая старая доступная запись.
-// Доступный диапазон чтения: [BegginAddrFile, CurrentAddrFile).
-// ПЕРЕПОЛНЕНИЕ: когда кольцо полное и указатель пришёл на границу сектора,
-// сектор следующей записи стирается (в нём умерли записи круга назад), а
-// BegginAddrFile сдвигается на ЧИСЛО ЗАПИСЕЙ В СЕКТОРЕ (LOG_SLOTS_PER_SECTOR
-// = 4096/64 = 64 - чётное, сектор делится нацело, как просил автор). Ёмкость
-// = 32768 - 64 = 32704 записи (сектор запаса, чтобы стирание не задело живые).
-// Первый круг: flash стёрта с завода (0xFF) - стирание не нужно; слот сектора
-// дополнительно проверяется на пустоту (мог остаться мусор журнала старого
-// формата ранее) и при необходимости стирается без сдвига BegginAddrFile.
-// Стирание идёт через ext_erase_sector(): try-lock + отсрочка под звучащий
-// звук (EXT_BUSY) - Vector_RunFlashMemory повторит на следующем проходе.
-// Указатели сохраняются в flash вместе с конфигом (save_param) и
-// восстанавливаются при старте (read_param); первый пуск - DefaultConfig
-// обнуляет оба, кольцо стартует с чистой области.
-#define LOG_SLOT_SIZE         ((uint32_t)sizeof(EVENT_LOG))           /* 64  */
-#define LOG_RING_MASK         0x7FFFu                                 /* кольцо на 0x7FFF (автор) */
-#define LOG_RING_SLOTS        (LOG_RING_MASK + 1u)                    /* 32768 */
-#define LOG_SLOTS_PER_SECTOR  (SF_SECTOR_SIZE / LOG_SLOT_SIZE)        /* 64 - чётное */
-#define LOG_USABLE_SLOTS      (LOG_RING_SLOTS - LOG_SLOTS_PER_SECTOR) /* 32704 */
+// RAM-очередь записей (§6). Экземпляр нуль-инициализирован (head=count=0 -
+// валидное пустое состояние; logq_init не обязателен). Производители:
+// measure (тест/архивный тик), receiver (COM/BLE/«предсмертная»); писатель
+// ОДИН - measure (Vector_RunFlashMemory). Критическая секция TX_DISABLE:
+// секции короткие (копирование 40 Б), ISR не блокируют надолго.
+static logq_ctx_t logq;
+static volatile uint8_t logq_draining = 0;	// защита от двух одновременных drain'ов
+volatile uint32_t logq_dropped    = 0;		// потери на переполнении (накопительно)
+volatile uint32_t logq_dbg_pushes = 0;		// всего постановок
 
-/* Компиляторный самоконтроль: слот РОВНО 64 байта и сектор делится на слоты
-   нацело - иначе геометрия кольца (маска/сдвиг начала) разъедется.          */
-typedef char event_log_slot_size_assert[(sizeof(EVENT_LOG) == 64u) ? 1 : -1];
-typedef char event_log_sector_assert[((SF_SECTOR_SIZE % 64u) == 0u) ? 1 : -1];
-
-// Физический адрес слота по номеру указателя. КОНТЕКСТ: любой, чистая
-// арифметика.
-static uint32_t log_slot_addr(uint32_t ptr)
+uint32_t logq_depth(void)
 {
-  return SF_LOG_BASE + ((ptr & LOG_RING_MASK) * LOG_SLOT_SIZE);
+	TX_INTERRUPT_SAVE_AREA;
+	uint32_t n;
+	TX_DISABLE;
+	n = logq_count(&logq);
+	TX_RESTORE;
+	return n;
 }
 
-// Время записи (Event_log.working_hours, ключ поиска) по номеру указателя:
-// читаются только 4 байта ключа, не весь слот. Возврат: 0 = ok, -1 = ошибка
-// шины. КОНТЕКСТ: поток.
+// Время записи (H.working_hours на +4, ключ поиска §7.2) по номеру
+// указателя: читаются только 4 байта ключа, не весь слот - единое смещение
+// для всех типов, payload не разбирается. Возврат: 0 = ok, -1 = ошибка шины.
+// КОНТЕКСТ: поток.
 static int log_time_at(uint32_t ptr, uint32_t *t)
 {
   uint8_t b[4];
-  if (ext_read(log_slot_addr(ptr) + (uint32_t)offsetof(EVENT_LOG, working_hours),
-               b, sizeof b) != 0)
+  if (ext_read(log_slot_addr(ptr) + LOG_TIME_OFFSET, b, sizeof b) != 0)
   {
     return -1;
   }
@@ -334,43 +361,193 @@ static int log_time_at(uint32_t ptr, uint32_t *t)
   return 0;
 }
 
-//===========================================================================================================================
-// Сохранение записи журнала событий (внешняя flash, кольцо LOG).
-// ЕДИНАЯ точка записи журнала: через неё идут и единичные события
-// (TYPE_TURN_ON/TYPE_TURN_OFF/TYPE_FW_UPDATE/TYPE_LOG_PARAM_NOP), и
-// периодический архив (TYPE_READINGS по таймеру TIMER_RTC_LOG при
-// ArchiveRecording == 1) - см. Vector_RunFlashMemory().
-// Возврат: 0 = ok, EXT_BUSY = шина занята/стирание сектора отложено (звук) -
-// вызывающий повторит позже; -1 = ошибка flash (LOG_E напечатан).
-int save_event(SNS_CFG *pSnsCfg, TYPE_LOG type_log)
+//---------------------------------------------------------------------------------------------------------------------------
+// ПОСТРОЕНИЕ ЗАПИСЕЙ (§4): снимок данных НА МОМЕНТ ВЫЗОВА (log_post) -
+// задержка переноса во flash время записи не искажает. Источники: SNS_CFG,
+// sensors_status, GPS (g_lat/g_lon_scaled, ×1e7). Чего пока нет (каналы
+// AVIS, СИЗ по BLE, aqi, удар/неактивность в motion) - нули (§9: «SNAPSHOT
+// при отсутствии AVIS: active_sensors=0, conc[]=0, chan_thr_bits=0»).
+#if CONFIG_GPS
+extern int32_t g_lat_scaled;	// Gps.c: координата ×1e7 (0 = нет фикса)
+extern int32_t g_lon_scaled;
+#endif
+
+// Байт MOTION_BITS (§4.1/§4.2): поза - Orientation (биты 0-1), падение -
+// fall_detected (бит2). Удар (бит3)/неактивность (бит4) - источника пока нет.
+static uint8_t log_motion_byte(void)
+{
+	uint8_t m = (uint8_t)(sensors_status.Orientation & LOG_MOTION_POSE_MASK);
+	if (sensors_status.fall_detected != 0u)
+	{
+		m |= LOG_MOTION_FALL;
+	}
+	return m;
+}
+
+// Общий заголовок. Номер записи - ЗАГЛУШКА (0): позиционный номер проставит
+// писатель (log_write_rec) в момент переноса во flash.
+static void log_build_hdr(EVENT_LOG *r, TYPE_LOG t, const SNS_CFG *cfg)
+{
+	r->H.Type_log        = (uint8_t)t;
+	r->H.Fmt_ver         = LOG_FMT_VER;
+	r->H.Payload_len     = LOG_PAYLOAD_MAX;	// payload - фиксированная структура, целиком
+	r->H.Flags           = 0u;
+	r->H.working_hours   = cfg->Working_data.working_hours_offset
+	                     + cfg->Working_data.working_hours;	// ВРЕМЯ СОБЫТИЯ, с
+	r->H.CurrentAddrFile = 0u;
+	memset(r->Pl, 0, sizeof r->Pl);
+}
+
+static void log_build(EVENT_LOG *r, TYPE_LOG t, const SNS_CFG *cfg)
+{
+	log_build_hdr(r, t, cfg);
+	switch (t)
+	{
+	case TYPE_TURN_ON:
+	case TYPE_TURN_OFF:
+	case TYPE_FW_UPDATE:
+	{
+		log_pl_power_t p;
+		memset(&p, 0, sizeof p);
+		p.fw_version   = (uint16_t)FIRMWARE_VERSION;
+		p.hw_version   = (uint8_t)cfg->Config_common.HardwareVersion;
+		p.brand        = (uint8_t)current_build_type;
+		p.reset_reason = 0u;	// TODO: флаги RCC->CSR / счётчик включений (PLAN п.58)
+		p.state        = cfg->Config_common.State;
+		p.state_err    = cfg->Config_common.StateErr;
+		p.battery_pct  = (uint8_t)sensors_status.battery_charge_percent;
+		p.battery_mv   = sensors_status.battery_charge_volt;
+		memcpy(r->Pl, &p, sizeof p);
+		break;
+	}
+	case TYPE_READINGS:
+	{
+		log_pl_readings_t p;
+		memset(&p, 0, sizeof p);
+		p.state       = cfg->Config_common.State;
+		p.state_err   = cfg->Config_common.StateErr;
+		p.battery_pct = (uint8_t)sensors_status.battery_charge_percent;
+		p.battery_mv  = sensors_status.battery_charge_volt;
+		p.aqi         = 0u;		// задел (§9): датчика качества воздуха нет
+		p.temperature = (int16_t)sensors_status.Temperature;					// °C×100
+		p.humidity    = (uint16_t)(sensors_status.Humidity * 100.0f / 1024.0f);	// %×1024 -> %×100
+		p.pressure    = (uint16_t)sensors_status.Pressure;						// гПа×10
+		p.motion      = log_motion_byte();
+		memcpy(r->Pl, &p, sizeof p);
+		break;
+	}
+	case TYPE_SNAPSHOT:
+	{
+		log_pl_snapshot_t p;
+		memset(&p, 0, sizeof p);
+#if CONFIG_GPS
+		p.lat            = g_lat_scaled;	// ×1e7; (0,0) = нет фикса (§4.1)
+		p.lon            = g_lon_scaled;
+#endif
+		p.battery_pct    = (uint8_t)sensors_status.battery_charge_percent;
+		p.active_sensors = 0u;				// AVIS в комплекте нет (§9)
+		// conc[8]/chan_thr_bits - нули до переноса каналов (§9)
+		p.motion         = log_motion_byte();
+		memcpy(r->Pl, &p, sizeof p);
+		break;
+	}
+	case TYPE_PPE:
+		// нули: СИЗ придут с переносом BLE-каналов (AVIS/MAC-таблица) - TODO §4.5
+		break;
+	case TYPE_GAS:
+		// нули: до переноса каналов AVIS - TODO §4.3 (антидребезг 10 с - на стороне детектора порога)
+		break;
+	case TYPE_BEACONS:
+		// зарезервирован (§4.6): периодика ВЫКЛЮЧЕНА, ручной снимок - TODO
+		break;
+	case TYPE_PARAM:
+	default:
+		// PARAM (в т.ч. NOP теста): param_id=0; состав уточняется с протоколами COM/Modbus (§4.7)
+		break;
+	}
+}
+
+//---------------------------------------------------------------------------------------------------------------------------
+// Постановка события в очередь (снимок на текущий момент). КОНТЕКСТ: поток
+// (любой; из ISR не звать - при переполнении печатается LOG_E).
+// Возврат: 0 = поставлено, 1 = поставлено, но СТАРЕЙШЕЕ потеряно (очередь
+// полна, §6), -1 = журнал выключен (CONFIG_SAVE_PARAM_LOG=0).
+int log_post(TYPE_LOG type_log)
 {
 #if CONFIG_SAVE_PARAM_LOG
-  int rc;
+	EVENT_LOG r;
+	TX_INTERRUPT_SAVE_AREA;
+	int over;
+
+	log_build(&r, type_log, &Sns_Cfg_struct);
+
+	TX_DISABLE;
+	over = logq_push(&logq, &r);
+	logq_dbg_pushes++;
+	TX_RESTORE;
+
+	if (over != 0)
+	{
+		logq_dropped++;
+		LOG_E(VLOG_M_SYS, "logq: FULL, oldest dropped (type %u)", (unsigned)type_log);
+		return 1;
+	}
+	return 0;
+#else
+	(void)type_log;
+	return -1;
+#endif
+}
+
+//---------------------------------------------------------------------------------------------------------------------------
+// Архивный тик (§4/§5): при ArchiveRecording != 0 и истечении TIMER_RTC_LOG
+// поставить в очередь НАБОР из трёх записей SNAPSHOT + READINGS + PPE (общее
+// working_hours - при разборе склеиваются в один «срез момента») и
+// ПЕРЕЗАПУСТИТЬ таймер. Якорь периода - МОМЕНТ СОБЫТИЯ (постановка в
+// очередь), а не факт записи во flash: задержка окна тишины в период больше
+// не накапливается (прежняя схема RESET+START после записи давала «то 5, то
+// 6 секунд» и систематический уход - PLAN п.56-58). Период: Archiveinterval
+// = (мин<<8)|сек (§5: по умолчанию 10 мин 0 с). Звать из
+// Vector_RunFlashMemory() каждый проход (~50 мс). КОНТЕКСТ: поток measure.
+void log_archive_tick(SNS_CFG *pSnsCfg)
+{
+#if CONFIG_SAVE_PARAM_LOG
+	if ((pSnsCfg->Config_archive.ArchiveRecording != 0u) &&
+	    (TEST_TIMER_RTC(TIMER_RTC_LOG) != 0))
+	{
+		(void)log_post(TYPE_SNAPSHOT);
+		(void)log_post(TYPE_READINGS);
+		(void)log_post(TYPE_PPE);
+		RESET_TIMER_RTC(TIMER_RTC_LOG);
+		START_TIMER_RTC(TIMER_RTC_LOG,
+		                log_archive_period_s(pSnsCfg->Config_archive.Archiveinterval));
+	}
+#else
+	(void)pSnsCfg;
+#endif
+}
+
+//---------------------------------------------------------------------------------------------------------------------------
+// Запись ОДНОЙ готовой записи в кольцо на позицию CurrentAddrFile (ядро
+// писателя). Номер проставляется ЗДЕСЬ позиционно (запись могла ждать в
+// очереди - нумерация всё равно непрерывна). Граница сектора - стирание по
+// log_erase_decision(); под звуком стирание EXT_BUSY -> запись остаётся В
+// ОЧЕРЕДИ (писатель повторит). Возврат: 0 = записано, EXT_BUSY = шина/
+// стирание отложено, -1 = ошибка flash. КОНТЕКСТ: поток measure.
+static int log_write_rec(SNS_CFG *pSnsCfg, EVENT_LOG *rec)
+{
   uint32_t cur = pSnsCfg->Config_archive.CurrentAddrFile;
   uint32_t beg = pSnsCfg->Config_archive.BegginAddrFile;
+  int rc;
 
-  Event_log.Type_log                                            = (uint16_t)type_log;
-  Event_log.Firmware_version                                    = FIRMWARE_VERSION;
-  Event_log.CurrentAddrFile                                     = cur;   // номер (указатель) этой записи
-  Event_log.State                                               = pSnsCfg->Config_common.State;
-  Event_log.StateErr                                            = pSnsCfg->Config_common.StateErr;
-  Event_log.working_hours                                       = pSnsCfg->Working_data.working_hours_offset
-                                                                + pSnsCfg->Working_data.working_hours;   // ВРЕМЯ, с
-  Event_log.battery_charge_percent                              = sensors_status.battery_charge_percent;
-  Event_log.battery_charge_volt                                 = sensors_status.battery_charge_volt;
-  /* исправление: sensors_status.Temperature УЖЕ в °C×100 (int32-драйвер
-     Bosch BME280, BME280_FLOAT_ENABLE не определён), повторное *100 переполняло
-     int16. Формат поля журнала - сотые °C (Config_save_read.h).              */
-  Event_log.temperature                                         = (int16_t)sensors_status.Temperature;
+  rec->H.CurrentAddrFile = cur;		// позиционный номер - по месту записи
 
-  // Начало сектора: стереть его, если кольцо полное (сдвинуть начало) или
-  // слот не пустой (первый круг после журнала старого формата).
-  if ((cur & (LOG_SLOTS_PER_SECTOR - 1u)) == 0u)
+  if (((cur % LOG_RING_SLOTS) % LOG_SLOTS_PER_SECTOR) == 0u)	// граница сектора
   {
-    int full  = ((uint32_t)(cur - beg) >= LOG_USABLE_SLOTS);
-    int blank = 1;
+    int blank = 0;		// кольцо полное - проба не нужна (всё равно стирать)
+    int dec;
 
-    if (!full)
+    if ((uint32_t)(cur - beg) < LOG_USABLE_SLOTS)
     {
       uint8_t probe[4];
       blank = ((ext_read(log_slot_addr(cur), probe, sizeof probe) == 0) &&
@@ -379,30 +556,31 @@ int save_event(SNS_CFG *pSnsCfg, TYPE_LOG type_log)
       // ошибку чтения трактуем как "не пусто" - лишнее стирание безопаснее
     }
 
-    if (full || !blank)
+    dec = log_erase_decision(cur, beg, blank);
+    if (dec != 0)
     {
       rc = ext_erase_sector(log_slot_addr(cur));
       if (rc == EXT_BUSY)
       {
-        return EXT_BUSY;   // тихо: звук/шина, вызывающий повторит (флаг жив)
+        return EXT_BUSY;   // тихо: звук/шина - запись ЖДЁТ В ОЧЕРЕДИ, повтор на следующем проходе
       }
       if (rc != 0)
       {
         LOG_E(VLOG_M_SYS, "log: sector erase FAIL");
         return -1;
       }
-      if (full)
+      if (dec == 2)
       {
-        // начало сдвигается на число записей в секторе (автор)
+        // кольцо полное: начало сдвигается на число записей в секторе (§2)
         pSnsCfg->Config_archive.BegginAddrFile = beg + LOG_SLOTS_PER_SECTOR;
       }
     }
   }
 
-  rc = ext_write(log_slot_addr(cur), (const uint8_t *)&Event_log, LOG_SLOT_SIZE);
+  rc = ext_write(log_slot_addr(cur), (const uint8_t *)rec, LOG_SLOT_SIZE);
   if (rc == EXT_BUSY)
   {
-    return EXT_BUSY;   // тихо: не ошибка, вызывающий повторит (флаг жив)
+    return EXT_BUSY;   // тихо: писатель повторит (запись в очереди)
   }
   if (rc != 0)
   {
@@ -410,14 +588,114 @@ int save_event(SNS_CFG *pSnsCfg, TYPE_LOG type_log)
     return -1;
   }
   pSnsCfg->Config_archive.CurrentAddrFile = cur + 1u;
-  //  (замечание автора п.4): указатели архива сохраняются СРАЗУ отдельной
-  // страницей-кольцом SF_LOG_PTR - не перезаписывая всю конфигурацию.
-  // EXT_BUSY/ошибка не фатальны: указатели в RAM актуальны, повторятся со
-  // следующей записью журнала.
-  (void)log_ptr_save(pSnsCfg);
-  LOG_D(VLOG_M_SYS, "log: rec %u (beg %u)", cur,
-        pSnsCfg->Config_archive.BegginAddrFile);
   return 0;
+}
+
+//---------------------------------------------------------------------------------------------------------------------------
+// ПИСАТЕЛЬ (§6): дренировать очередь во flash. Вызывается КАЖДЫЙ проход
+// Vector_RunFlashMemory (~50 мс). program под звуком, erase в окно тишины
+// (EXT_BUSY - записи остаются в очереди, порядок FIFO сохраняется);
+// LOG_PTR - ОДИН РАЗ на пачку. Жёсткая ошибка (-1): запись теряется
+// (счётчик cnt_flash_errors), очередь дренируется дальше - один битый слот
+// не должен клинить журнал. logq_draining - защита от параллельного drain
+// (measure + «предсмертный» из receiver при мягкой перезагрузке).
+// Возврат: число записанных записей (>= 0).
+int log_flush(SNS_CFG *pSnsCfg)
+{
+#if CONFIG_SAVE_PARAM_LOG
+  int written = 0;
+  TX_INTERRUPT_SAVE_AREA;
+
+  TX_DISABLE;
+  if (logq_draining != 0u)
+  {
+    TX_RESTORE;
+    return 0;		// другой писатель уже дренирует - не мешаем
+  }
+  logq_draining = 1u;
+  TX_RESTORE;
+
+  for (;;)
+  {
+    EVENT_LOG rec;
+    const EVENT_LOG *peek;
+    int rc;
+
+    TX_DISABLE;
+    peek = logq_peek(&logq);
+    if (peek != (const EVENT_LOG *)0)
+    {
+      rec = *peek;
+    }
+    TX_RESTORE;
+    if (peek == (const EVENT_LOG *)0)
+    {
+      break;						// очередь пуста
+    }
+
+    rc = log_write_rec(pSnsCfg, &rec);
+    if (rc == EXT_BUSY)
+    {
+      tasks_status.cnt_flash_defers++;	// звук/шина: запись осталась в очереди
+      break;
+    }
+
+    TX_DISABLE;
+    logq_pop(&logq);
+    TX_RESTORE;
+
+    if (rc != 0)
+    {
+      tasks_status.cnt_flash_errors++;	// жёсткая ошибка: запись потеряна, drain продолжается
+      continue;
+    }
+    written++;
+  }
+
+  TX_DISABLE;
+  logq_draining = 0u;
+  TX_RESTORE;
+
+  if (written > 0)
+  {
+    (void)log_ptr_save(pSnsCfg);	// ОДИН РАЗ на пачку (§6); EXT_BUSY - отложится до следующей
+  }
+  return written;
+#else
+  (void)pSnsCfg;
+  return 0;
+#endif
+}
+
+//===========================================================================================================================
+// «Предсмертная» запись (TURN_OFF/FW_UPDATE перед NVIC_SystemReset): ставится
+// В ТУ ЖЕ очередь (хронология сохраняется: запись уходит ПОСЛЕ уже queued
+// событий) и дренируется синхронно с bounded-ретраем ~0,5 с (LOG_FORMAT §6:
+// «потеря питания: теряется только содержимое очереди; предсмертная запись -
+// bounded-ретрай»). Не слилось (звук/шина) - EXT_BUSY, вызывающий уходит в
+// сброс без записи (best-effort, как прежде).
+// КОНТЕКСТ: поток receiver_task (документированное исключение из правила
+// «flash пишет только measure» - см. Vector_Options_System).
+// Возврат: 0 = очередь пуста (всё записано), EXT_BUSY = не успели.
+int save_event_type_2(SNS_CFG *pSnsCfg, TYPE_LOG type_log)
+{
+#if CONFIG_SAVE_PARAM_LOG
+  uint8_t tries = 0;
+
+  (void)log_post(type_log);
+
+  do
+  {
+    (void)log_flush(pSnsCfg);
+    if (logq_depth() == 0u)
+    {
+      return 0;
+    }
+    VTICK_SLEEP_MS(50);				// ждать окно тишины/освобождение шины
+    tries++;
+  } while (tries < 10u);
+
+  return EXT_BUSY;
 #else
   (void)pSnsCfg; (void)type_log;
   return 0;
@@ -425,42 +703,12 @@ int save_event(SNS_CFG *pSnsCfg, TYPE_LOG type_log)
 }
 
 //===========================================================================================================================
-// Запись события ВТОРОГО формата журнала (Avis: EVENT_LOG_TYPE_2 - с данными
-// каналов). Каналы измерения ещё не перенесены (SNS_Dev_Type в резерве),
-// поэтому пока пишется обычный 64-байтный слот через save_event() - TODO:
-// расширить формат, когда перенесутся модули измерения (PLAN.md этап 3).
-// ОТЛИЧИЕ от save_event: вызывается ПЕРЕД мягкой перезагрузкой
-// (Vector_Options_System: TYPE_FW_UPDATE -> NVIC_SystemReset), поэтому при
-// EXT_BUSY делается короткий bounded-ретрай (~0.5 с) - "предсмертное" событие
-// терять не хочется. После 10 попыток возвращается EXT_BUSY и вызывающий
-// уходит в сброс без записи (best-effort).
-// КОНТЕКСТ: поток receiver_task (исключение из правила "flash пишет только
-// Measure Task" - см. комментарий в Vector_Options_System).
-// Возврат: 0 = ok, EXT_BUSY = так и не записали, -1 = ошибка flash.
-int save_event_type_2(SNS_CFG *pSnsCfg, TYPE_LOG type_log)
-{
-  int rc;
-  uint8_t tries = 0;
-
-  do
-  {
-    rc = save_event(pSnsCfg, type_log);
-    if (rc != EXT_BUSY)
-    {
-      break;
-    }
-    VTICK_SLEEP_MS(50);   /* ждать окно тишины/освобождения шины */
-    tries++;
-  } while (tries < 10u);
-
-  return rc;
-}
-
-//===========================================================================================================================
-// Чтение записи журнала ПО НОМЕРУ УКАЗАТЕЛЯ (пункт 3 автора).
-// Валидный ptr: [BegginAddrFile, CurrentAddrFile). КОНТЕКСТ: поток.
-// Возврат: 0 = ok, 1 = указатель вне доступного диапазона (или журнал
-// выключен/пуст), -1 = ошибка шины (включая EXT_BUSY от ext_read - повторить).
+// Чтение записи журнала ПО НОМЕРУ УКАЗАТЕЛЯ (§7.1). Валидный ptr:
+// [BegginAddrFile, CurrentAddrFile). КОНТЕКСТ: поток.
+// Возврат: 0 = ok (запись валидна: Fmt_ver/тип/длина), 1 = указатель вне
+// доступного диапазона (или журнал выключен/пуст), 2 = запись невалидна
+// (мусор/старый 64-байтный формат), -1 = ошибка шины (включая EXT_BUSY от
+// ext_read - повторить).
 int log_read(SNS_CFG *pSnsCfg, uint32_t ptr, EVENT_LOG *out)
 {
 #if CONFIG_SAVE_PARAM_LOG
@@ -470,6 +718,7 @@ int log_read(SNS_CFG *pSnsCfg, uint32_t ptr, EVENT_LOG *out)
   if (out == (EVENT_LOG *)0) { return 1; }
   if (((int32_t)(ptr - beg) < 0) || ((int32_t)(cur - ptr) <= 0)) { return 1; }
   if (ext_read(log_slot_addr(ptr), (uint8_t *)out, LOG_SLOT_SIZE) != 0) { return -1; }
+  if (log_rec_valid(out) == 0) { return 2; }
   return 0;
 #else
   (void)pSnsCfg; (void)ptr; (void)out;
@@ -478,18 +727,19 @@ int log_read(SNS_CFG *pSnsCfg, uint32_t ptr, EVENT_LOG *out)
 }
 
 //===========================================================================================================================
-// Поиск ближайших записей ПО ДИАПАЗОНУ ВРЕМЕНИ (пункт 3 автора).
-// Время записи = Event_log.working_hours (суммарные секунды: Working_data
-// offset + часы; монотонно благодаря зеркалу в RTC BKP0). Журнал упорядочен
-// по времени -> два бинарных поиска по 4-байтному ключу (не читая слот
-// целиком). Результат - НОМЕРА УКАЗАТЕЛЕЙ:
+// Поиск ближайших записей ПО ДИАПАЗОНУ ВРЕМЕНИ (§7.2). Время записи =
+// H.working_hours (суммарные секунды: offset + часы; монотонны: FIFO-очередь
+// сохраняет хронологию, часы зеркалят календарь RTC). ЖУРНАЛ УПОРЯДОЧЕН ПО
+// ВРЕМЕНИ -> два
+// бинарных поиска по 4-байтному ключу на смещении +4 (не читая слот целиком;
+// смещение едино для всех типов). Результат - НОМЕРА УКАЗАТЕЛЕЙ:
 //   *ptr_from = первая запись с временем >= t_from (все раньше -> последняя);
 //   *ptr_to   = последняя запись с временем <= t_to (все позже -> первая).
+// Записи одного архивного тика делят одну секунду (набор SNAPSHOT+READINGS+
+// PPE) - поиск >=/<= это корректно обрабатывает (§7.2).
 // Возврат: 0 = диапазон найден (ptr_from <= ptr_to), 1 = точного попадания
 // нет (указатели = ближайшие) / журнал пуст или выключен, -1 = ошибка шины
-// (повторить). ОГРАНИЧЕНИЕ: монотонность времени предполагает живой VBAT;
-// после потери питания BKP0 обнуляется и порядок времени может нарушиться.
-// КОНТЕКСТ: поток (COM/BLE-модуль чтения журнала).
+// (повторить). КОНТЕКСТ: поток (COM/BLE-модуль чтения журнала).
 int log_find_by_time(SNS_CFG *pSnsCfg, uint32_t t_from, uint32_t t_to,
                      uint32_t *ptr_from, uint32_t *ptr_to)
 {
@@ -545,12 +795,11 @@ int log_find_by_time(SNS_CFG *pSnsCfg, uint32_t t_from, uint32_t t_to,
 //    }
 //  }
 //  if(type_log){
-//	  /* Запись НЕ отсюда (поток приёма), а отложенно через Measure Task:
-//	     по правилам проекта (SYSTEM.md) во внешнюю flash пишет только
-//	     Vector_RunFlashMemory() - и только в «окно тишины» (звук не играет).
-//	     Если событие уже отложено - новое побеждает (журнал best-effort). */
-//	  TypeLogEvent = (TYPE_LOG)type_log;
-//	  SaveEvent    = 1u;
+//	  /* v2 (LOG_FORMAT §6): снимок события - в RAM-очередь (log_post); во
+//	     flash перенесёт писатель Vector_RunFlashMemory() (поток measure,
+//	     50 мс). Очередь вбирает всплески - «новое побеждает старое» больше
+//	     не нужно. */
+//	  (void)log_post((TYPE_LOG)type_log);
 //  }
 //}
 
@@ -574,7 +823,10 @@ void DefaultConfig(SNS_CFG *pSnsCfg)
 	pSnsCfg->Config_archive.CurrentAddrFile                               = 0;
 	pSnsCfg->Config_archive.BegginAddrFile                                = 0;
 	pSnsCfg->Config_archive.ArchiveRecording                              = 0;
-	pSnsCfg->Config_archive.Archiveinterval                               = 0x0500|0x0005;// (мин<<8)|с - как в Avis
+	// (мин<<8)|сек; ПО УМОЛЧАНИЮ 10 мин 0 с (LOG_FORMAT.md §5/§8.9, диапазон
+	// 10-15 мин). Для стендовых прогонов можно уменьшить (например 0x0005 =
+	// 5 с) - через меню/отладчик, не меняя дефолт.
+	pSnsCfg->Config_archive.Archiveinterval                               = 0x0A00;
 	// Working_data (часы/смещение) НЕ трогаем: часы - рантайм (RTC BKP0),
 	// дефолтный конфиг их обнулять не должен.
 	//----------------------------------------------------------------------------

@@ -287,38 +287,19 @@ void Vector_Run_Board_Init(void)
 SNS_CFG          Sns_Cfg_struct;
 SNS_CFG          Cfg_structdef_read;
 TEMPSENSOR_CALIB tempsensor_calib;
-DEVICE_TURNED    device_turn = DEVICE_TURNED_ON;
-uint8_t          SoftResetProgram = 0;   /* 1 = команда мягкой перезагрузки
-                                            прошивки: взводит COM/BLE-модуль
-                                            (Avis), вместе с флагом обязан
-                                            стартовать таймер
-                                            TIMER_RTC_SOFT_RESET_PROGRAM;
-                                            отрабатывает Vector_Options_System:
-                                            событие TYPE_FW_UPDATE в журнал ->
-                                            стоп TIM3 -> NVIC_SystemReset    */
-SNS_Dev_Type     Connected_device;   /* свод подключённого под-устройства AVIS
-                                        (каналы Sensor[COUNT_CHAN] + статусы/
-                                        батарея/версии); extern - shared_types.h
-                                        ; заполняет Ble_vector.c из пакета
-                                        ADVMSDDATAGET; читает LoRa v4
-                                        (секция SUB_TYPE_GAS) и индикация    */
-
-BLE_TELEMETRY Ble_telemetry;      /* телеметрия BLE-окружения (маяки/
-                                        СИЗ/признак AVIS) - заполняет
-                                        Ble_vector.c, читает Lora_S7678S.c
-                                        (контейнерные блоки LoRa v4 и
-                                        TYPE_STATIC); типы - shared_types.h  */
-
-uint8_t deveui_com[8];      /* копия DevEUI для модулей COM/LTE
-                                        (как в Avis); заполняет Lora_InitDeveui
-                                        (Lora_S7678S.c) при CONFIG_LORA      */
+DEVICE_TURNED    device_turn = DEVICE_TURNED_OFF_PRE_INIT;
+uint8_t          SoftResetProgram = 0;   /* 1 = команда мягкой перезагрузки прошивки: */
+SNS_Dev_Type     Connected_device;   /* свод подключённого под-устройства AVIS*/
+BLE_TELEMETRY 	 Ble_telemetry;      /* телеметрия BLE-окружения (маяки/СИЗ/признак AVIS)*/
+uint8_t 		 deveui_com[8];      /* копия DevEUI для модулей COM/LTE*/
 
 /* коэффициент пересчёта концентрации для RF-пакетов (LoRa/BLE). В Avis -
    таблица conversion_factor_rf[] из Avis_Menu_Functionality.c (пересчёт
    мг/м³ <-> PPM <-> %НКПР по настройкам канала); порт таблицы - за автором.
    Слабая заглушка: 1.0 (данные AVIS приходят по BLE УЖЕ масштабированными -
    Ble_CompleteDataSet отправителя применяет ту же формулу, поэтому для
-   pass-through в LoRa v4 коэффициент не нужен). КОНТЕКСТ: Measure Task.   */
+   pass-through в LoRa v4 коэффициент не нужен). КОНТЕКСТ: Measure Task.
+   TODO надо отовсюду убрать, так как у нас нет коэфф перевода*/
 __attribute__((weak)) float Get_Conversion_factor_rf(uint8_t chan)
 {
   (void)chan;
@@ -380,6 +361,17 @@ static void receiver_task_function(ULONG thread_input)
         (uint32_t)CONFIG_UART, (uint32_t)CONFIG_LORA, (uint32_t)CONFIG_BLE,
         (uint32_t)CONFIG_G4, (uint32_t)CONFIG_GPS,
         (uint32_t)VECTOR_TASKS_RECEIVER_DELAY_MS);
+
+  /* В рабочий режим НЕ входим, пока Vector_Run_Pre_Init() (поток measure)
+     не выставит DEVICE_TURNED_ON - логика автора из Avis (ни один поток не
+     работает до пред-инита). В частности, до этого момента не выполняется
+     секундная сверка календаря RTC из Vector_Options_System(): working_hours
+     ещё может нести ПРОШЛОЕ значение из конфига, и сверка отравила бы
+     backup-домен (стартовая гонка, PLAN п.59).                             */
+  while (device_turn == DEVICE_TURNED_OFF_PRE_INIT)
+  {
+    VTICK_SLEEP_MS(VECTOR_TASKS_RECEIVER_DELAY_MS);
+  }
 
   while (1)
   {
@@ -446,8 +438,7 @@ static void measure_task_function(ULONG thread_input)
 {
   (void)thread_input;
 
-  /* Однократная инициализация прибора (в Avis - по флагу
-     device_turn_to_freertos == DEVICE_TURNED_OFF_PRE_INIT). */
+  /* Однократная инициализация прибора */
   Vector_Run_Pre_Init();
   tasks_status.cnt_pre_init++;
 
@@ -518,7 +509,10 @@ void Vector_Run_Pre_Init(void)
                         (uint16_t)sizeof(SNS_CFG), SF_CONFIG_BASE) != 0u) ? 1u : 0u);
   if (cfg_ok != 0u)
   {
-    LOG_I(VLOG_M_SYS, "config: loaded (wh_off=%u s, serial=%04x%04x)",
+    /* %x БЕЗ флагов ширины: форматтер vlog свой (vector_log.c) и поддерживает
+       только %s %d %u %x %X %c %% - "%04x" печатался бы как есть, ломая
+       строку и порядок аргументов (PLAN.md п.55).                          */
+    LOG_I(VLOG_M_SYS, "config: loaded (wh_off=%u s, serial=%x%x)",
           (uint32_t)Sns_Cfg_struct.Working_data.working_hours_offset,
           (uint32_t)Sns_Cfg_struct.Config_common.SerialHi,
           (uint32_t)Sns_Cfg_struct.Config_common.SerialLo);
@@ -527,6 +521,13 @@ void Vector_Run_Pre_Init(void)
   {
     LOG_W(VLOG_M_SYS, "config: load/CRC fail -> DefaultConfig + save");
     DefaultConfig(&Sns_Cfg_struct);
+    /* Прогон 2 теста «звук + журнал» (PLAN.md п.55): DefaultConfig() флаг
+       SaveConfig НЕ взводит - конфиг фактически никогда не сохранялся
+       (сообщение выше лукавило), каждый старт шёл с "cfg not found" и
+       CurrentAddrFile=0: журнал начинался заново СО СТИРАНИЕМ сектора
+       0x402000 (история терялась). Взводим запрос - штатный
+       Vector_RunFlashMemory() запишет конфиг в первое окно тишины.       */
+    SaveConfig = 1u;
   }
 
   /*  (замечание автора п.4): указатели архива хранятся ОТДЕЛЬНО от конфига
@@ -538,14 +539,17 @@ void Vector_Run_Pre_Init(void)
   (void)log_ptr_load(&Sns_Cfg_struct, cfg_ok);
 
   Sns_Cfg_struct.Working_data.working_hours = RTC_ReadTime();
+  /* Часы перекрыты календарём - с этого момента сверка в receiver безопасна;
+     сам receiver ещё спит на гейте device_turn (включится в конце Pre_Init,
+     ниже) - стартовая гонка «старый wh из конфига -> календарь» закрыта
+     состоянием прибора (PLAN п.59-60).                                    */
 
-  /* Событие "включение" в журнал - отложенно (пишет Vector_RunFlashMemory). */
-  TypeLogEvent = TYPE_TURN_ON;
-  SaveEvent    = 1u;
-
-  /* Период архивных записей: младший байт Archiveinterval, с (как в Avis). */
+  /* Период архивных записей: Archiveinterval = (мин<<8)|сек (LOG_FORMAT.md
+     §5; прежний «только младший байт» терял минуты). Событие "включение"
+     ставится в КОНЦЕ Pre_Init (log_post) - чтобы снимок TURN_ON нёс живые
+     показания батареи/сенсоров, а не нули до sensors_init().             */
   START_TIMER_RTC(TIMER_RTC_LOG,
-                  (uint16_t)(Sns_Cfg_struct.Config_archive.Archiveinterval & 0xFFu));
+                  log_archive_period_s(Sns_Cfg_struct.Config_archive.Archiveinterval));
 
   /* Датчики на I2C1: BME280 / LIS3DH / MAX17048 (включаются CONFIG_*).
      Результат - в sensors_status.*_ok и в логе.                            */
@@ -582,6 +586,16 @@ void Vector_Run_Pre_Init(void)
      - включить питание/сброс модулей: LTE_EN, LTE_RESET, BLE_RESET, GNSS_RST;
      - инициализировать модули: Lora_Init(&Sns_Cfg_struct), Ble_Init(serial);
      - взвести статусы ST_COMMON (TURN_ON_BLE/LORA/GPS/GSM) из конфига.        */
+
+  /* Событие "включение" в журнал - v2 (LOG_FORMAT.md §6): снимок в RAM-
+     очередь В КОНЦЕ Pre_Init (датчики инициализированы - power-payload
+     TURN_ON несёт настоящие battery_pct/mv). Во flash перенесёт штатный
+     писатель Vector_RunFlashMemory() в первый же проход (~50 мс).        */
+  (void)log_post(TYPE_TURN_ON);
+
+  /* Прибор ВКЛЮЧЁН: потоки (receiver; будущий LVGL Task) допускаются в
+     рабочие циклы. Порядок важен: сначала журнал/часы, потом состояние.  */
+  device_turn = DEVICE_TURNED_ON;
 }
 
 /* Периодика прибора (1 с): измерения, затем модули обмена.
@@ -631,20 +645,20 @@ void Vector_Run_Measure(void)
    КОНТЕКСТ: поток measure_task, каждый проход (VECTOR_TASKS_MEASURE_DELAY_MS
    = 50 мс). Шина flash защищена мьютексом extstore (ext_mtx).
 
-   Схема «окно тишины» (закрывает прежний TODO о зависании на SPI):
-   - пока звук звучит (audio_is_busy()), во внешнюю flash НЕ заходим: флаги
-     не гасятся, повтор на следующем проходе. Окна: пауза повтора плеера
-     (VECTOR_AUDIO_LOOP_PAUSE_MS = 500 мс) и тишина после конца звука;
-     худшая запись со стиранием (~150 мс) в окно помещается. Поток при этом
-     не блокируется - датчики и *_Run() идут своим чередом;
-   - мьютекс в extstore берётся с ограниченным ожиданием: записи - try-lock
-     (занято -> EXT_BUSY, повтор здесь же через 50 мс), стирания под звук не
-     начинаются и изнутри extstore (страховка от гонки «звук стартовал с
-     кнопки, пока мы шли до шины»);
-   - флаги гасятся ТОЛЬКО после успеха: ни звук, ни занятая шина не теряют
-     событие/конфиг. Жёсткая ошибка (-1) флаг гасит и считается в
-     tasks_status.cnt_flash_errors (LOG_E печатается один раз внутри
-     save_param/save_event - без флуда 20 раз в секунду);
+   ПИСАТЕЛЬ ЖУРНАЛА v2 (LOG_FORMAT.md §6 - RAM-очередь со снимком на момент
+   события; прежний внешний гейт audio_is_busy() СНЯТ):
+   - program (1-6 мс) разрешён ПОД ЗВУКОМ: 93-мс запас буфера дозагрузки
+     плеера поглощает обращение к шине; сериализация - мьютекс extstore
+     (try-lock: занято -> EXT_BUSY, записи ЖДУТ В ОЧЕРЕДИ, повтор через
+     50 мс - порядок FIFO и время событий не страдают);
+   - erase (40-100 мс) под звук не начинается: ext_erase_sector/cfg_save/
+     log_ptr_save сами проверяют erase_allowed() и возвращают EXT_BUSY -
+     пачка откладывается в окно тишины (пауза повтора плеера 1 с);
+   - архивный тик обрабатывается КАЖДЫЙ проход (не gated звуком): набор
+     SNAPSHOT+READINGS+PPE ставится в очередь в момент истечения таймера,
+     якорь периода - событие, а не запись (log_archive_tick);
+   - флаги конфига гасятся ТОЛЬКО после успеха; жёсткая ошибка (-1) гасит и
+     считается в tasks_status.cnt_flash_errors (LOG_E - один раз внутри);
    - записи последовательные (sf_program/sf_sector_erase - опрос, без DMA):
      пока мы внутри, поток плеера либо спит до конца паузы, либо ждёт
      мьютекс (TX_INHERIT ускоряет владельца до приоритета звука).           */
@@ -653,73 +667,16 @@ void Vector_RunFlashMemory(void)
   tasks_status.cnt_flash_runs++;
 
 #if CONFIG_SAVE_PARAM_LOG
-  /* Всё письмо во внешнюю flash - ТОЛЬКО из этого потока (Avis_RunFlashMemory)
-     и ТОЛЬКО в окно тишины: мьютекс extstore сериализует шину, флаги
-     снимаются здесь же и только по успеху.                                  */
-  if (audio_is_busy() != 0u)
-  {
-    if ((SaveEvent != 0u) || (SaveConfig != 0u) || (SaveConfigDefault != 0u) ||
-        ((Sns_Cfg_struct.Config_archive.ArchiveRecording != 0u) &&
-         (TEST_TIMER_RTC(TIMER_RTC_LOG) != 0)))
-    {
-      tasks_status.cnt_flash_defers++;   /* есть что писать - ждём окно */
-    }
-    return;
-  }
-
-  /* ЕДИНЫЙ журнал (кольцо LOG) содержит записи ДВУХ видов - обе идут через
-     save_event() -> слот кольца LOG 64 байта (указатели CurrentAddrFile/
-     BegginAddrFile в Config_archive, маска 0x7FFF - см. Config_save_read.c):
-       а) ЕДИНИЧНЫЕ СОБЫТИЯ - этот блок: флаг SaveEvent/TypeLogEvent ставят
-          те, кто обнаружил событие (Pre_Init - TYPE_TURN_ON, обработчик
-          выключения - TYPE_TURN_OFF, COM/BLE - TYPE_LOG_PARAM_UPDATE_*),
-          запись отложенная, в окно тишины;
-       б) ПЕРИОДИЧЕСКИЙ АРХИВ - блок ниже: TYPE_READINGS по таймеру
-          TIMER_RTC_LOG при ArchiveRecording == 1 (период Archiveinterval).
-     Архив намеренно НЕ идёт через SaveEvent: однослотовый флаг события
-     терял бы периодические записи при совпадении с единичным событием.    */
-  if (SaveEvent != 0u)
-  {
-    TYPE_LOG ev = TypeLogEvent;   /* снимок: за время записи могут взвести новое */
-    int rc;
-
-    SaveEvent = 0u;               /* как в исходной схеме: взведённое во время
-                                     записи новое событие не потеряется       */
-    rc = save_event(&Sns_Cfg_struct, ev);
-    if (rc == EXT_BUSY)
-    {
-      tasks_status.cnt_flash_defers++;
-      if (SaveEvent == 0u)        /* нового события нет - вернём наше */
-      {
-        TypeLogEvent = ev;
-        SaveEvent    = 1u;
-      }
-    }
-    else if (rc != 0)
-    {
-      tasks_status.cnt_flash_errors++;   /* флаг уже погашен - без ретраев */
-    }
-  }
-
-  /* Архив: запись показаний раз в Archiveinterval (младший байт, с), если
-     запись разрешена (ArchiveRecording). Таймер ведёт Countdown_Timer_Rtc(). */
-  if ((Sns_Cfg_struct.Config_archive.ArchiveRecording != 0u) &&
-      (TEST_TIMER_RTC(TIMER_RTC_LOG) != 0))
-  {
-    int rc = save_event(&Sns_Cfg_struct, TYPE_READINGS);
-    if (rc == EXT_BUSY)
-    {
-      tasks_status.cnt_flash_defers++;   /* таймер НЕ сбрасываем: сработает
-                                            снова - запишем в следующее окно */
-    }
-    else
-    {
-      if (rc != 0) { tasks_status.cnt_flash_errors++; }
-      RESET_TIMER_RTC(TIMER_RTC_LOG);
-      START_TIMER_RTC(TIMER_RTC_LOG,
-                      (uint16_t)(Sns_Cfg_struct.Config_archive.Archiveinterval & 0xFFu));
-    }
-  }
+  /* ЖУРНАЛ v2 (LOG_FORMAT.md §6): архивный тик -> RAM-очередь (снимок на
+     момент события, набор SNAPSHOT+READINGS+PPE); очередь -> flash каждый
+     проход. program разрешён ПОД ЗВУКОМ (мьютекс extstore, try-lock:
+     EXT_BUSY -> записи ждут в очереди), erase сам ждёт окно тишины,
+     LOG_PTR - один раз на пачку. Детали писателя - Config_save_read.c
+     (log_archive_tick/log_flush); прежний однослотовый SaveEvent/TypeLogEvent
+     и внешний гейт audio_is_busy() удалены (время записи больше не живёт
+     сеткой окон - «то 5, то 6 секунд» между записями ушло).               */
+  log_archive_tick(&Sns_Cfg_struct);
+  (void)log_flush(&Sns_Cfg_struct);
 
   /* Сохранение конфигурации по запросу (решение автора, области sfmap.h):
      SaveConfig        - записать ТЕКУЩИЙ конфиг в РАБОЧУЮ область
@@ -776,7 +733,9 @@ void Vector_RunFlashMemory(void)
        не трогают), в лог уходит предупреждение. CRC16 проверяется внутри
        read_param. В РАБОЧУЮ область сброс автоматически не сохраняется:
        чтобы закрепить его во flash, вызывающий дополнительно взводит
-       SaveConfig. Чтение через flash - поэтому ветка за гейтом окна тишины. */
+       SaveConfig. Чтение через flash: под звуком возможен EXT_BUSY (ветка
+       больше НЕ за внешним гейтом) - запрос в этом случае не выполняется,
+       повтор - из меню/COM.                                                */
     ReadConfigDefault = 0u;
     if (read_param((uint8_t *)&Cfg_structdef_read, (uint16_t)sizeof(SNS_CFG),
                    SF_CONFIG_DEFAULT) != 0u)

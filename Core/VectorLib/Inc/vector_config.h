@@ -504,7 +504,7 @@
 #endif
 
 #ifndef VECTOR_LOG_UART
-#define VECTOR_LOG_UART           4
+#define VECTOR_LOG_UART           3
 #endif
 
 /* Порог по умолчанию: VLOG_DEBUG(1) VLOG_INFO(2) VLOG_WARN(3) VLOG_ERROR(4) */
@@ -517,17 +517,18 @@
 #define VECTOR_LOG_MASK           0xFFFFFFFFu
 #endif
 
-/* --- [ВРЕМЕННЫЙ ТЕСТ - УДАЛИТЬ ПОСЛЕ ПРОВЕРКИ] звук + журнал одновременно ---
- * 1 = в потоке measure раз в секунду работает SndLogTest_Run1s()
- *     (Core/VectorLib/Src/Test/*/snd_log_test.*):
- *       - громкость 0%, звук SND_ZVONOK_1 зациклен с паузой 1 с
- *         (период между звуками 1 с);
- *       - каждую секунду взводится TYPE_LOG_PARAM_NOP -> SaveEvent (запись
- *         штатным Vector_RunFlashMemory в окно тишины);
- *       - раз в 5 с отчёт в терминал (VLOG_M_TASKS): req/lost/written/
- *         defers/errors, ext_dbg_*, контрольное чтение последней записи.
- * УДАЛЕНИЕ: этот блок, include в Vector_main.h, вызов в Vector_main.c
- * (помечены "[ВРЕМЕННЫЙ ТЕСТ]") и оба файла snd_log_test.*.                 */
+///* --- [ВРЕМЕННЫЙ ТЕСТ - УДАЛИТЬ ПОСЛЕ ПРОВЕРКИ] звук + журнал одновременно ---
+// * 1 = в потоке measure раз в секунду работает SndLogTest_Run1s()
+// *     (Core/VectorLib/Src/Test/*/snd_log_test.*):
+// *       - громкость 0%, звук SND_ZVONOK_1 зациклен с паузой 1 с
+// *         (период между звуками 1 с);
+// *       - каждую секунду TYPE_LOG_PARAM_NOP -> RAM-очередь (log_post,
+// *         LOG_FORMAT §6); писатель Vector_RunFlashMemory (50 мс) переносит
+// *         во flash (program под звуком разрешён, erase в окно тишины);
+// *       - раз в 5 с отчёт в терминал (VLOG_M_TASKS): req/q/drop/written/
+// *         defers/errors, ext_dbg_*, контрольное чтение последней записи.
+// * УДАЛЕНИЕ: этот блок, include в Vector_main.h, вызов в Vector_main.c
+// * (помечены "[ВРЕМЕННЫЙ ТЕСТ]") и оба файла snd_log_test.*.                 */
 #ifndef VECTOR_SND_LOG_TEST
 #define VECTOR_SND_LOG_TEST       1   /* 1 = тест включён, 0 = выключен */
 #endif

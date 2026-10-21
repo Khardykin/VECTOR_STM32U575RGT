@@ -20,12 +20,6 @@
 
 #include <stdint.h>
 
-/* Общие типы и макросы прибора:
-     shared_types.h   SNS_CFG, биты ST_COMMON_*, DEVICE_TURNED, таймеры;
-     shared_macros.h  SET/CLEAR/TEST_STATUS_COMMON_BIT, SETBIT/CLRBIT/TESTBIT;
-     vector_macros.h  Delay/DelayInt/GetTick/Search_text, TIME_DEL_1,
-                      VECTOR_DEVICE_IS_ON - для кода, перенесённого с Avis;
-     main.h           абстракция периферии (I2C_xxx, SPI_xxx, GPIO_xxx).    */
 #include "shared_types.h"
 #include "shared_macros.h"
 #include "vector_macros.h"
@@ -141,41 +135,19 @@ uint8_t sensors_fall_event(void);       /* 1 = было падение, флаг
 
 /* --- сервис (по образцу Avis) ------------------------------------------
  * SoftResetProgram: 1 = команда мягкой перезагрузки прошивки (взводит COM/
- *   BLE-модуль ВМЕСТЕ с START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, N));
- *   отрабатывает Vector_Options_System(): событие TYPE_FW_UPDATE в журнал ->
- *   стоп TIM3 -> NVIC_SystemReset(). Экземпляр - Vector_main.c.
- * Avis_Battery_System(): секундное обслуживание батареи/зарядки (weak-
- *   заглушка в Vector_main.c - перенести машину состояний из Avis).          */
+ *   BLE-модуль ВМЕСТЕ с START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, N)); */
 extern uint8_t SoftResetProgram;
 void Avis_Battery_System(void);
 
-/* --- общие данные модулей обмена --------------------------------------
- * deveui_com[8]: копия DevEUI LoRa-модуля для COM/LTE-протокола (как в Avis);
- *   заполняет Lora_InitDeveui() (Lora_S7678S.c), экземпляр - Vector_main.c.
- * Get_Conversion_factor_rf(chan): коэффициент пересчёта концентрации для RF
- *   (в Avis - таблица conversion_factor_rf[] из Avis_Menu_Functionality.c);
- *   weak-заглушка Vector_main.c возвращает 1.0 - данные AVIS приходят по BLE
- *   уже масштабированными (pass-through в LoRa v4), порт таблицы - TODO автор. */
+/* --- общие данные модулей обмена -------------------------------------- */
 extern uint8_t deveui_com[8];
-float Get_Conversion_factor_rf(uint8_t chan);
 
-/* --- такты прибора --------------------------------------------------------
- * Timer_Tick_1ms() - из TIM3 (1 кГц, HAL_TIM_PeriodElapsedCallback в main.c):
- *   декремент countdown_time[], флаги timer.flag_1ms/10ms/100ms/1s, счётчики
- *   кнопок, таймауты кадров UART (COM/GPS/LoRa).
- * Timer_Tick_1s()  - из RTC wakeup (1 с, HAL_RTCEx_WakeUpTimerEventCallback в
- *   stm32u5xx_it.c): декремент countdown_time_rtc[], working_hours,
- *   flag_start_work, таймер окончания режима обмена.
- * Обе - КОНТЕКСТ ПРЕРЫВАНИЯ: только декремент и флаги, никакого I2C/лога.
- * Переменные (timer, countdown_time, countdown_time_rtc) - volatile, объявлены
- * в shared_types.h; макросы START/TEST/RESET/END_TIMER - в shared_macros.h.  */
+/* --- такты прибора -------------------------------------------------------- */
 void Timer_Tick_1ms(void);
 void Timer_Tick_1s(void);
 void Clear_Timer_Rtc(void);           /* сбросить все секундные таймеры      */
 
-/* Бортовая инициализация ДО старта RTOS (бывший vector_board_init): такт
-   SRAM4, заморозка TIM6 под отладчиком, SD_MODE (усилитель), sf_probe(),
-   audio_selftest(). Звать из main() (USER CODE 2).                         */
+/* Бортовая инициализация ДО старта RTOS */
 void Vector_Run_Board_Init(void);
 
 /* Таймаут кадра COM-порта (1 мс): weak-заглушка, реализация появится вместе

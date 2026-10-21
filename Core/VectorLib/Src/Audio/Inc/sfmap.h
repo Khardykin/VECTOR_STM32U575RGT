@@ -69,19 +69,22 @@ extern "C" {
 #define SF_CONFIG_DEFAULT   0x00401000u     /* заводской конфиг, 4 КБ         */
 #define SF_CONFIG_DEFAULT_SIZE 0x00001000u
 
-/* --- LOG: кольцевой журнал (схема автора) ------------------------------
- * Слоты фиксированной длины 64 байта (sizeof(EVENT_LOG)); кольцо 0x8000
- * (32768) слотов = 2 МБ от начала области, позиция = указатель & 0x7FFF.
- * Указатели CurrentAddrFile/BegginAddrFile - в SNS_CFG.Config_archive (RAM),
- * а во flash ранее хранятся ОТДЕЛЬНО в странице-кольце SF_LOG_PTR после
- * КАЖДОЙ записи журнала (замечание автора п.4) - чтобы не перезаписывать всю
- * конфигурацию из-за двух слов (аналог ReadCurrentAddrFile/SaveCurrentAddrFile
- * из Avis). Владелец кольца и страницы - Config_save_read.c; extstore
- * даёт только сырые ext_read/ext_write/ext_erase_sector.               */
+/* --- LOG: кольцевой журнал v2 (LOG_FORMAT.md) ---------------------------
+ * Слоты фиксированной длины 40 байт (sizeof(EVENT_LOG), заголовок 12 Б +
+ * payload 28 Б); в секторе 4 КБ - 102 слота (4080 Б, хвост 16 Б не
+ * используется); 512 секторов = 2 МБ = 52224 записи; физпозиция =
+ * log_slot_addr_v2() (phys = ptr mod 52224). Указатели CurrentAddrFile/
+ * BegginAddrFile - в SNS_CFG.Config_archive (RAM), а во flash хранятся
+ * ОТДЕЛЬНО в странице-кольце SF_LOG_PTR - ОДИН РАЗ НА ПАЧКУ записей
+ * (LOG_FORMAT §6: износ страницы не зависит от частоты). Владелец кольца и
+ * страницы - Config_save_read.c; extstore даёт только сырые
+ * ext_read/ext_write/ext_erase_sector. Прежний формат (слот 64 б, кольцо
+ * 32768 по маске) НЕ мигрируется: первый старт v2 переинициализирует
+ * кольцо (§2/§8.10 - маркер формата в записях LOG_PTR).                */
 #define SF_LOG_BASE         0x00402000u
-#define SF_LOG_SLOTS        0x00008000u     /* 32768 слотов по 64 б = 2 МБ  */
-#define SF_LOG_SIZE         (SF_CHIP_SIZE - SF_LOG_BASE)   /* ~3.99 МБ        */
-#define SF_LOG_SECTORS      (SF_LOG_SIZE / 4096u)
+#define SF_LOG_SLOTS        52224u          /* 512 секторов × 102 слота × 40 б */
+#define SF_LOG_SECTORS      512u
+#define SF_LOG_SIZE         (SF_LOG_SECTORS * 4096u)   /* РОВНО 2 МБ (§2)     */
 
 /* --- LOG_PTR: страница-кольцо указателей архива  ------------------
  * Сразу за кольцом журнала. Запись 16 байт: {seq u32, cur u32, beg u32,
@@ -90,7 +93,7 @@ extern "C" {
  * CRC (та же схема, что в конфиг-странице). Стирание - только в "окне тишины"
  * (erase_allowed); пока занято - сохранение откладывается до следующей записи
  * журнала (указатели в RAM остаются актуальны).                                    */
-#define SF_LOG_PTR_BASE     (SF_LOG_BASE + (SF_LOG_SLOTS * 64u))  /* 0x00602000 */
+#define SF_LOG_PTR_BASE     (SF_LOG_BASE + SF_LOG_SIZE)           /* 0x00602000 */
 #define SF_LOG_PTR_SIZE     0x00001000u     /* 4 КБ = одна страница стирания */
 
 /* Проверка карты на этапе компиляции */
@@ -102,10 +105,12 @@ typedef char sfmap_assert_cfgdef
     [(SF_CONFIG_DEFAULT + SF_CONFIG_DEFAULT_SIZE == SF_LOG_BASE) ? 1 : -1];
 typedef char sfmap_assert_ptr
     [(SF_LOG_PTR_BASE + SF_LOG_PTR_SIZE <= SF_CHIP_SIZE) ? 1 : -1];
+typedef char sfmap_assert_ring_sectors
+    [((SF_LOG_SLOTS % 102u == 0u) && (SF_LOG_SLOTS / 102u == SF_LOG_SECTORS)) ? 1 : -1];
 typedef char sfmap_assert_ring_end
-    [(SF_LOG_BASE + (SF_LOG_SLOTS * 64u) == SF_LOG_PTR_BASE) ? 1 : -1];
-typedef char sfmap_assert_end
-    [(SF_LOG_BASE + SF_LOG_SIZE == SF_CHIP_SIZE) ? 1 : -1];
+    [(SF_LOG_BASE + (SF_LOG_SECTORS * 4096u) == SF_LOG_PTR_BASE) ? 1 : -1];
+typedef char sfmap_assert_slot_fits_sector
+    [(102u * 40u <= 4096u) ? 1 : -1];
 
 #ifdef __cplusplus
 }

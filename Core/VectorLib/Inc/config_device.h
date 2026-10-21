@@ -44,7 +44,7 @@
 #define CONFIG_UART                   	1               // Включение конфигурации с USART
 #define CONFIG_CALIB_RTC				0
 #define CONFIG_BLE						0				// Конфигурация включающая BLE
-#define CONFIG_LORA						1				// Конфигурация включающая LORA
+#define CONFIG_LORA						0				// Конфигурация включающая LORA (0 - временно: Lora_S7678S.c не перенесён с модели Avis на shared_types.h VECTOR, 26 ошибок сборки; см. PLAN.md п.53)
 #define CONFIG_G4						0				// Конфигурация включающая G4
 #define CONFIG_GPS						1				// Конфигурация включающая GPS
 #define CONFIG_SLEEP                    1               // Включение конфигурации со сном

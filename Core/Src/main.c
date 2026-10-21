@@ -207,6 +207,7 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+  LL_RCC_MSIK_EnableInStopMode();
 }
 
 /**

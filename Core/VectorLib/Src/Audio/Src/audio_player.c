@@ -502,6 +502,26 @@ static audio_err_t beep_now(void)
   }
 }
 
+/* Зафиксировать успешно стартовавший звук. КОНТЕКСТ: поток плеера.
+   Цикл повторяет ПОСЛЕДНИЙ ЗАПУЩЕННЫЙ звук, поэтому здесь обновляются
+   last_sound_index и (если режим цикла включён) loop_index. audio_set_loop(1)
+   работает и до старта звука, и во время него, а одноразовые
+   audio_play()/audio_play_now() встраиваются в цикл: звучат вместо повтора,
+   после чего повтор продолжается.
+   Вызывается ОБЯЗАТЕЛЬНО из обоих путей start_now() - однотранзакционного и
+   СТРИМИНГОВОГО. Исправление дефекта (выявлен тестом «звук + журнал»,
+   PLAN.md п.54): стриминговый путь уходил ранним return AUDIO_OK, минуя
+   фиксацию - в стриминге (circular DMA - штатный режим) цикл не взводился
+   никогда: audio_set_loop(1) не действовал, last_sound_index оставался -1. */
+static void ap_note_started(uint16_t idx)
+{
+  audio_status.last_sound_index = (int32_t)idx;
+  if ((audio_status.loop_enabled != 0u) && (audio_status.image_ok != 0u))
+  {
+    audio_status.loop_index = (int32_t)idx;
+  }
+}
+
 /* Главный "запуск звука": таблица -> чтение PCM из внешней flash в ap_buf ->
    громкость -> одна DMA-транзакция в SAI. Контекст: только поток плеера.
    idx - индекс звука в образе (не идентификатор из audio_ids.h напрямую,
@@ -544,6 +564,8 @@ static audio_err_t start_now(uint16_t idx)
           LOG_W(VLOG_M_AUDIO, "RATE MISMATCH: sound %u Hz, AUDIO_SAMPLE_RATE %u Hz",
                 (uint32_t)e->rate, (uint32_t)AUDIO_SAMPLE_RATE);
         }
+        ap_note_started(idx);   /* фиксация звука и взвод цикла - общая с
+                                   однотранзакционным путём (см. ap_note_started) */
         return AUDIO_OK;
       }
       rc = AUDIO_OK;      /* пробуем one-shot, ошибку стрима уже залогировали */
@@ -602,15 +624,10 @@ static audio_err_t start_now(uint16_t idx)
 
   if (rc == AUDIO_OK)
   {
-    /* Звук пошёл: запоминаем его для цикла и сразу взводим повтор, если режим
-       включён. Поэтому audio_set_loop(1) работает и до старта звука, и во
-       время него, а одноразовые audio_play()/audio_play_now() встраиваются
-       в цикл: звучат вместо повтора, после чего повтор продолжается.      */
-    audio_status.last_sound_index = (int32_t)idx;
-    if ((audio_status.loop_enabled != 0u) && (audio_status.image_ok != 0u))
-    {
-      audio_status.loop_index = (int32_t)idx;
-    }
+    /* Звук пошёл: запоминаем его для цикла и взводим повтор (если режим
+       включён) - см. ap_note_started(); стриминговый путь вызывает её сам
+       перед своим ранним return. */
+    ap_note_started(idx);
   }
   else
   {

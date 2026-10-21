@@ -61,7 +61,7 @@ int cfg_load(void *data, uint16_t max_len, uint16_t *out_len, uint32_t addr);
      EXT_BUSY = шину не дождались (повторить), -1 = конфига ещё нет/ошибка */
 
 /* --- кольцевой журнал  -------------------------------------------------
- * Слой журнала (записи фиксированной длины EVENT_LOG = 64 байта, кольцо
+ * Слой журнала (записи фиксированной длины EVENT_LOG = 40 байт v2, кольцо
  * 0x8000 слотов, указатели CurrentAddrFile/BegginAddrFile в SNS_CFG.
  * Config_archive) ПЕРЕНЕСЁН в Config_save_read.c: save_event() /
  * log_read() / log_find_by_time(). extstore предоставляет ему только сырые

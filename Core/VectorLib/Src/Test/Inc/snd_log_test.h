@@ -9,11 +9,12 @@
   *              ПО-НАСТОЯЩЕМУ: стриминг, W25Q128, window-логика);
   *            - один звук зациклен с паузой 1 с (audio_set_loop +
   *              audio_set_loop_pause) -> период "звук ~2 с / тишина 1 с";
-  *            - каждую секунду взводится журнальное событие
-  *              (TYPE_LOG_PARAM_NOP -> SaveEvent): запись уходит в окно
-  *              тишины через штатный Vector_RunFlashMemory();
+  *            - каждую секунду журнальное событие (TYPE_LOG_PARAM_NOP)
+  *              ставится в RAM-очередь (log_post, LOG_FORMAT §6: снимок на
+  *              момент события); во flash переносит штатный писатель
+  *              Vector_RunFlashMemory() (50 мс, program под звуком);
   *            - раз в 5 с - отчёт в терминал (маска VLOG_M_TASKS): звук,
-  *              счётчики req/lost/written/defers/errors, ext_dbg_*, и
+  *              счётчики req/q/drop/written/defers/errors, ext_dbg_*, и
   *              контрольное чтение последней записи log_read();
   *            - watchdog: если звук не звучит 4 с подряд (цикл убит, например
   *              кнопкой PB2 демо-режима) - перезапуск.

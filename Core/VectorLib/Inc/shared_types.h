@@ -67,15 +67,25 @@ typedef enum {
 	EN,
 }APPLICATIONLANGUAGE;
   
-// Состояние прибора
+// Состояние прибора (машина состояний автора, как в Avis).
+// СТАРТОВОЕ значение - DEVICE_TURNED_OFF_PRE_INIT: ни один поток НЕ входит в
+// рабочий цикл, пока Vector_Run_Pre_Init() не завершится и не выставит
+// DEVICE_TURNED_ON (в Avis эту роль играл device_turn_to_freertos).
+// Конкретно это закрывает стартовую гонку сверки календаря RTC (PLAN п.59):
+// receiver (Vector_Options_System) не может записать в календарь working_hours
+// ДО того, как Pre_Init перекрыл его значением RTC_ReadTime().
 typedef enum {
 	DEVICE_TURNED_ON = 0,	             			// Включен
 	DEVICE_TURNED_OFF,		                        // Выключен
+	DEVICE_TURNED_OFF_PRE_INIT,                     // Выключен: предварительная инициализация (старт; потоки ждут)
 	DEVICE_TURNED_ON_1,		                        // Включен, без индикации(звук, вибро..)Используется для прогрева и авт выкл.
 //    DEVICE_TURNED_SAVE_BATTERY_POWER,             // Включен, Используется для режима сохранения энергии
 //  DEVICE_TURNED_END,
 }DEVICE_TURNED;
   
+// Определение - Vector_main.c. Старт: DEVICE_TURNED_OFF_PRE_INIT;
+// DEVICE_TURNED_ON - в конце Vector_Run_Pre_Init(); DEVICE_TURNED_OFF -
+// обработчик выключения (PLAN этап 6); DEVICE_TURNED_ON_1 - прогрев/авто-выкл.
 extern DEVICE_TURNED device_turn;
 
 //===========================================================================================================================
