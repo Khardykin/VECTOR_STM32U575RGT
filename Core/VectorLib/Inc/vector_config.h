@@ -530,7 +530,15 @@
 // * УДАЛЕНИЕ: этот блок, include в Vector_main.h, вызов в Vector_main.c
 // * (помечены "[ВРЕМЕННЫЙ ТЕСТ]") и оба файла snd_log_test.*.                 */
 #ifndef VECTOR_SND_LOG_TEST
-#define VECTOR_SND_LOG_TEST       1   /* 1 = тест включён, 0 = выключен */
+#define VECTOR_SND_LOG_TEST       0   /* 1 = тест включён, 0 = выключен.
+                                         ВЫКЛЮЧЕН после прогонов 5-6 (журнал v2
+                                         + очередь + program под звуком -
+                                         ЗАЧЁТ, PLAN п.58-62). Файлы
+                                         snd_log_test.* и хуки оставлены ПОД
+                                         ЭТИМ DEFINE (решение автора):
+                                         включить обратно = 1. Там же ручка
+                                         SLT_SET_WH_UNIX - разовая коррекция
+                                         часов RTC (PLAN п.62).              */
 #endif
 
 #endif /* VECTOR_CONFIG_H */

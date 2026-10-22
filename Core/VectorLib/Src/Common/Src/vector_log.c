@@ -31,7 +31,11 @@
 #include "vector_tick.h"   /* VTICK_MS(): источник времени выбирается в vector_config.h */
 #include <stdarg.h>
 
-#define VLOG_LINE       160u    /* длина одной строки вместе с префиксом      */
+#define VLOG_LINE       200u    /* длина одной строки вместе с префиксом (было
+                                   160; отчёт snd_log_test в прогоне 6 доходил
+                                   до ~158 - впритык, при росте счётчиков
+                                   строка обрезалась бы и склеивалась со
+                                   следующей - PLAN п.54/61).               */
 #define VLOG_TX_TMO_MS  60u     /* таймаут выдачи строки в UART               */
 
 #if (VECTOR_LOG_UART == 1)
