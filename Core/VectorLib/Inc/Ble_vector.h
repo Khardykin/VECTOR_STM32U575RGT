@@ -98,8 +98,9 @@ typedef enum {
 //===========================================================================================================================
 // ПРОТОКОЛ ДАННЫХ v1 (docs/Mirax-Ble-protocol-v1.md)
 // Header каждого пакета: биты 7..4 = тип (BLE_PKT_*), биты 3..0 = версия.
-// Legacy-пакет Avis (str_ble_data_set_t) начинается с байта 0x02: тип 0
-// (GAS_LEGACY), версия 2 - совместимость с существующими приборами AVIS.
+// Пакет Avis (str_ble_data_set_t) начинается с байта data_struct_ver: тип 0
+// (GAS_LEGACY). ВЕРСИЯ 3 = канал 6 байт (Setting_channel u16, решение автора,
+// п.65); версия 2 (5 байт/канал) - старые приборы AVIS, принимается как есть.
 //===========================================================================================================================
 #define BLE_PROTO_VER			(1u)	// версия протокола v1 (нижний nibble Header)
 
@@ -117,25 +118,30 @@ typedef enum {
 
 #define COUNT_CHAN_BLE			(7u)	// каналов в газовом пакете (как COUNT_CHAN_BLE в Avis)
 
-// Один канал газового пакета - БАЙТ-В-БАЙТ как sensor_data_t в Avis Ble_mk01.h
-// (5 байт: код газа + концентрация LE + состояние + установки).
+// Один канал газового пакета - 6 БАЙТ (решение автора, PLAN п.65): как
+// sensor_data_t Avis (код газа + концентрация LE + состояние), НО установки
+// канала - 2 байта LE: в них живут биты DEVICE_SETTING_CHAN (8..12: EC/
+// OXYGEN/FID/UART/TK) и маски MEASURE_*/дискретность - в u8 биты 8..12 не
+// помещались. Legacy-пакеты ver 2 (5 байт/канал, Setting u8) трекер
+// по-прежнему принимает (Ble_ParsePacket): Setting = младший байт.
 typedef struct
 {
 	uint8_t Type_gas;			// Код типа газа/канала (num_formula_gas отправителя)
 	uint8_t Concentration[2];	// Концентрация LE (единицы отправителя: он уже
 								//  применил Discreteness*conversion_factor_rf)
 	uint8_t State_channel;		// Статус канала отправителя (StateErr & 0x7F)
-	uint8_t Setting_channel;	// Установки канала (DeviceSetting & (MEASURE_MASK|MEASURE_DISK))
-} ble_sensor_data_t;
+	uint16_t Setting_channel;	// Установки канала LE: DEVICE_SETTING_CHAN + MEASURE_* (shared_types.h)
+} ble_sensor_data_t;			// 6 байт
 
-// Пакет под-устройства AVIS - БАЙТ-В-БАЙТ как str_ble_data_set_t в Avis
-// Ble_mk01.h (DATA_STRUCT_VER=2): шапка 6 байт (базовая информация: версия,
-// id, версии железа/ПО, заряд, маска каналов) + 5 байт на канал. Максимум
-// 6 + 5*7 = 41 байт; отправитель передаёт 6 + 5*popcount(sensors_enabled).
-// Первый байт 0x02 = Header v1-стиля (тип 0 GAS_LEGACY, версия 2).
+// Пакет под-устройства AVIS (наследник str_ble_data_set_t Avis): шапка 6 байт
+// (версия, id, версии железа/ПО, заряд, маска каналов) + 6 байт на канал
+// (Setting_channel u16 - п.65). Максимум 6 + 6*7 = 48 байт; отправитель
+// передаёт 6 + 6*popcount(sensors_enabled). Первый байт = Header v1-стиля
+// (тип 0 GAS_LEGACY): 0x03 = текущий формат; 0x02 = legacy 5 байт/канал
+// (старые приборы AVIS - разбираются отдельной веткой Ble_ParsePacket).
 typedef struct __attribute__((packed)) str_ble_data_set_t
 {
-	uint8_t data_struct_ver;	// = 2 (DATA_STRUCT_VER Avis)
+	uint8_t data_struct_ver;	// = 3 (BLE_DATA_STRUCT_VER); 2 = legacy (5 байт/канал)
 	uint8_t dev_id;				// идентификатор модели отправителя (DIVICE_ID_BLE Avis)
 	uint8_t dev_hw_ver;			// версия железа отправителя
 	uint8_t dev_fw_ver;			// версия ПО отправителя
@@ -145,7 +151,10 @@ typedef struct __attribute__((packed)) str_ble_data_set_t
 	ble_sensor_data_t sensors[COUNT_CHAN_BLE];
 } str_ble_data_set_t;
 
+#define BLE_DATA_STRUCT_VER			(3u)	// текущая версия пакета AVIS (Setting u16, п.65)
 #define SIZE_STR_BLE_DATA_SET_HDR	(6u)	// шапка пакета AVIS (без каналов)
+#define SIZE_BLE_SENSOR_REC_V3		(6u)	// канал ver 3 (Setting_channel u16)
+#define SIZE_BLE_SENSOR_REC_V2		(5u)	// канал ver 2 legacy (Setting_channel u8)
 
 // Пакет BEACONS (модуль -> MCU): список маяков, отфильтрованных по нашему
 // UUID. Запись ble_beacon_t (shared_types.h) = 4 байта и БАЙТ-В-БАЙТ совпадает
@@ -193,9 +202,9 @@ typedef struct __attribute__((packed))
 	uint8_t  State;					// биты 0..1 = заряд (0/1/2), бит7 = надето
 } ble_pkt_ppe_adv_t;				// 5 байт
 
-// Пакет SUBDEV (расширенный, под-устройство -> MCU): то же, что legacy Avis,
-// ПЛЮС заводской серийник (legacy-пакет его не несёт). Задел для новой
-// прошивки AVIS; трекер принимает оба формата.
+// Пакет SUBDEV (расширенный, под-устройство -> MCU): то же, что пакет Avis,
+// ПЛЮС заводской серийник (legacy его не несёт). Каналы - 6 байт (Setting
+// u16, п.65); трекер принимает и legacy Avis ver 2/3, и SUBDEV.
 typedef struct __attribute__((packed))
 {
 	uint8_t  Header;				// 0x31 = BLE_PKT_HEADER(BLE_PKT_SUBDEV)
@@ -207,10 +216,10 @@ typedef struct __attribute__((packed))
 	uint8_t  sensors_enabled:5;
 	uint8_t  rfu:3;
 	ble_sensor_data_t sensors[COUNT_CHAN_BLE];
-} ble_pkt_subdev_t;					// 44 байта
+} ble_pkt_subdev_t;					// 51 байт (9 + 6*7)
 
 // Пакет AGG (модуль -> MCU): всё одним пакетом (предпочтительный вариант
-// автора). BlockMask: бит0 = GAS (str_ble_data_set_t ЦЕЛИКОМ, 41 байт),
+// автора). BlockMask: бит0 = GAS (str_ble_data_set_t ЦЕЛИКОМ, до 48 байт),
 // бит1 = BEACONS (Count + 4×Count, БЕЗ байта Header), бит2 = PPE
 // (Count + 6×Count, БЕЗ байта Header). Блоки по возрастанию битов.
 #define BLE_AGG_BLOCK_GAS		(1u << 0)

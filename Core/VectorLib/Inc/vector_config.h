@@ -320,6 +320,30 @@
 #define VECTOR_TASKS_MEASURE_DELAY_MS    50u
 #endif
 
+/* --- Отдельные потоки BLE и LoRa (п.65, решение автора: убрать оба из
+ * measure/receiver - AT-обмен «запрос-ответ» слишком частый для мерного ритма
+ * 50 мс; запросов много, они последовательные). В будущем слот LoRa-потока
+ * займёт модем 3G/IoT - интерфейс потока (Run+Receive) сохранён.
+ * Приоритеты: audio=10 (AP_PRIORITY) > BLE=11 > receiver=LoRa=12 > measure=13. */
+#ifndef VECTOR_TASKS_BLE_PRIORITY
+#define VECTOR_TASKS_BLE_PRIORITY        11u
+#endif
+#ifndef VECTOR_TASKS_BLE_STACK
+#define VECTOR_TASKS_BLE_STACK           2048u
+#endif
+#ifndef VECTOR_TASKS_BLE_DELAY_MS
+#define VECTOR_TASKS_BLE_DELAY_MS        5u
+#endif
+#ifndef VECTOR_TASKS_LORA_PRIORITY
+#define VECTOR_TASKS_LORA_PRIORITY       12u
+#endif
+#ifndef VECTOR_TASKS_LORA_STACK
+#define VECTOR_TASKS_LORA_STACK          2048u
+#endif
+#ifndef VECTOR_TASKS_LORA_DELAY_MS
+#define VECTOR_TASKS_LORA_DELAY_MS       10u
+#endif
+
 /* --- BLE: мастерская сторона модуля MK01 (Ble_vector.c) ---------------
  *  (замечание автора п.2): роли НЕ менялись - как и Avis, мы ХОЗЯИН своего
  * BLE-модуля (порт Ble_mk01.c: AT/ADVBLENAMESET/BLEADDR?/ADVPERIODMS/

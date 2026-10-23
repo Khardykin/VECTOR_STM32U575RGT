@@ -65,6 +65,7 @@
 #include "Vector_main.h"     /* buffer.h: InputBuffer/check_buffer/receive_buffer */
 #include "vector_macros.h"   /* GetTick/Delay */
 #include "vector_log.h"      /* LOG_W/LOG_I + VLOG_M_COM */
+#include "tx_api.h"          /* TX_DISABLE: целые снимки Connected_device/Ble_telemetry (п.65) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -127,7 +128,7 @@ static buffer_uart_ble_t buffer_uart_ble = {{0}, 0, 0};
  * @brief  Разбор hex-строки ответа ADVMSDDATAGET в сырые байты.
  * @param  hex  hex-ASCII данные; len — длина.
  * @retval Количество разобранных байт.
- * Контекст: Measure Task (из Ble_Receive). Разбор ТОЛЕРАНТНЫЙ: останавливается
+ * Контекст: BLE-поток (из Ble_Receive). Разбор ТОЛЕРАНТНЫЙ: останавливается
  * на первой не-hex паре (хвост ответа "OK"/CR/LF просто отсекается) - так же
  * ведёт себя sscanf("%02x...") у BLEADDR? в Avis.
  */
@@ -154,7 +155,7 @@ static uint16_t Ble_HexToBin(const uint8_t *hex, uint16_t len)
  * @param  src  структура legacy-пакета AVIS (str_ble_data_set_t, формат
  *         Ble_mk01.h: шапка 6 байт + 5 байт на канал).
  * @retval Нет.
- * Контекст: Measure Task (Ble_TransmitReceive -> Ble_ReadAnswer ->
+ * Контекст: BLE-поток (Ble_TransmitReceive -> Ble_ReadAnswer ->
  * Ble_ParsePacket). Читатель Connected_device - LoRa v4 (секция SUB_TYPE_GAS)
  * и индикация (100 мс цикл); struct-копирование на Cortex-M33 атомарно
  * пословно, частичное обновление практически исключено.
@@ -174,10 +175,38 @@ static uint16_t Ble_HexToBin(const uint8_t *hex, uint16_t len)
  * индекс" не срабатывал на нулевом слоте. data_struct_ver/rfu остаются
  * в ble_rx_data_set (сырая копия ответа, Expressions/отладка).
  */
+/* Legacy Avis ver 2: канал 5 байт (Setting u8). Принимается наряду с ver 3
+   (6 байт, Setting_channel u16) - старые приборы AVIS перепрошивать не
+   нужно: ParsePacket конвертирует ver 2 в текущую структуру.             */
+typedef struct
+{
+	uint8_t Type_gas;
+	uint8_t Concentration[2];
+	uint8_t State_channel;
+	uint8_t Setting_channel;
+} ble_sensor_data_v2_t;
+
+typedef struct __attribute__((packed))
+{
+	uint8_t data_struct_ver;	// = 2
+	uint8_t dev_id;
+	uint8_t dev_hw_ver;
+	uint8_t dev_fw_ver;
+	uint8_t charge;
+	uint8_t sensors_enabled:5;
+	uint8_t rfu:3;
+	ble_sensor_data_v2_t sensors[COUNT_CHAN_BLE];
+} str_ble_data_set_v2_t;			// 41 байт (6 + 5*7)
+
+static str_ble_data_set_v2_t ble_rx_data_set_v2 = {0};
+
 static void Ble_ApplyConnectedDevice(const str_ble_data_set_t *src)
 {
 	uint32_t state_or = 0, err_or = 0;
+	TX_INTERRUPT_SAVE_AREA;
 
+	TX_DISABLE;		/* запись ЦЕЛЫМ снимком: читатели (LoRa-поток, индикация)
+					   не увидят половинное состояние (п.65)                 */
 	Connected_device.dev_id                 = src->dev_id;
 	Connected_device.battery_charge_percent = src->charge;
 	Connected_device.HardwareVersion        = src->dev_hw_ver;
@@ -209,13 +238,14 @@ static void Ble_ApplyConnectedDevice(const str_ble_data_set_t *src)
 	   TYPE_STATIC собираются из Connected_device, пока gas_ms не устарел).  */
 	Ble_telemetry.gas_online = 1u;
 	Ble_telemetry.gas_ms     = GetTick();
+	TX_RESTORE;
 	ble_status.cnt_datasets++;
 }
 
 /**
  * @brief  Список маяков (пакет BEACONS / блок AGG) -> Ble_telemetry.beacons.
  * @param  p  указатель на Count; len - доступная длина от p до конца пакета.
- * @retval Нет. Контекст: Measure Task (Ble_ParsePacket).
+ * @retval Нет. Контекст: BLE-поток (Ble_ParsePacket).
  * Запись ble_beacon_t = 4 байта (ShortID u16 LE + Rssi i8 + Battery u8) -
  * совпадает с проводной раскладкой LoRa v4 п.4.7 (копия memcpy). Усечённый
  * пакет разбирается по целым записям (толерантность как у Ble_HexToBin).
@@ -223,6 +253,7 @@ static void Ble_ApplyConnectedDevice(const str_ble_data_set_t *src)
 static void Ble_ApplyBeacons(const uint8_t *p, uint16_t len)
 {
 	uint8_t count;
+	TX_INTERRUPT_SAVE_AREA;
 
 	if (len < 1u) {
 		return;
@@ -234,25 +265,28 @@ static void Ble_ApplyBeacons(const uint8_t *p, uint16_t len)
 	if ((uint16_t)(1u + (uint16_t)(sizeof(ble_beacon_t) * count)) > len) {
 		count = (uint8_t)((len - 1u) / sizeof(ble_beacon_t));
 	}
+	TX_DISABLE;
 	for (uint8_t i = 0; i < count; i++) {
 		memcpy(&Ble_telemetry.beacons[i], &p[1u + (uint16_t)(sizeof(ble_beacon_t) * i)],
 			   sizeof(ble_beacon_t));
 	}
 	Ble_telemetry.beacon_count = count;
 	Ble_telemetry.beacon_ms    = GetTick();
+	TX_RESTORE;
 	ble_status.cnt_beacons++;
 }
 
 /**
  * @brief  Список меток СИЗ (пакет PPE / блок AGG) -> Ble_telemetry.ppe.
  * @param  p  указатель на Count; len - доступная длина от p до конца пакета.
- * @retval Нет. Контекст: Measure Task (Ble_ParsePacket).
+ * @retval Нет. Контекст: BLE-поток (Ble_ParsePacket).
  * Запись ble_ppe_wire_t = 6 байт: PpeType u8 + Serial u16 LE + Charge u8 +
  * Rssi i8 + Flags u8 (бит0 = надето/присутствует -> Present).
  */
 static void Ble_ApplyPPE(const uint8_t *p, uint16_t len)
 {
 	uint8_t count;
+	TX_INTERRUPT_SAVE_AREA;
 
 	if (len < 1u) {
 		return;
@@ -264,6 +298,7 @@ static void Ble_ApplyPPE(const uint8_t *p, uint16_t len)
 	if ((uint16_t)(1u + (uint16_t)(sizeof(ble_ppe_wire_t) * count)) > len) {
 		count = (uint8_t)((len - 1u) / sizeof(ble_ppe_wire_t));
 	}
+	TX_DISABLE;
 	for (uint8_t i = 0; i < count; i++) {
 		const ble_ppe_wire_t *w = (const ble_ppe_wire_t *)&p[1u + (uint16_t)(sizeof(ble_ppe_wire_t) * i)];
 
@@ -275,26 +310,29 @@ static void Ble_ApplyPPE(const uint8_t *p, uint16_t len)
 	}
 	Ble_telemetry.ppe_count = count;
 	Ble_telemetry.ppe_ms    = GetTick();
+	TX_RESTORE;
 	ble_status.cnt_ppe++;
 }
 
 /**
  * @brief  Расширенный пакет под-устройства SUBDEV (с серийником) -> Connected_device.
  * @param  raw  начало пакета (Header 0x31); len - длина.
- * @retval Нет. Контекст: Measure Task (Ble_ParsePacket).
+ * @retval Нет. Контекст: BLE-поток (Ble_ParsePacket).
  * Шапка 9 байт: Header + SerialLo u16 + SerialHi u16 + hw + fw + charge +
- * sensors_enabled(:5)/rfu(:3); далее 5 байт на включённый канал (формат
- * каналов как в legacy Avis). Серийник -> Ble_telemetry.gas_serial (уходит в
- * sub_descr_t.Serial пакета TYPE_STATIC LoRa v4; legacy-пакет его не несёт).
+ * sensors_enabled(:5)/rfu(:3); далее 6 байт на включённый канал (Setting
+ * u16, п.65). Серийник -> Ble_telemetry.gas_serial (уходит в sub_descr_t.Serial
+ * пакета TYPE_STATIC LoRa v4; legacy-пакет его не несёт).
  */
 static void Ble_ApplySubdev(const uint8_t *raw, uint16_t len)
 {
 	const ble_pkt_subdev_t *pkt = (const ble_pkt_subdev_t *)raw;
 	uint32_t state_or = 0, err_or = 0;
+	TX_INTERRUPT_SAVE_AREA;
 
 	if (len < 9u) {
 		return;
 	}
+	TX_DISABLE;		/* целый снимок для читателей из других потоков (п.65) */
 	Ble_telemetry.gas_serial      = pkt->SerialLo;	// TODO: 32-битный номер (SerialHi), если понадобится
 	Connected_device.dev_id                 = pkt->SerialLo;
 	Connected_device.battery_charge_percent = pkt->charge;
@@ -304,7 +342,7 @@ static void Ble_ApplySubdev(const uint8_t *raw, uint16_t len)
 	for (uint8_t i = 0; i < (uint8_t)COUNT_CHAN; i++) {
 		if ((i < COUNT_CHAN_BLE) &&
 			((pkt->sensors_enabled & (uint8_t)(1u << i)) != 0u) &&
-			(len >= (uint16_t)(9u + 5u * (uint16_t)(i + 1u)))) {
+			(len >= (uint16_t)(9u + SIZE_BLE_SENSOR_REC_V3 * (uint16_t)(i + 1u)))) {
 			uint16_t conc = (uint16_t)((uint16_t)pkt->sensors[i].Concentration[0] |
 									   ((uint16_t)pkt->sensors[i].Concentration[1] << 8));
 
@@ -324,13 +362,14 @@ static void Ble_ApplySubdev(const uint8_t *raw, uint16_t len)
 
 	Ble_telemetry.gas_online = 1u;
 	Ble_telemetry.gas_ms     = GetTick();
+	TX_RESTORE;
 	ble_status.cnt_datasets++;
 }
 
 /**
  * @brief  Агрегированный пакет AGG (всё одним пакетом) -> разбор блоков.
  * @param  raw  начало пакета (Header 0xF1, BlockMask); len - длина.
- * @retval Нет. Контекст: Measure Task (Ble_ParsePacket).
+ * @retval Нет. Контекст: BLE-поток (Ble_ParsePacket).
  * BlockMask: бит0 = GAS (str_ble_data_set_t ЦЕЛИКОМ, 41 байт), бит1 =
  * BEACONS (Count + 4×Count, без Header), бит2 = PPE (Count + 6×Count, без
  * Header). Блоки идут по возрастанию битов (docs/Mirax-Ble-protocol-v1.md).
@@ -377,11 +416,12 @@ static void Ble_ApplyAgg(const uint8_t *raw, uint16_t len)
 /**
  * @brief  Диспетчер пакетов протокола v1 (ответ ADVMSDDATAGET).
  * @param  raw  сырые байты пакета (после Ble_HexToBin); len - длина (<= 256).
- * @retval Нет. Контекст: Measure Task (Ble_ReadAnswer, команда DATAGET).
+ * @retval Нет. Контекст: BLE-поток (Ble_ReadAnswer, команда DATAGET).
  * Первый байт - Header: биты 7..4 тип (BLE_PKT_*), 3..0 версия. Тип 0 -
- * legacy-пакет Avis (первый байт 0x02 = data_struct_ver): принимается как
- * есть, существующие приборы AVIS перепрошивать не нужно. Остальные типы -
- * только версия BLE_PROTO_VER. Пакеты BEACON_ADV/PPE_ADV - эфирные рекламы
+ * пакет Avis: первый байт = data_struct_ver, ВЕРСИЯ 3 = 6 байт/канал
+ * (Setting_channel u16 - биты DEVICE_SETTING_CHAN 8..12 + MEASURE_*,
+ * п.65), ВЕРСИЯ 2 = legacy 5 байт/канал (старые приборы AVIS - принимаются,
+ * конвертируются в ver 3). Остальные типы - только версия BLE_PROTO_VER. Пакеты BEACON_ADV/PPE_ADV - эфирные рекламы
  * одиночных устройств, модуль сам собирает из них списки; в ответе DATAGET
  * их не ждём (игнор).
  */
@@ -400,10 +440,11 @@ static void Ble_ParsePacket(const uint8_t *raw, uint16_t len)
 	ble_status.last_pkt_type = ptype;
 
 	if (ptype == BLE_PKT_GAS_LEGACY) {
-		/* Legacy Avis: первый байт = data_struct_ver (=2), шапка 6 байт +
-		   5 байт на включённый канал. Копируем что пришло (остаток нулится),
-		   неполный пакет логируем, но разбираем (толерантность).           */
-		if ((pver == 2u) && (len >= SIZE_STR_BLE_DATA_SET_HDR)) {
+		/* Пакет Avis: первый байт = data_struct_ver. Ver 3 - 6 байт/канал
+		   (Setting u16); ver 2 (legacy) - 5 байт/канал. Копируем что пришло
+		   (остаток нулится), неполный пакет логируем, но разбираем
+		   (толерантность).                                                 */
+		if ((pver == BLE_DATA_STRUCT_VER) && (len >= SIZE_STR_BLE_DATA_SET_HDR)) {
 			uint16_t copy = (len > (uint16_t)sizeof(str_ble_data_set_t))
 								? (uint16_t)sizeof(str_ble_data_set_t) : len;
 			uint8_t n_ch = 0;
@@ -415,11 +456,46 @@ static void Ble_ParsePacket(const uint8_t *raw, uint16_t len)
 					n_ch++;
 				}
 			}
-			if (len < (uint16_t)(SIZE_STR_BLE_DATA_SET_HDR + 5u * (uint16_t)n_ch)) {
+			if (len < (uint16_t)(SIZE_STR_BLE_DATA_SET_HDR + SIZE_BLE_SENSOR_REC_V3 * (uint16_t)n_ch)) {
 				LOG_W(VLOG_M_COM, "BLE: gas pkt short %u", (unsigned)len);
 			}
 			Ble_ApplyConnectedDevice(&ble_rx_data_set);
-		} else {
+		}
+		else if ((pver == 2u) && (len >= SIZE_STR_BLE_DATA_SET_HDR)) {
+			/* LEGACY ver 2 (5 байт/канал, Setting u8): конвертируем в ver 3
+			   (Setting = младший байт; биты 8..12 у старых приборов absent) -
+			   дальше ЕДИНЫЙ путь применения.                               */
+			uint16_t copy = (len > (uint16_t)sizeof(str_ble_data_set_v2_t))
+								? (uint16_t)sizeof(str_ble_data_set_v2_t) : len;
+			uint8_t n_ch = 0;
+
+			memset(&ble_rx_data_set_v2, 0, sizeof(ble_rx_data_set_v2));
+			memcpy(&ble_rx_data_set_v2, raw, copy);
+			for (uint8_t b = 0; b < 5u; b++) {
+				if ((ble_rx_data_set_v2.sensors_enabled & (uint8_t)(1u << b)) != 0u) {
+					n_ch++;
+				}
+			}
+			if (len < (uint16_t)(SIZE_STR_BLE_DATA_SET_HDR + SIZE_BLE_SENSOR_REC_V2 * (uint16_t)n_ch)) {
+				LOG_W(VLOG_M_COM, "BLE: gas pkt(v2) short %u", (unsigned)len);
+			}
+			memset(&ble_rx_data_set, 0, sizeof(ble_rx_data_set));
+			ble_rx_data_set.data_struct_ver = ble_rx_data_set_v2.data_struct_ver;
+			ble_rx_data_set.dev_id          = ble_rx_data_set_v2.dev_id;
+			ble_rx_data_set.dev_hw_ver      = ble_rx_data_set_v2.dev_hw_ver;
+			ble_rx_data_set.dev_fw_ver      = ble_rx_data_set_v2.dev_fw_ver;
+			ble_rx_data_set.charge          = ble_rx_data_set_v2.charge;
+			ble_rx_data_set.sensors_enabled = ble_rx_data_set_v2.sensors_enabled;
+			for (uint8_t i = 0; i < COUNT_CHAN_BLE; i++) {
+				ble_rx_data_set.sensors[i].Type_gas           = ble_rx_data_set_v2.sensors[i].Type_gas;
+				ble_rx_data_set.sensors[i].Concentration[0]   = ble_rx_data_set_v2.sensors[i].Concentration[0];
+				ble_rx_data_set.sensors[i].Concentration[1]   = ble_rx_data_set_v2.sensors[i].Concentration[1];
+				ble_rx_data_set.sensors[i].State_channel      = ble_rx_data_set_v2.sensors[i].State_channel;
+				ble_rx_data_set.sensors[i].Setting_channel    = ble_rx_data_set_v2.sensors[i].Setting_channel;
+			}
+			Ble_ApplyConnectedDevice(&ble_rx_data_set);
+		}
+		else {
 			LOG_W(VLOG_M_COM, "BLE: bad gas pkt len=%u ver=%u", (unsigned)len, (unsigned)pver);
 		}
 		return;
@@ -457,7 +533,7 @@ static void Ble_ParsePacket(const uint8_t *raw, uint16_t len)
  * @param  command  команда (BLE_CMD_t); data — параметр числовых команд /
  *                  серийный номер для имени.
  * @retval 1 успех (OK или разобраны данные), 0 неудача (все попытки).
- * Контекст: Measure Task. Блокирующая: до BLE_TRANSMIT_REPEAT*(35+5) мс.
+ * Контекст: BLE-поток. Блокирующая: до BLE_TRANSMIT_REPEAT*(35+5) мс.
  * Логика Avis: 4 попытки; после каждой — Ble_Receive(); OK -> счётчик ошибок
  * в 0, успех; ERROR/нет ответа -> counter_err++, после 3 серий -> flag_err
  * (Ble_Run поднимет ST_COMMON_BIT_ERR_BLE).
@@ -537,7 +613,7 @@ static uint8_t Ble_TransmitReceive(BLE_CMD_t command, uint16_t data)
  *         занято публичной функцией vector_tasks.h).
  * @param  command  команда, на которую ждём ответ.
  * @retval 0 успех (OK / разобраны данные), 1 неудача (ERROR / нет ответа / мусор).
- * Контекст: Measure Task. Читаем ring InputBuffer[TYPE_BLE] (USART3 ISR кладёт
+ * Контекст: BLE-поток. Читаем ring InputBuffer[TYPE_BLE] (USART3 ISR кладёт
  * туда байты модуля); ожидание до BLE_WAIT_UART_TIMEOUT мс по GetTick() +
  * BLE_WAIT_UART_DELAY мс на хвост — тайминги Avis.
  */
@@ -628,7 +704,7 @@ static uint8_t Ble_ReadAnswer(BLE_CMD_t command)
 /**
  * @brief  Имя модуля: метка сборки + серийный номер, задать ADVBLENAMESET.
  * @param  serial  (SerialHi<<16)|SerialLo.
- * @retval Нет. Контекст: Measure Task (из Ble_Init).
+ * @retval Нет. Контекст: BLE-поток (из Ble_Init).
  * Формат Avis (Device2_1): label + "%04d%04d" (Hi 0..9999, Lo 0..9999).
  * Метка VECTOR предварительно "VEC"/"22." — TODO автор (имя в сети).
  */
@@ -651,7 +727,7 @@ void BLE_InitName(uint32_t serial)
  * @brief  Инициализация BLE-модуля (порт Ble_Init из Avis - один в один).
  * @param  serial  (SerialHi<<16)|SerialLo — для имени модуля.
  * @retval 1 последовательность выполнена, 0 уже инициализирован.
- * Контекст: Measure Task (Ble_Run по INIT-таймеру). Последовательность Avis:
+ * Контекст: BLE-поток (Ble_Run по INIT-таймеру). Последовательность Avis:
  * flag=1 ЗАРАНЕЕ -> AT -> AT -> имя -> BLEADDR? -> период 300 мс ->
  * мощность 8 -> старт рекламы. Команды идут БЕЗ && (каждая выполняется);
  * если модуль не отвечает на BLEADDR? 3 серии подряд, Ble_TransmitReceive
@@ -681,7 +757,7 @@ uint8_t Ble_Init(uint32_t serial)
  *               реально выполнил выключение (сценарий Ble_Run: модуль мог
  *               не успеть инициализироваться); 0 — только выключить, если
  *               модуль и так инициализирован.
- * @retval Нет. Контекст: Measure Task (Ble_Run: выкл. TURN_ON_BLE / INIT-ветка).
+ * @retval Нет. Контекст: BLE-поток (Ble_Run: выкл. TURN_ON_BLE / INIT-ветка).
  * Avis: Ble_SystemDFU(); if(init) flag=1; Ble_SystemOff() (SYSTEMOFF + импульс
  * RESET_BLE 50 мс + переинит UART + flag=0); counter_err=0; flag_err=0.
  */
@@ -702,7 +778,7 @@ void Ble_DeInit(uint8_t init)
 /**
  * @brief Периодический ОПРОС принятых данных (замена Ble_MsdDataSet).
  * @param  Нет. @retval Нет.
- * Контекст: Measure Task (Ble_Run по SET-таймеру, TIME_RTC_BLE_DATA_SET=60 с).
+ * Контекст: BLE-поток (Ble_Run по SET-таймеру, TIME_RTC_BLE_DATA_SET=60 с).
  * AT+ADVMSDDATAGET -> ответ hex -> str_ble_data_set_t -> Connected_device.
  */
 void Ble_MsdDataGet(void)
@@ -715,7 +791,7 @@ void Ble_MsdDataGet(void)
 
 /**
  * @brief  Усыпить BLE-модуль (порт Ble_MsdDataSleep).
- * @param  Нет. @retval Нет. Контекст: Measure Task (SLEEP-таймер, 30 с).
+ * @param  Нет. @retval Нет. Контекст: BLE-поток (SLEEP-таймер, 30 с).
  */
 void Ble_MsdDataSleep(void)
 {
@@ -726,7 +802,7 @@ void Ble_MsdDataSleep(void)
 
 /**
  * @brief  Включить/выключить рекламу (порт Ble_AdvStart).
- * @param  data 1 вкл / 0 выкл. @retval Нет. Контекст: Measure Task.
+ * @param  data 1 вкл / 0 выкл. @retval Нет. Контекст: BLE-поток.
  */
 void Ble_AdvStart(uint8_t data)
 {
@@ -735,7 +811,7 @@ void Ble_AdvStart(uint8_t data)
 
 /**
  * @brief  Задать период рекламы, мс (порт Ble_AdvPeriodms).
- * @param  data период. @retval Нет. Контекст: Measure Task.
+ * @param  data период. @retval Нет. Контекст: BLE-поток.
  */
 void Ble_AdvPeriodms(uint16_t data)
 {
@@ -744,7 +820,7 @@ void Ble_AdvPeriodms(uint16_t data)
 
 /**
  * @brief  Задать мощность рекламы (порт Ble_AdvPower).
- * @param  data уровень. @retval Нет. Контекст: Measure Task.
+ * @param  data уровень. @retval Нет. Контекст: BLE-поток.
  */
 void Ble_AdvPower(uint8_t data)
 {
@@ -753,7 +829,7 @@ void Ble_AdvPower(uint8_t data)
 
 /**
  * @brief  Выключить BLE-модуль (порт Ble_SystemOff из Avis - один в один).
- * @param  Нет. @retval Нет. Контекст: Measure Task.
+ * @param  Нет. @retval Нет. Контекст: BLE-поток.
  * Avis: только если init_flag==1: снять флаг, импульс RESET_BLE 50 мс
  * (SET_OFF -> Delay(50) -> SET_ON) и переинициализировать UART.
  * AT+SYSTEMOFF в Avis не отправляется - модуль гасится пином RESET.
@@ -782,7 +858,7 @@ void SetBleFlagDFU(uint8_t data)
 
 /**
  * @brief  Перевести модуль в режим прошивки DFU (порт Ble_SystemDFU).
- * @param  Нет. @retval Нет. Контекст: Measure Task.
+ * @param  Нет. @retval Нет. Контекст: BLE-поток.
  */
 void Ble_SystemDFU(void)
 {

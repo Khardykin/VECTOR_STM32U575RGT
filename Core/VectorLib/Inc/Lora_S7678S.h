@@ -212,7 +212,9 @@ enum STATUS_LORA_2
 typedef struct
 {
     uint16_t num_formula_gas;
-    uint8_t  Setting;
+    uint16_t Setting;           /* 2 байта (п.65): биты DEVICE_SETTING_CHAN 8..12
+                                   + MEASURE_* - серверу нужны для разбора канала;
+                                   CfgLen секции GAS = 1 + 4×N (v4 §6, ревизия)  */
 } __attribute__((__packed__)) sensor_data_lora_1_t;
 
 typedef sensor_data_lora_1_t channel_cfg_t;

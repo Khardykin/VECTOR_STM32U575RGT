@@ -1487,3 +1487,80 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
       прежнее поведение).
     - На железе не проверялось (CONFIG_LORA=0); v16.diff — приращение поверх
       дерева v14+v15-inc (полная цепочка: ef08996 → v14 → v15-inc → v16).
+
+65. **Каналы AVIS: Setting 2 байта по всей цепочке, дискретность из Setting,
+    «выходной мост» LoRa→State, отдельные потоки BLE и LoRa + защита общих
+    данных (решения автора; патч v17 поверх c61c30a)**:
+    - **Setting_channel = 2 байта** (автор: биты DEVICE_SETTING_CHAN 8..12 в
+      u8 не помещаются): `SNS_DevChan_Type.Setting` → uint16; BLE legacy-пакет
+      AVIS — ВЕРСИЯ 3 (запись канала 6 байт: Type_gas + Concentration LE +
+      State_channel + Setting u16 LE; 6+6×N, макс. 48), **ver 2 (5 байт/канал,
+      Setting u8) по-прежнему принимается** и конвертируется в ver 3 (старые
+      приборы AVIS перепрошивать не нужно; битов 8..12 у них просто нет);
+      SUBDEV-пакет — те же 6-байтовые записи (9+6×N=51). В shared_types.h
+      добавлены: `enum DEVICE_SETTING_CHAN` (EC=8, OXYGEN=9, FID=10, UART=11,
+      TK=12 — авторский), маски единиц/дискретизации `MEASURE_*` (BASIC:
+      единицы биты 2-3, дискретность 6-7; DISP: 0-1 и 4-5). Документация
+      приведена в соответствие: Mirax-Ble-protocol-v1.md §3.4/решение 12/
+      «уточнить» (ver 3 принят решением автора; SensorIndex/sensors[8] —
+      целевой задел), Mirax-Lora-protocol-v4.md §6.
+    - **Дискретность** (автор: «можно взять из calculating_the_discreteness»):
+      авторская функция Avis адаптирована в `static inline
+      calculating_the_discreteness(setting, sel)` (shared_types.h; sel =
+      MEASURE_SEL_BASIC/DISP, возврат 1/10/100/1000, 0 = биты вне диапазона).
+      Мост LoRa вычисляет её из BASIC-битов Setting; концентрация остаётся
+      PASS-THROUGH (п.63 — по BLE приходит масштабированная), дискретность
+      нужна ТОЛЬКО для границ мёртвой зоны O2: `20.85/20.95 × discreteness`
+      (условный define BIT_SET_OXYGEN_SENSOR=0 из v15 заменён настоящим
+      битом 9 из enum). disc=0 → 1 (границы не схлопываются).
+    - **TYPE_STATIC, секция GAS**: `channel_cfg_t.Setting` → u16 (2 байта LE
+      на канал), `CfgLen = 1 + 4×N` (было 1+3N) — серверу нужны биты 8..12
+      для разбора канала; ревизия внесена в Mirax-Lora-protocol-v4.md §6.
+    - **Выходной мост LoRa → прибор** (автор: «нашей структуре в коде тоже
+      надо знать эти параметры»): в `Lora_Control_States_Update` после
+      применения серверной маски ControlLora серверные статусы SOS и
+      EVACUATION зеркалятся в `Config_common.State` — новые биты
+      `ST_COMMON_BIT_SOS` (16) и `ST_COMMON_BIT_EVACUATION` (17): меню/звук/
+      индикация/журнал читают штатные ST_COMMON_BIT_*, не зная про LoRa
+      (симметрично входному мосту Lora_UpdateInputData). Остальные биты
+      ControlLora (группа/зона/аварийный режим/класс C) живут в LoRa как
+      прежде + `Lora_GetControlLora()` для читателей.
+    - **Отдельные потоки BLE и LoRa** (автор: «надо их от measure_task_function
+      убрать оба»; VECTOR_TASKS_MEASURE_DELAY_MS=50 мс велик для AT-цикла
+      «запрос-ответ», запросов много и они последовательные): созданы
+      "BLE Task" (prio 11, стек 2048, ритм 5 мс: Ble_Run + Ble_Receive) и
+      "LoRa Task" (prio 12, стек 2048, ритм 10 мс: Lora_Run + Lora_Receive —
+      ЕДИНСТВЕННЫЙ читатель UART-кольца LoRa, правило SPSC сохранено). Из
+      measure убраны Ble_Run/Lora_Run, из receiver — Ble_Receive/
+      Lora_Receive (receiver остался с COM/LTE/GPS). Приоритеты: audio=10 >
+      BLE=11 > receiver=LoRa=12 > measure=13; оба новых потока ждут
+      `device_turn != DEVICE_TURNED_OFF_PRE_INIT` (п.60). Слот LoRa-потока в
+      будущем займёт модем 3G/IoT (автор) — структура «Run + Receive + свой
+      ритм» для этого сохранена. Ручки: VECTOR_TASKS_BLE_*/VECTOR_TASKS_LORA_*
+      (vector_config.h).
+    - **Защита общих данных** (автор: «не надо ли ограничить перезапись —
+      конфигуратор, BLE, LoRa по разным потокам»):
+      (1) `Sys_Cfg_Lock()/Sys_Cfg_Unlock()` — мьютекс "cfg" (создан в
+      vector_tasks_init до потоков): RMW-секции Sns_Cfg_struct (downlink
+      LoRa: периоды/GPSFix/время/State-зеркало; сброс к заводским: копирование
+      структуры + биты) выполняются под ним; будущий конфигуратор COM/BLE и
+      меню обязаны брать его же. Одиночные чтения выровненных u16/u32 на
+      Cortex-M33 атомарны — читатели не блокируются (правило задокументировано
+      в Vector_main.h). Порядок замков: cfg → ext (flash) — обратного нет.
+      (2) `Connected_device`/`Ble_telemetry`: писатель (BLE-поток,
+      Ble_Apply*) и читатель (LoRa-поток, мост) обмениваются ЦЕЛЫМИ снимками
+      под TX_DISABLE (копия ~300 Б ≈ единицы мкс на 160 МГц, раз в секунду —
+      незаметно); частичное обновление исключено. (3) Очередь журнала — свои
+      критические секции (п.58).
+    - **Таблица MAC-адресов** (конфигуратор): задел — формат из строки
+      «Протоколы и журнал» (MAC+DevType+Param+ShortID, 10 Б × 32 в CONFIG,
+      MACSET/MSDGETALL в BLE-доке §4); появится вместе с конфигуратором,
+      в этой правке не реализовывалась.
+    - **Попутно в v17**: восстановлен порядок байт маркера «нет фикса»
+      (00 80 = LE 0x8000) в контейнерном и газовом EventLog — при пуше
+      c61c30a фикс из v15 потерялся (комментарий остался, байты вернулись к
+      0x80,0x00).
+    - Не проверялось на железе: сборка CONFIG_LORA=1 / CONFIG_BLE=1 (первый
+      шаг автора — компиляция, затем стенды). Хост-тест tools/test_logq —
+      ALL OK (shared_types.h компилируется на хосте вместе с новыми enum/
+      inline).

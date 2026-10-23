@@ -1,19 +1,12 @@
 #include "main.h"
 #include "Vector_main.h"
+#include "tx_api.h"     /* TX_DISABLE: снимки Connected_device/Ble_telemetry в мосту (п.65) */
 #include <stdio.h>      /* sprintf: сборка AT-команд (Lora_TransmitReceive)   */
 #include <stdbool.h>    /* bool/true/false                                    */
 #include <string.h>     /* memcpy                                             */
 #include <math.h>       /* cosf/lround: пересчёт GPS-дельт в метры            */
 
 #if CONFIG_LORA
-
-/* Бит «кислородный канал» в Setting канала (в Avis - DeviceSetting). В
-   VECTOR аналога нет - номер бита УСЛОВНЫЙ; пока Connected_device пуста
-   (BLE не перенесён) ни на что не влияет. TODO(автор): уточнить бит при
-   переносе модуля измерений (PLAN п.53/63).                               */
-#ifndef BIT_SET_OXYGEN_SENSOR
-#define BIT_SET_OXYGEN_SENSOR   (0)
-#endif
 
 /* Каналов AVIS в блоках LoRa - НЕ БОЛЕЕ 8: SensorsEnabled в TYPE_STATIC -
    битовая маска uint8 (v4 §6), BLE-пакет несёт sensors[8]. COUNT_CHAN_LORA
@@ -307,12 +300,16 @@ static lora_internal_state_t lora = {0};
 typedef struct {
     uint8_t  channel;           /* номер канала (информативно)                     */
     uint8_t  valid;             /* 1 = канал действителен (AVIS жив + channel==chan) */
-    uint8_t  setting;           /* Setting канала (в Avis - DeviceSetting), биты    */
+    uint16_t setting;           /* Setting канала - 2 байта по BLE (п.65): биты
+                                   DEVICE_SETTING_CHAN 8..12 (EC/OXYGEN/FID/UART/
+                                   TK) + маски MEASURE_* единиц/дискретности      */
     uint16_t num_formula_gas;   /* номер формулы газа (TYPE_STATIC, GAS-субдевайс)  */
     uint32_t state_err;         /* ошибки/пороги канала (StateErr)                  */
     float    concentration;     /* ConcentrationVal - pass-through: по BLE приходит
-                                   УЖЕ масштабированное значение (автор), никакие
-                                   дискретность/коэффициенты не применяются       */
+                                   УЖЕ масштабированное значение (автор)          */
+    uint16_t discreteness;      /* дискретность 1/10/100/1000 - ВЫЧИСЛЯЕТСЯ из
+                                   Setting (calculating_the_discreteness, BASIC):
+                                   нужна для границ мёртвой зоны O2 (п.65)        */
 } lora_channel_in_t;
 
 typedef struct {
@@ -337,9 +334,22 @@ void Lora_UpdateInputData(void)
     /* Свежесть AVIS: gas_online взводит Ble_vector.c, TTL - как у маяков
        (shared_types.h). До переноса BLE gas_online=0 -> gas_present=0, все
        каналы недействительны -> карта сенсоров пуста и газовые блоки-секции
-       НЕ формируются (правило «нет данных - нет блока», PLAN п.53).        */
-    uint8_t gas_fresh = (uint8_t)((Ble_telemetry.gas_online != 0u) &&
-                        ((GetTick() - Ble_telemetry.gas_ms) <= BLE_TELEMETRY_TTL_MS));
+       НЕ формируются (правило «нет данных - нет блока», PLAN п.53).
+       МНОГОПОТОЧНОСТЬ (п.65): BLE-поток пишет Connected_device/Ble_telemetry
+       под TX_DISABLE - здесь снимаем ЦЕЛЫЕ копии-снимки тоже под TX_DISABLE и
+       работаем только с копиями (снимок не может «поплыть» посреди разбора).*/
+    SNS_Dev_Type   dev_snap;
+    BLE_TELEMETRY  tel_snap;
+    TX_INTERRUPT_SAVE_AREA;
+    uint8_t gas_fresh;
+
+    TX_DISABLE;
+    dev_snap = Connected_device;
+    tel_snap = Ble_telemetry;
+    TX_RESTORE;
+
+    gas_fresh = (uint8_t)((tel_snap.gas_online != 0u) &&
+                ((GetTick() - tel_snap.gas_ms) <= BLE_TELEMETRY_TTL_MS));
 
     lora_in.unix_time = (uint32_t)(Sns_Cfg_struct.Working_data.working_hours_offset
                                  + Sns_Cfg_struct.Working_data.working_hours);
@@ -352,13 +362,14 @@ void Lora_UpdateInputData(void)
                       | (uint32_t)Sns_Cfg_struct.Config_common.SerialLo;
     lora_in.hw_ver    = (uint8_t)Sns_Cfg_struct.Config_common.HardwareVersion;
     lora_in.gas_present    = gas_fresh;
-    lora_in.gas_dev_charge = (uint8_t)((Connected_device.battery_charge_percent > 100u)
-                                       ? 100u : Connected_device.battery_charge_percent);
-    lora_in.gas_serial     = Ble_telemetry.gas_serial;
+    lora_in.gas_dev_charge = (uint8_t)((dev_snap.battery_charge_percent > 100u)
+                                       ? 100u : dev_snap.battery_charge_percent);
+    lora_in.gas_serial     = tel_snap.gas_serial;
     lora_in.gas_chan_count = 0u;
 
     for (uint8_t chan = 0; chan < COUNT_CHAN_LORA; chan++) {
-        const SNS_DevChan_Type *src = &Connected_device.Sensor[chan];
+        const SNS_DevChan_Type *src = &dev_snap.Sensor[chan];
+        uint16_t disc;
 
         lora_in.chan[chan].channel         = src->channel;
         /* канал действителен: AVIS жив (TTL) + BLE прислал этот индекс
@@ -374,6 +385,13 @@ void Lora_UpdateInputData(void)
         lora_in.chan[chan].num_formula_gas = src->num_formula_gas;
         lora_in.chan[chan].state_err       = src->StateErr;
         lora_in.chan[chan].concentration   = src->ConcentrationVal;
+        /* Дискретность - из BASIC-битов Setting (авторская
+           calculating_the_discreteness, п.65): концентрация по BLE уже
+           масштабирована (pass-through), дискретность нужна ТОЛЬКО для
+           границ мёртвой зоны O2 в тех же единицах. 0 (степень вне
+           диапазона) -> 1, чтобы границы не схлопывались в ноль.          */
+        disc = calculating_the_discreteness(src->Setting, (uint16_t)MEASURE_SEL_BASIC);
+        lora_in.chan[chan].discreteness    = (disc != 0u) ? disc : 1u;
     }
 
     /* ---- СИЗ (PPE) и маяки: готовность данных ----
@@ -385,37 +403,37 @@ void Lora_UpdateInputData(void)
        данные есть И свежие (TTL 5 мин, как у газа); устарели/пусто ->
        очистка -> блоки PPE/BLEBeacons в uplink НЕ формируются
        («нет данных - нет блока», v4 §4.6-4.7).                            */
-    if ((Ble_telemetry.beacon_count != 0u) &&
-        ((GetTick() - Ble_telemetry.beacon_ms) <= BLE_TELEMETRY_TTL_MS)) {
-        uint8_t bn = Ble_telemetry.beacon_count;
+    if ((tel_snap.beacon_count != 0u) &&
+        ((GetTick() - tel_snap.beacon_ms) <= BLE_TELEMETRY_TTL_MS)) {
+        uint8_t bn = tel_snap.beacon_count;
 
         if (bn > LORA_MAX_BLE_BEACONS) { bn = LORA_MAX_BLE_BEACONS; }
         Lora_ClearBleBeacons();
         for (uint8_t i = 0; i < bn; i++) {
-            (void)Lora_AddBleBeacon(Ble_telemetry.beacons[i].ShortID,
-                                    Ble_telemetry.beacons[i].Rssi,
-                                    Ble_telemetry.beacons[i].Battery);
+            (void)Lora_AddBleBeacon(tel_snap.beacons[i].ShortID,
+                                    tel_snap.beacons[i].Rssi,
+                                    tel_snap.beacons[i].Battery);
         }
     }
     else {
         Lora_ClearBleBeacons();
     }
 
-    if ((Ble_telemetry.ppe_count != 0u) &&
-        ((GetTick() - Ble_telemetry.ppe_ms) <= BLE_TELEMETRY_TTL_MS)) {
+    if ((tel_snap.ppe_count != 0u) &&
+        ((GetTick() - tel_snap.ppe_ms) <= BLE_TELEMETRY_TTL_MS)) {
         uint8_t mask     = 0;
         uint8_t presence = 0;
         uint8_t charges[LORA_MAX_PPE];
 
         for (uint8_t i = 0; i < LORA_MAX_PPE; i++) {
-            if (i < Ble_telemetry.ppe_count) {
+            if (i < tel_snap.ppe_count) {
                 mask |= (uint8_t)(1u << i);
-                Lora_SetPPEDescriptor(i, Ble_telemetry.ppe[i].PpeType,
-                                      Ble_telemetry.ppe[i].Serial);
-                if (Ble_telemetry.ppe[i].Present != 0u) {
+                Lora_SetPPEDescriptor(i, tel_snap.ppe[i].PpeType,
+                                      tel_snap.ppe[i].Serial);
+                if (tel_snap.ppe[i].Present != 0u) {
                     presence |= (uint8_t)(1u << i);
                 }
-                charges[i] = Ble_telemetry.ppe[i].Charge;
+                charges[i] = tel_snap.ppe[i].Charge;
             }
             else {
                 charges[i] = PPE_CHARGE_OK;
@@ -1100,12 +1118,11 @@ uint8_t test_state_alarm_flag_lora(SNS_CFG *Cfg_struct)
 
         if (current_state == 0) {
             if (TESTBIT(lora_in.chan[chan].setting, BIT_SET_OXYGEN_SENSOR)) {
-                /* Мёртвая зона атмосферного кислорода в единицах концентрации
-                   AVIS (pass-through). С уходом Discreteness границы условны
-                   ((int16)20.85=20, (int16)20.95=20) - TODO(автор): уточнить
-                   единицы/границы при подключении газоанализатора по BLE.  */
-                int16_t low  = (int16_t)20.85f;
-                int16_t high = (int16_t)20.95f;
+                /* Мёртвая зона атмосферного кислорода, как в Avis: 20.85..
+                   20.95 %O2 в единицах отправителя = %O2 × дискретность
+                   (вычислена из BASIC-битов Setting, п.65).                */
+                int16_t low  = (int16_t)(20.85f * (float)lora_in.chan[chan].discreteness);
+                int16_t high = (int16_t)(20.95f * (float)lora_in.chan[chan].discreteness);
                 current_in_dead_zone = (current_conc >= low && current_conc <= high);
             } else {
                 current_in_dead_zone = (current_conc == 0);
@@ -1408,6 +1425,26 @@ static void Lora_Control_States_Update(str_lora_data_get_t *rx_data, uint32_t po
         lora.ControlLora =
             (lora.ControlLora & (uint16_t)~allowed_mask) |
             (rx_data->ControlLoraValue & allowed_mask);
+
+        /* ВЫХОДНОЙ МОСТ (автор, п.65): серверные статусы комплекта зеркалим в
+           Config_common.State - меню/звук/индикация/журнал читают штатные
+           ST_COMMON_BIT_*, не зная про внутренности LoRa (симметрично
+           входному мосту Lora_UpdateInputData). RMW State из нескольких
+           потоков - под блокировкой конфига (Sys_Cfg_Lock).               */
+        Sys_Cfg_Lock();
+        if (TESTBIT(lora.ControlLora, ST_LORA_BIT_SOS)) {
+            SET_STATUS_COMMON_BIT(ST_COMMON_BIT_SOS);
+        }
+        else {
+            CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_SOS);
+        }
+        if (TESTBIT(lora.ControlLora, ST_LORA_BIT_EVACUATION)) {
+            SET_STATUS_COMMON_BIT(ST_COMMON_BIT_EVACUATION);
+        }
+        else {
+            CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_EVACUATION);
+        }
+        Sys_Cfg_Unlock();
     }
 
     // Mode / ControlLora2
@@ -1415,6 +1452,10 @@ static void Lora_Control_States_Update(str_lora_data_get_t *rx_data, uint32_t po
         lora.ControlLora2 = (lora.ControlLora2 & ~rx_data->ControlLora2Mask) |
                             (rx_data->ControlLora2Value & rx_data->ControlLora2Mask);
     }
+
+    /* Записи конфига - под блокировкой (конфигуратор/BLE/меню пишут те же
+       поля из своих потоков, п.65).                                        */
+    Sys_Cfg_Lock();
 
     // PeriodNormal
     if ((rx_data->FieldMask & FIELD_MASK_DL_PERIOD_NORM) && (rx_data->NewPeriodNorm != 0)) {
@@ -1433,6 +1474,8 @@ static void Lora_Control_States_Update(str_lora_data_get_t *rx_data, uint32_t po
         Lora_Cfg_UpdateGPSFixInterval(rx_data->GpsFixInterval);
     }
 
+    Sys_Cfg_Unlock();
+
     // ConfigSeq
     if (rx_data->FieldMask & FIELD_MASK_DL_CONFIG_SEQ) {
         lora.applied_rev = rx_data->ConfigSeq;
@@ -1446,8 +1489,10 @@ static void Lora_Control_States_Update(str_lora_data_get_t *rx_data, uint32_t po
            Offset ВЫЧИТАЕМ: в протоколе/журнале время = offset + working_hours.
            Календарь RTC подхватит wh штатная секундная сверка
            (Vector_Options_System) - приёмник device_turn-гейта (PLAN п.59). */
+        Sys_Cfg_Lock();
         Sns_Cfg_struct.Working_data.working_hours =
             rx_data->UnixTime - Sns_Cfg_struct.Working_data.working_hours_offset;
+        Sys_Cfg_Unlock();
         lora_time_valid = 1;
     }
 
@@ -1819,11 +1864,11 @@ static void Lora_CompleteDataSet(str_lora_data_set_t *data_set)
                 else {
                     /* Маркер «нет фикса»: int16 0x8000, LE = 00 80 (§4.8).
                        Прежде 0x80,0x00 (= 0x0080) - неверный порядок.    */
-                    buf[offset++] = 0x80;
                     buf[offset++] = 0x00;
+                    buf[offset++] = 0x80;
 
-                    buf[offset++] = 0x80;
                     buf[offset++] = 0x00;
+                    buf[offset++] = 0x80;
                 }
 
                 buf[offset++] = rec->EventType;
@@ -2079,11 +2124,13 @@ static void Lora_CompleteDataSet(str_lora_data_set_t *data_set)
                         buf[offset++] = (uint8_t)((dy >> 8) & 0x00FF);
                     }
                     else {
-                        buf[offset++] = 0x80;
+                        /* Маркер «нет фикса»: int16 0x8000, LE = 00 80 (§5.3;
+                           прежде 0x80,0x00 = 0x0080 - неверный порядок).  */
                         buf[offset++] = 0x00;
+                        buf[offset++] = 0x80;
 
-                        buf[offset++] = 0x80;
                         buf[offset++] = 0x00;
+                        buf[offset++] = 0x80;
                     }
 
                     buf[offset++] = rec->channel_count;
@@ -2218,7 +2265,7 @@ static void Lora_CompleteDataSet_1(void)
 
     // Gas subdevice
     if ((active_channels > 0) && ((offset + 5) <= sizeof(lora_static_payload))) {
-        uint8_t cfg_len = 1 + (3 * active_channels);
+        uint8_t cfg_len = (uint8_t)(1 + (4 * active_channels));  /* mask + {GasID u16, Setting u16}×N (п.65) */
 
         if ((offset + 5 + cfg_len) <= sizeof(lora_static_payload)) {
             buf[offset++] = SUB_ID_GAS_DEFAULT;
@@ -2241,11 +2288,15 @@ static void Lora_CompleteDataSet_1(void)
             for (uint8_t chan = 0; chan < COUNT_CHAN_LORA; chan++) {
                 if (lora_in.chan[chan].valid) {
                     uint16_t gas_id = lora_in.chan[chan].num_formula_gas;
+                    uint16_t setting = lora_in.chan[chan].setting;
 
                     buf[offset++] = (uint8_t)(gas_id & 0x00FF);
                     buf[offset++] = (uint8_t)((gas_id >> 8) & 0x00FF);
 
-                    buf[offset++] = lora_in.chan[chan].setting;
+                    /* Setting - 2 байта LE: биты DEVICE_SETTING_CHAN (8..12)
+                       и MEASURE_* нужны серверу для разбора канала (§6, п.65) */
+                    buf[offset++] = (uint8_t)(setting & 0x00FF);
+                    buf[offset++] = (uint8_t)((setting >> 8) & 0x00FF);
                 }
             }
 

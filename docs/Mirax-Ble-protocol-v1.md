@@ -272,29 +272,36 @@ typedef struct {
 Прибор AVIS вещает пакет `str_ble_data_set_t` (в свой модуль записывается
 командой `ADVMSDDATASET`):
 
+**РЕВИЗИЯ (решение автора, 23.10, PLAN п.65):** `Setting_channel` — **2 байта**:
+в них живут биты `DEVICE_SETTING_CHAN` (8..12: EC/OXYGEN/FID/UART/TK) и маски
+`MEASURE_*` (единицы/дискретность BASIC+DISP) — в u8 биты 8..12 не помещались.
+Раскладка канала — как в реализации (Ble_vector.h): позиция записи = номер
+канала (состав задаёт маска `active_sensors`), отдельного байта `SensorIndex`
+нет (задел ниже сохранён как целевой). Текущая версия пакета
+`data_struct_ver = 3`; **ver 2 (legacy: 5 байт/канал, Setting u8) принимается**
+трекером и конвертируется в ver 3 (биты 8..12 у старых приборов отсутствуют).
+
 ```c
-typedef struct {                 // канал, 6 байт
-    uint8_t SensorIndex;        // номер канала (0..7)
+typedef struct {                 // канал, 6 байт (ver 3; ver 2 — 5 байт, Setting u8)
     uint8_t Type_gas;           // код газа/канала (num_formula_gas)
     uint16_t Concentration;      // концентрация LE (единицы отправителя);
                                  // на проводе 2 байта, little-endian
     uint8_t State_channel;      // состояние канала отправителя (StateErr & 0x7F)
-    uint8_t Setting_channel;    // установки канала (единицы/дискретность)
+    uint16_t Setting_channel;   // установки канала LE: DEVICE_SETTING_CHAN (биты 8..12) + MEASURE_*
 } __attribute__((packed)) ble_sensor_data_t;
 
 typedef struct {                 // пакет AVIS
-    uint8_t data_struct_ver;     // = 2 — поле формата AVIS (НЕ идентификатор
-                                 // протокола — типа в payload у нас нет)
+    uint8_t data_struct_ver;     // = 3 (ver 2 — legacy 5 байт/канал, принимается)
     uint8_t dev_id;              // НОМЕР МОДЕЛИ прибора (тип прибора),
                                  // НЕ серийный номер
     uint8_t dev_hw_ver;          // версия железа
     uint8_t dev_fw_ver;          // версия прошивки
     uint8_t charge;              // заряд батареи отправителя, %
     uint8_t active_sensors;      // битовая маска включённых каналов (бит0 = канал0)
-    ble_sensor_data_t sensors[8];// максимум 8 каналов
+    ble_sensor_data_t sensors[7];// COUNT_CHAN_BLE = 7 (реализация; целевые 8 — задел)
 } __attribute__((packed)) str_ble_data_set_t;
                                  // шапка 6 байт; передаётся
-                                 // 6 + 6×popcount(active_sensors), макс. 54
+                                 // 6 + 6×popcount(active_sensors), макс. 48 (ver 3)
 ```
 
 Передаются записи только включённых каналов (`active_sensors`), каждая запись
@@ -952,13 +959,15 @@ GATT-notify (0xFFE2):     01 06 00 10 00 02 09 CE        — мастеру
     **`+MBUS:<len>`** (модуль → MCU, spontaneous, очередь ≥ 8) → ответ MCU
     **`AT+MBUSRSP=<len>`** + prompt `>` + raw → notify мастеру. MCU —
     Modbus-слейв; применение таблицы — по регистру «commit».
-12. **Пакет AVIS — `str_ble_data_set_t`**: `active_sensors` (u8, маска) +
-    `sensors[8]`, запись канала 6 байт с **`SensorIndex`** (порядок записей в
-    пакете не значим), максимум 54 байта; `Concentration` — `uint16_t`
-    (2 байта LE на проводе). **`dev_id` — номер модели (тип прибора), НЕ
-    серийный номер**; серийник пакет не несёт (открытый вопрос, п. 11).
-    Совместимость со старым форматом действующей прошивки AVIS (5 байт на
-    канал × 7, без `SensorIndex`) — через версию `data_struct_ver` (п. 11).
+12. **Пакет AVIS — `str_ble_data_set_t`**: `active_sensors` (маска) +
+    `sensors[7]`, запись канала 6 байт (ver 3: `Setting_channel` u16 —
+    биты DEVICE_SETTING_CHAN + MEASURE_*; позиция записи = номер канала),
+    максимум 48 байт; `Concentration` — `uint16_t` (2 байта LE на проводе).
+    **`dev_id` — номер модели (тип прибора), НЕ серийный номер**; серийник
+    legacy-пакет не несёт (несёт SUBDEV, п. 3.4a). Совместимость со старым
+    форматом действующей прошивки AVIS (ver 2: 5 байт на канал, Setting u8) —
+    трекер принимает ОБЕ версии, ver 2 конвертируется в ver 3 (решение автора,
+    PLAN п.65). Целевой задел: `SensorIndex` в записи + `sensors[8]`.
 13. **Все устройства connectable** (сервис/конфигурация — запись ShortID в маяк
     и т.п.), но телеметрия — только реклама; модуль трекера в рабочем режиме не
     подключается ни к кому, кроме конфигуратора (и только он — к трекеру).
@@ -1014,11 +1023,10 @@ GATT-notify (0xFFE2):     01 06 00 10 00 02 09 CE        — мастеру
   (`SCANPARAM`), счётчик потерянных кадров очереди моста.
 - **CompanyID manufacturer data** — предварительно `0xFFFF` (внутренний);
   нужен ли зарегистрированный Bluetooth SIG идентификатор компании.
-- **Формат пакета AVIS и парк приборов**: введён `SensorIndex`/`sensors[8]`/
-  `active_sensors` (6 байт на канал, макс. 54); действующая прошивка AVIS
-  вещает 5 байт на канал × 7 (макс. 41) при том же `data_struct_ver = 2` —
-  перепрошиваем парк под новый формат, либо повышаем `data_struct_ver` (= 3)
-  и принимаем обе раскладки (различаются по версии).
+- **Формат пакета AVIS и парк приборов** — РЕШЕНО (автор, PLAN п.65):
+  `data_struct_ver = 3`, запись канала 6 байт (`Setting_channel` u16),
+  трекер принимает обе раскладки (ver 2 конвертируется). Целевой задел:
+  `SensorIndex` в записи и `sensors[8]` (маска active_sensors — полный u8).
 - **Реклама AVIS > 31 байта** — механизм передачи длинного пакета (до 58 байт
   AD): extended advertising / scan response; какой тип ADV-событий принимать
   сканеру (ADV_IND/ADV_NONCONN_IND/ADV_EXT_IND).

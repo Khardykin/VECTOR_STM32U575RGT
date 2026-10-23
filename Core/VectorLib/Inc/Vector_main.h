@@ -143,6 +143,15 @@ void Avis_Battery_System(void);
 extern uint8_t deveui_com[8];
 
 /* --- такты прибора -------------------------------------------------------- */
+/* Блокировка конфигурации (п.65): RMW-секции Sns_Cfg_struct (биты State,
+   PeriodTimeLora, маски, downlink LoRa, сброс к заводским, будущий
+   конфигуратор COM/BLE, меню) выполнять ПОД этой парой; одиночные чтения
+   выровненных u16/u32 атомарны на Cortex-M33 - читатели блокировку НЕ
+   берут. Реализация/экземпляр - Vector_main.c (мьютекс создан в
+   vector_tasks_init, до потоков; до создания - no-op, как vlog_lock).   */
+void Sys_Cfg_Lock(void);
+void Sys_Cfg_Unlock(void);
+
 void Timer_Tick_1ms(void);
 void Timer_Tick_1s(void);
 void Clear_Timer_Rtc(void);           /* сбросить все секундные таймеры      */

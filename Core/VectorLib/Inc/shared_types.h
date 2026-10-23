@@ -144,6 +144,8 @@ enum ST_COMMON
   ST_COMMON_BIT_TURN_ON_GPS,                           // бит 13 - Включение GPS
   ST_COMMON_BIT_TURN_ON_GSM,                                                    // бит 14 - Включение GSM
   ST_COMMON_BIT_TURN_ON_LORA,                                                   // бит 15 - Включение LORA
+  ST_COMMON_BIT_SOS,                                                            // бит 16 - SOS (зеркало ST_LORA_BIT_SOS из ControlLora - «выходной мост» LoRa, п.65)
+  ST_COMMON_BIT_EVACUATION,                                                     // бит 17 - Эвакуация (зеркало ST_LORA_BIT_EVACUATION)
   ST_COMMON_BIT_TURN_OFF = 31,                                                  // бит 31 - Прибор выключен(Не ведутся логи в режиме выключения)+
 };
 
@@ -218,10 +220,44 @@ extern volatile DOWN_TIMER_RTC 		countdown_time_rtc;	 /* секундные (RTC
    Sensor[COUNT_CHAN] + общие статусы/батарея/версии. Понадобятся модулям
    измерения и слою индикации TFT_indicator.c (PLAN.md п.29, этапы 3-4);
    до тех пор в SNS_CFG и во flash не участвуют.                            */
+// Биты Setting канала (авторские, из Avis DeviceSetting). Setting_channel по
+// BLE - 2 БАЙТА (решение автора, п.65): биты 8..12 в u8 не помещались,
+// SNS_DevChan_Type.Setting расширен до uint16.
+enum DEVICE_SETTING_CHAN
+{
+	BIT_SET_EC_SENSOR     = 8,
+	BIT_SET_OXYGEN_SENSOR = 9,
+	BIT_SET_FID_SENSOR    = 10,
+	BIT_SET_UART_SENSOR   = 11,
+	BIT_SET_TK_SENSOR     = 12,
+};
+
+//--------------------------------------------------------------------------------------------------------------
+// Единицы измерения и дискретизация канала (авторские маски из Avis): в
+// Setting ДВЕ пары полей - «основная» (BASIC: единицы биты 2-3, дискретность
+// биты 6-7) и «дисплейная» (DISP: единицы биты 0-1, дискретность биты 4-5).
+#define MEASURE_CONC_PPM        (0)                     // Измерения в ppm
+#define MEASURE_CONC_MG_M3      (1)                     // Измерения в мг/м3
+#define MEASURE_CONC_NKPR       (2)                     // Измерения в НКПР
+#define MEASURE_CONC_OB_D       (3)                     // Измерения в об/д
+//--------------------------------------------------------------------------------------------------------------
+#define MEASURE_MASK            (0x0003)                // Маска измерений (DISP)
+#define MEASURE_DISK            (0x0030)                // Маска дискретизации (DISP)
+#define OFFSET_DISK             (4)                     // Смещение маски дискретизации
+#define MEASURE_OFFSET_BASIC    (2)                     // Смещение маски основной единицы измерения
+#define MEASURE_MASK_BASIC      (0x000C)                // Маска измерений (BASIC)
+#define MEASURE_DISK_BASIC      (0x00C0)                // Маска дискретизации (BASIC)
+
+// Селектор пары полей для calculating_the_discreteness (в Avis - num1).
+enum {
+	MEASURE_SEL_BASIC = 0,      // основная единица/дискретность (RF/журнал/пороги)
+	MEASURE_SEL_DISP  = 1,      // дисплейная (индикация)
+};
+
 typedef struct//
 {
 	uint8_t           	channel;
-	uint8_t 	        Setting;
+	uint16_t	        Setting;													// DEVICE_SETTING_CHAN + MEASURE_* (2 байта по BLE, решение автора)
 	uint16_t			num_formula_gas;										// Номер формулы газа
 	uint32_t            StateErr;                                               // Ошибки, пороги
 	float               ConcentrationVal;                                       // Концентрация
@@ -238,6 +274,33 @@ typedef struct//
 	uint16_t            FirmwareVersion;
 }SNS_Dev_Type;
 extern SNS_Dev_Type		Connected_device;
+
+//--------------------------------------------------------------------------------------------------------------
+// Функция перевода вывода дискретности по настройкам (авторская, из Avis
+// Avis_Menu_Functionality.c; сигнатура адаптирована: вместо SNS_CFG_Type* -
+// слово Setting канала, вместо num1 - селектор MEASURE_SEL_*). Возврат:
+// 1/10/100/1000; 0 = степень вне диапазона (невалидные биты дискретности).
+// static inline - доступна и прошивке, и хост-тестам.
+static inline uint16_t calculating_the_discreteness(uint16_t device_setting, uint16_t sel)
+{
+	uint16_t degree;
+
+	if (sel == (uint16_t)MEASURE_SEL_BASIC) {
+		degree = (uint16_t)((device_setting & MEASURE_DISK_BASIC) >> (MEASURE_OFFSET_BASIC + OFFSET_DISK));
+	}
+	else if (sel == (uint16_t)MEASURE_SEL_DISP) {
+		degree = (uint16_t)((device_setting & MEASURE_DISK) >> OFFSET_DISK);
+	}
+	else {
+		return 0;
+	}
+
+	if (degree == 0u)  { return 1u; }
+	if (degree == 1u)  { return 10u; }
+	if (degree == 2u)  { return 100u; }
+	if (degree == 3u)  { return 1000u; }
+	return 0u;
+}
 
 //--------------------------------------------------------------------------------------------------------------
 /* ТЕЛЕМЕТРИЯ BLE-ОКРУЖЕНИЯ - хранилище данных, которые BLE-модуль читает
