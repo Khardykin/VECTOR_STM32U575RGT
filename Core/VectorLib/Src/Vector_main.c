@@ -972,6 +972,12 @@ __attribute__((weak)) void Lora_Run(void)
 #if CONFIG_LORA
 	if((device_turn != DEVICE_TURNED_OFF) || (Lora_system_msg_read() == 1))
 	{
+		/* ЕДИНСТВЕННЫЙ мост внешних данных в LoRa-модуль (решение автора,
+		   PLAN п.63): раз в секунду обновить lora_in (время/батарея/периоды/
+		   флаги/серийник/каналы AVIS) ПЕРЕД остальными вызовами модуля -
+		   Init/DataSet/test_state_alarm читают только её.                   */
+		Lora_UpdateInputData();
+
 		/* В Avis здесь была проверка READ_PIN_OUT(WRLS_ON) - общего пина питания
 		   радио на этой плате нет, поэтому её нет.                             */
 		uint16_t time_data_set   = (uint16_t)((Sns_Cfg_struct.Config_common.PeriodTimeLora & 0xFF) * 10);

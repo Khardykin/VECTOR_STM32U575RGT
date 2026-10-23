@@ -1358,3 +1358,132 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     - v13 (поверх 7c74a34): `VECTOR_SND_LOG_TEST=0`, `VLOG_LINE 160→200`,
       п.61 поправлен (SEQ отменён), этот пункт. Хост-тест tools/test_logq
       остаётся в репозитории (регрессия геометрии/очереди/писателя).
+
+63. **LoRa приведён в порядок (решение автора): ЕДИНЫЙ мост «внешний код →
+    модуль» Lora_UpdateInputData() + внутренняя структура lora_in; имена и
+    логика сохранены; заодно закрыты протокольные дефекты v4 (патч v15)**:
+    - **Мост (задача автора)**: новая `lora_input_t lora_in` (время, батарея,
+      периоды norm/alarm, снимок Lora_Config_Flags, серийник, HW-версия,
+      признак AVIS + 10 каналов: channel/valid/setting/num_formula_gas/
+      state_err/concentration). `Lora_UpdateInputData()` — ЕДИНСТВЕННОЕ место
+      модуля, читающее внешние структуры (Sns_Cfg_struct.Working_data/
+      Config_common, sensors_status, Connected_device, Ble_telemetry);
+      вызывается из `Lora_Run()` (поток measure, 1 с) ПЕРЕД Init/
+      test_state_alarm/DataSet — они и билдеры пакетов читают только lora_in.
+      Новые параметры прибора в общие структуры (SNS_CFG/BLE_TELEMETRY/
+      Connected_device) ради LoRa НЕ добавляются (прежнее решение п.53
+      «дополнить SNS_DevChan_Type полями Discreteness/DeviceSetting»
+      ОТМЕНЕНО: DeviceSetting→Setting, дискретность не переносится вовсе).
+      Граница доменов: КОНФИГУРАЦИЯ (Lora_Init/ApplyDefaults/RadioCfg/
+      Switch_Region, downlink-записи PeriodTimeLora/флагов/rx2, SAVED-бит,
+      чтение периода сразу после downlink-записи) остаётся на прямом доступе
+      к Sns_Cfg_struct — это настройка модуля, не данные.
+    - **Pass-through концентраций (уточнение автора: «по BLE сразу всё
+      приходит нормально»)**: из формулы `Lora_ScaleConcentration` убраны
+      ДИСКРЕТНОСТЬ и коэффициент `Get_Conversion_factor_rf` (weak-заглушка
+      1.0f; из LoRa не зовётся, extern из модуля убран — заглушка остаётся
+      для TFT_indicator.c): значение AVIS уже масштабировано отправителем,
+      формула = `lround(concentration)`. Мёртвая зона кислорода
+      (20.85–20.95) без дискретности стала условной ((int16)20.85=20) —
+      TODO(автор): уточнить границы/единицы при подключении газоанализатора.
+    - **Готовность данных СИЗ и маяков (вопрос автора: «где заполняем?»)**:
+      сеттеры `Lora_AddBleBeacon`/`Lora_SetPPEEnabledMask`/`SetPPEDescriptor`/
+      `SetPPEState` до v15 НЕ вызывались никем — блоки PPE/BLEBeacons не
+      формировались никогда. Теперь их драйвит ТОТ ЖЕ мост
+      `Lora_UpdateInputData()` (раз в секунду): маяки — `Ble_telemetry.
+      beacons[]` (count ≤ LORA_MAX_BLE_BEACONS=8 из BLE_BEACONS_MAX=16),
+      СИЗ — `Ble_telemetry.ppe[]` (дескрипторы тип/серийник в TYPE_STATIC +
+      presence/заряды в динамику; `SetPPEEnabledMask` ДО `SetPPEState` —
+      presence &= mask). Готовность = данные есть И свежие (`beacon_ms`/
+      `ppe_ms`, TTL 5 мин — как у газа): устарело/пусто → очистка → блока в
+      uplink НЕТ («нет данных — нет блока», v4 §4.6-4.7). До переноса BLE
+      (CONFIG_BLE=0) Ble_telemetry нулевая → блоки отсутствуют.
+    - **MOTION — ОТКРЫТО**: сеттеры `Lora_SetMotionState`/`SetMotionEvent`
+      тоже пока никто не драйвит (контейнер Motion не формируется). Источник
+      есть — sensors_status (LIS3DH Orientation/fall_detected); маппинг
+      Orientation→MOTION_POSTURE_* и политику inactive/activity оставить на
+      решение автора (отдельная правка, когда скажет).
+    - **26 ошибок сборки п.53 закрыты** (CONFIG_LORA=1 компилируема; имена и
+      public-сигнатуры прежние, кроме AddContainerEvent — ниже):
+      `Cfg_struct->Sensor[]` (13 мест) → `lora_in.chan[]` с признаком `valid`
+      (AVIS жив по gas_online+TTL И channel==chan — у нулевой
+      Connected_device канал 0 больше не «валиден» ложно);
+      `Config_common.working_hours` (6) → `lora_in.unix_time`
+      (offset+working_hours — как в журнале/TimeRef);
+      `Config_common.battery_charge_percent` → `lora_in.battery_pct`
+      (sensors_status/MAX17048, кламп 100); `button_block_sound_lora` —
+      реликт Avis удалён (в модуле никто не взводил 1; с переносом звуковой
+      политики — ST_COMMON_BIT_BLOCK_SOUND); `BIT_SET_OXYGEN_SENSOR` —
+      модульный define (номер бита УСЛОВНЫЙ, TODO уточнить при переносе
+      измерений; пока AVIS пуст — ни на что не влияет); `rec->Severity` →
+      `rec->severity` (поле добавлено); `sprintf` → <stdio.h> (+stdbool/
+      string/math).
+    - **Синхронизация времени downlink'ом исправлена**: `FIELD_MASK_DL_TIME`
+      писал `Config_common.working_hours` (поля нет с п.43) — теперь
+      `Working_data.working_hours = UnixTime − working_hours_offset`
+      (протокольное время = offset+wh); календарь RTC подхватывает wh штатная
+      секундная сверка (за гейтом device_turn, п.59-60) — LoRa TimeRef стал
+      рабочим источником точного времени.
+    - **Протокольные дефекты v4 (найдены при ревизии, исправлены)**:
+      (1) контейнер EventLog (§4.8): запись 10 байт (Dt2+Dx2+Dy2+EventType1+
+      **Severity1**+Value2), а резерв места считался на 9 — расхождение
+      грозило переполнением payload на 1 байт/запись (до 16 записей);
+      резерв исправлен на 10, в `container_event_t` (.h) и во внутреннюю
+      `container_event_record_t` добавлено поле Severity,
+      `Lora_AddContainerEvent(event_type, severity, value)` — ЕДИНСТВЕННАЯ
+      изменённая сигнатура (вызывающих кодов нет, имя прежнее);
+      (2) маркер «нет фикса» Dx/Dy в контейнерном EventLog и в газовом
+      EventLog (§4.8/§5.3) писался байтами 0x80,0x00 (= LE 0x0080) вместо
+      0x00,0x80 (= LE 0x8000, «было 0x0080, стало 0x8000» из п.49 сюда не
+      доехало) — исправлено в обоих местах; в GPSHistory маркеры int8
+      (0x80,0x80) корректны, не тронуты.
+    - Логика НЕ тронута: машина флагов/ритмы (TIMER_RTC_LORA_DATA_*,
+      джиттер ±5 с), join/класс/регион/RX2/MAC-парсинг (LinkADR/DutyCycle/
+      RXParamSetup), ControlLora16/ECHO/повторы, история GPS/газовых событий
+      при потере связи, якорь TimeRef, «блок-секция отсутствует, если данные
+      не готовы» — всё как было; статические билдеры (_1/_2/CompleteDataSet)
+      потеряли неиспользуемый параметр Cfg_struct (внутренние, имена прежние),
+      public-сигнатуры Lora_Init/Lora_DataSet/test_state_alarm_flag_lora
+      сохранены (параметр не используется, (void)).
+    - **Не проверялось на железе** (CONFIG_LORA=0, UART4 LoRa vs порт лога —
+      п.25/27): сборка с CONFIG_LORA=1 (первый шаг автора), затем стенд с
+      модулем. Патчи: v15.diff — ЦЕЛИКОМ поверх ef08996 (если v14 не
+      применяли — применять его, прежний v14.diff не использовать);
+      v15-inc.diff — приращение поверх применённого v14.
+
+64. **GAS-секция: каналы «как прислал BLE» + SensorIndex — собственный индекс
+    канала (требование автора; патч v16 поверх v14+v15)**:
+    - Вопрос автора: сколько каналов уходит в динамическом блоке GAS Sensors
+      (v4 §5.2)? Было НЕВЕРНО: Count = число каналов В ТРЕВОГЕ (биты
+      alarm_chan_state — вне мёртвой зоны), тревожные и только они;
+      SensorIndex = «сжатый» порядковый номер из lora_sensor_map — при
+      изменении состава каналов нумерация съезжала, новый канал не вставал
+      «в своё место по порядку».
+    - Стало: Count = `lora_in.gas_chan_count` — ВСЕ активные каналы AVIS,
+      «как BLE прислал» (Ble_vector: Sensor[i].channel=i, отсутствующие
+      0xFF); каждая запись несёт СОБСТВЕННЫЙ абсолютный индекс канала (тот
+      же, что бит SensorsEnabled в TYPE_STATIC и SensorIndex в BLE-пакете) +
+      ТЕКУЩУЮ концентрацию (pass-through) + StateErr (младшие 7 бит).
+      Состав набора больше не зависит от тревожности: пороги едут в StateErr
+      (§5.2), alarm_chan_state по-прежнему драйвит ECHO/repeat и событийные
+      записи EventLog — эта логика не тронута. Триггерные снимки
+      chan_state.trigger_* в Sensors-блоке больше не используются (срез
+      всегда свежий); хранение оставлено (EventLog).
+    - `lora_sensor_map`/`Lora_BuildSensorMap` УДАЛЕНЫ (сжатая нумерация
+      отменена — рассинхрон с сервером).
+    - Секция под-устройства GAS формируется ТОЛЬКО при свежих данных AVIS
+      (`gas_present`, TTL 5 мин): пустая секция «только с батареей» больше не
+      уходит («нет данных — нет блока»). Байт Battery внутри секции — заряд
+      САМОГО газоанализатора (Connected_device.battery_charge_percent из
+      BLE-пакета; §5.2 «заряд газоанализатора») — прежде дублировалась
+      батарея трекера.
+    - Потолок каналов: SensorsEnabled — маска uint8 (≤8 каналов, §6),
+      BLE-пакет несёт sensors[8]; COUNT_CHAN_LORA=10 (наследие Avis) —
+      каналы 8..9 в LoRa не участвуют (valid=0 в мосту, LORA_GAS_CHAN_MAX=8).
+    - TYPE_STATIC: состав как и был — маска SensorsEnabled + на каждый
+      активный канал {GasID u16, Setting u8}, CfgLen=1+3N (✓ §6). Уточнение:
+      sub_descr_t.Serial теперь несёт серийник газоанализатора из BLE
+      (Ble_telemetry.gas_serial; 0=legacy-пакет → фолбэк DEVICE_NUMBER,
+      прежнее поведение).
+    - На железе не проверялось (CONFIG_LORA=0); v16.diff — приращение поверх
+      дерева v14+v15-inc (полная цепочка: ef08996 → v14 → v15-inc → v16).

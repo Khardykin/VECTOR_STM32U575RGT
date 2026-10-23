@@ -366,8 +366,9 @@ typedef struct
     int16_t  Dx;
     int16_t  Dy;
     uint8_t  EventType;
+    uint8_t  Severity;     // 0 = инфо, 1 = предупреждение, 2 = критическое
     int16_t  Value;
-} __attribute__((__packed__)) container_event_t;
+} __attribute__((__packed__)) container_event_t;   // 10 байт (протокол v4 §4.8)
 
 typedef struct
 {
@@ -462,6 +463,20 @@ extern uint8_t appkey[16];
 // 9. PUBLIC API
 //===========================================================================================================================
 
+// ЕДИНСТВЕННЫЙ мост «внешний код -> LoRa» (решение автора, PLAN п.63):
+// копирует время (Working_data), батарею (sensors_status), периоды/флаги/
+// серийник/HW-версию (Config_common) и каналы AVIS (Connected_device +
+// свежесть Ble_telemetry) во ВНУТРЕННЮЮ структуру модуля lora_in, а также
+// драйвит штатные сеттеры СИЗ/маяков (Lora_SetPPE*, Lora_AddBleBeacon) из
+// Ble_telemetry — готовность блоков PPE/BLEBeacons определяется здесь (TTL).
+// Звать
+// РАЗ В СЕКУНДУ из Lora_Run() (поток measure) ПЕРЕД остальными вызовами
+// модуля. Остальной код LoRa внешние структуры не читает (исключение -
+// конфигурационная домена: Init/ApplyDefaults/RadioCfg/Switch_Region и
+// downlink-записи конфига). Новые параметры прибора в общие структуры
+// (SNS_CFG/BLE_TELEMETRY) ради LoRa не добавляются.
+extern void     Lora_UpdateInputData(void);
+
 // Системные сообщения
 extern void     Lora_ack_system_set(void);
 extern void     Lora_turnoff_system_set(void);
@@ -538,8 +553,8 @@ extern void     Lora_ClearPPEState(void);
 extern void     Lora_ClearBleBeacons(void);
 extern uint8_t  Lora_AddBleBeacon(uint16_t short_id, int8_t rssi, uint8_t battery_state);
 
-// Container events
-extern void     Lora_AddContainerEvent(uint8_t event_type, int16_t value);
+// Container events (severity: 0=инфо, 1=предупреждение, 2=критическое - v4 §4.8)
+extern void     Lora_AddContainerEvent(uint8_t event_type, uint8_t severity, int16_t value);
 
 // Pulse (опционально)
 extern void     Lora_SetPulsePresent(uint8_t present);
