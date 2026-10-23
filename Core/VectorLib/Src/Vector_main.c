@@ -509,8 +509,10 @@ static void measure_task_function(ULONG thread_input)
  * друга»): цикл AT «запрос-ответ» с модулем MK01 - запросов много, они
  * последовательные, ждать ответы прерываниями не получается, поэтому свой
  * частый ритм VECTOR_TASKS_BLE_DELAY_MS (5 мс). Ble_Run() держит ритм
- * (INIT/SET/SLEEP-таймеры, ADVMSDDATAGET), Ble_Receive() разбирает ответы
- * (Ble_ParsePacket -> Connected_device/Ble_telemetry под TX_DISABLE).
+ * (INIT/SET/SLEEP-таймеры, ADVMSDDATAGET, мосты п.66: Ble_UpdateInputData ->
+ * ble_in в начале прохода, Ble_Control_States_Update -> Connected_device/
+ * Ble_telemetry под TX_DISABLE и ERR_BLE под Sys_Cfg_Lock в конце),
+ * Ble_Receive() - заглушка (ring TYPE_BLE читает Ble_TransmitReceive).
  * КОНТЕКСТ: поток "BLE Task".
  * ============================================================================ */
 static void ble_task_function(ULONG thread_input)
@@ -1107,12 +1109,17 @@ __attribute__((weak)) void Lora_Run(void)
 			Lora_DeInit(0);
 		}
 
+		/* StateErr пишут несколько потоков (BLE/GPS/measure) - RMW под
+		   блокировкой конфига (п.66); Sys_Cfg_Lock безопасна: до создания
+		   мьютекса/до планировщика - no-op.                                */
+		Sys_Cfg_Lock();
 		if(get_state_err_lora()){
 			SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_ERR_LORA);
 		}
 		else{
 			CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_ERR_LORA);
 		}
+		Sys_Cfg_Unlock();
 	}
 #endif
 }
@@ -1156,13 +1163,16 @@ __attribute__((weak)) void Gps_Run(void)
 			Gps_DeInit(0);
 		}
 
-		/* нет валидных кадров NMEA дольше 20 с - считает сам Gps.c */
+		/* нет валидных кадров NMEA дольше 20 с - считает сам Gps.c;
+		   StateErr RMW из потока receiver - под блокировкой (п.66)   */
+		Sys_Cfg_Lock();
 		if(get_state_err_gps()){
 			SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_ERR_GPS);
 		}
 		else{
 			CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_ERR_GPS);
 		}
+		Sys_Cfg_Unlock();
 	}
 	else{
 		Gps_DeInit(0);
@@ -1255,7 +1265,9 @@ void sensors_read(void)
     if (bme280_measure(&Sns_Cfg_struct) == 0)
     {
       sensors_status.cnt_bme_reads++;
+      Sys_Cfg_Lock();   /* StateErr RMW из потока measure - под блокировкой (п.66) */
       CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_ERR_STS4);
+      Sys_Cfg_Unlock();
     }
   }
 #endif

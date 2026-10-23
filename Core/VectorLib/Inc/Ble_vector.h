@@ -22,19 +22,23 @@
  * (BLE_DATA_SET_MAX_SIZE); по UART ответ приходит hex-ASCII, поэтому буфер
  * приёма модуля 520 байт.
  *
- * Принятые пакеты раскладываются в: Connected_device (SNS_Dev_Type - каналы
- * AVIS, shared_types.h) и Ble_telemetry (маяки/СИЗ/признак AVIS - туда же).
- * Читатель обоих - LoRa v4 (Lora_S7678S.c) и индикация; свежесть данных -
- * по *_ms меткам (BLE_TELEMETRY_TTL_MS).
+ * Принятые пакеты раскладываются в промежуточное хранилище ble_stg
+ * (Ble_vector.c), а оттуда ВЫХОДНЫМ мостом Ble_Control_States_Update() -
+ * в Connected_device (SNS_Dev_Type - каналы AVIS, shared_types.h) и
+ * Ble_telemetry (маяки/СИЗ/признак AVIS); ВХОДНОЙ мост
+ * Ble_UpdateInputData() читает для модуля серийник/биты State/тип сборки
+ * (мосты - п.66, симметрично LoRa п.63). Читатель обоих массивов - LoRa v4
+ * (Lora_S7678S.c) и индикация; свежесть данных - по *_ms меткам
+ * (BLE_TELEMETRY_TTL_MS).
  *
  * Обмен СО СВОИМ модулем - синхронный (Ble_TransmitReceive: 4 попытки,
  * контроль OK/ERROR, как в Avis). Байты USART3 складывает ISR в ring
  * InputBuffer[TYPE_BLE] (Vector_main.c); читает ring ТОЛЬКО Ble_TransmitReceive
- * - публичный Ble_Receive() (вызов из Receiver Task) оставлен пустым, чтобы
+ * - публичный Ble_Receive() (вызов из BLE Task, п.65) оставлен пустым, чтобы
  * не выедать ответы модуля (в Avis Receiver Task BLE тоже не обслуживает).
  *
  * Управление: CONFIG_BLE (config_device.h), USART_BLE (huart3, PC4/PC5,
- * 115200), пин BLE_RESET (PC12). Запуск из Measure Task - Ble_Run()
+ * 115200), пин BLE_RESET (PC12). Запуск из BLE Task (п.65) - Ble_Run()
  * (переопределяет weak-заглушку Vector_main.c), скелет - Avis Ble_Run():
  * INIT-таймер -> Ble_Init(serial); SET-таймер -> Ble_MsdDataGet() (опрос);
  * SLEEP-таймер -> Ble_MsdDataSleep(); ошибка 3 серий подряд ->
@@ -278,11 +282,22 @@ extern uint8_t get_state_err_ble(void);
 extern uint8_t get_state_init_flag_ble(void);
 extern void BLE_InitName(uint32_t serial);
 
-// Публичная заглушка для Receiver Task (ring TYPE_BLE читает только
+// Публичная заглушка для BLE Task (ring TYPE_BLE читает только
 // Ble_TransmitReceive - см. комментарий файла).
 extern void Ble_Receive(void);
-// Периодика из Measure Task (переопределяет weak из Vector_main.c).
+// Периодика из BLE Task (переопределяет weak из Vector_main.c).
 extern void Ble_Run(void);
+
+// --- Мосты с основными структурами (п.66, симметрично LoRa п.63/65) ---------
+// ВХОДНОЙ: единственное чтение основных структур в модуль - серийник
+// (Sns_Cfg_struct), метка сборки (current_build_type), бит TURN_ON_BLE ->
+// ble_in. Вызывается из Ble_Run() каждый проход, ПЕРЕД остальным кодом.
+extern void Ble_UpdateInputData(void);
+// ВЫХОДНОЙ: единственная запись принятых данных в основные массивы -
+// ble_stg -> Connected_device/Ble_telemetry (целыми блоками под TX_DISABLE)
+// и ERR_BLE -> Config_common.StateErr (RMW под Sys_Cfg_Lock). Вызывается
+// из Ble_Run() каждый проход, ПОСЛЕ остального кода.
+extern void Ble_Control_States_Update(void);
 
 #endif /* CONFIG_BLE */
 

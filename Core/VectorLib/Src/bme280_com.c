@@ -166,7 +166,10 @@ int8_t bme280_measure(SNS_CFG *pSnsCfg) /* pSnsCfg не используется
 		if(count_err >= 10){
 			count_err = 0;
 			Vector_Search_Temp_Start(0);
+			Sys_Cfg_Lock();		/* StateErr RMW из нескольких потоков - под
+							   блокировкой конфига (п.66) */
 			SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_ERR_STS4);
+			Sys_Cfg_Unlock();
 		}
 		return 1;
 	}
