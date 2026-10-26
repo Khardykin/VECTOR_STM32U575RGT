@@ -639,10 +639,11 @@ static double_t NmeaToDecimalDegrees(double_t nmea_coord)
  *   - «отсутствие» параметра определяется ПУСТЫМ полем (следующие друг за
  *     другом ','), а не нулевым значением координаты (прежняя проверка
  *     «координата != 0» путала «нет фикса» и «координата ровно 0»);
- *   - координаты В СИСТЕМУ (gps_nav.lat_scaled/lon_scaled + трек LoRa)
- *     публикуются раз в ~GPS_COORD_PUBLISH_MS (10 с, допуск на биение с
- *     10-секундным периодом кадров Allystar) - программный гейт вместо
- *     прежнего счётчика кадров; сами GGA/GSV обрабатываются КАЖДЫЙ кадр;
+ *   - данные В СИСТЕМУ (gps_nav.lat_scaled/lon_scaled + трек LoRa) уходят
+ *     раз в ~GPS_COORD_PUBLISH_MS (10 с, допуск на биение с 10-секундным
+ *     периодом кадров Allystar) ОДНИМ ритмом и с фиксом, и без него: при
+ *     потере - обнулённые координаты и navigation=0 (валидность несёт флаг,
+ *     а не проверка «координаты != 0»); сами GGA/GSV - КАЖДЫЙ кадр;
  *   - нет фикса: gps_nav.latitude/longitude/lat_scaled/lon_scaled строго 0,
  *     gps_nav.signal_db_hz строго 0;
  *   - кадр ПРИЁМНОГО БУФЕРА - не обязательно одна секунда: при задержке
@@ -671,7 +672,7 @@ static double_t NmeaToDecimalDegrees(double_t nmea_coord)
 static uint8_t  s_snr[GPS_SNR_MAX];      /* уровни C/No текущей секунды       */
 static uint8_t  s_snr_cnt = 0;
 static uint32_t s_coord_pub_tick = 0;    /* тик последней публикации координат */
-static uint8_t  s_coord_pub_once = 0;    /* 1 = публикация уже была (первый фикс - сразу) */
+static uint8_t  s_coord_pub_once = 0;    /* 1 = первая публикация уже была (первый кадр после старта проходит гейт сразу) */
 
 /* ТЕНЬ последней секунды кадра (требование автора): цикл Gps_Receive только
    ПАРСИТ предложения сюда, каждая следующая GGA перезаписывает предыдущую
@@ -855,8 +856,9 @@ static void Gps_ParseGll(const char *s)
 /* Коммит тени ПОСЛЕДНЕЙ секунды кадра в глобальные переменные - строго один
    раз на кадр (зовётся на выходе Gps_Receive). ИНВАРИАНТ потери фикса (п.4
    требования автора): nav == 0 -> gps_nav.navigation = 0, latitude/longitude/
-   lat_scaled/lon_scaled/signal_db_hz - СТРОГО 0, 10-секундный счётчик
-   публикации сброшен (после возврата фикса координаты уйдут сразу).
+   lat_scaled/lon_scaled/signal_db_hz - СТРОГО 0. Гейт публикации НЕ
+   сбрасывается: данные уходят в LoRa строго раз в ~10 с независимо от фикса
+   (валидность несёт флаг navigation - решение автора).
    КОНТЕКСТ: receiver_task.                                                   */
 static void Gps_CommitSecond(void)
 {
@@ -877,7 +879,6 @@ static void Gps_CommitSecond(void)
 		gps_nav.lat_scaled   = 0;
 		gps_nav.lon_scaled   = 0;
 		gps_nav.signal_db_hz = 0.0f;  /* подтвердится и в Gps_UpdateSignal    */
-		s_coord_pub_once = 0u;        /* сброс 10-с счётчика                  */
 		return;
 	}
 
@@ -946,37 +947,36 @@ static void Gps_UpdateSignal(void)
 	gps_nav.signal_db_hz = (float)((sum * 10u + (uint32_t)(k / 2u)) / (uint32_t)k) / 10.0f;
 }
 
-/* Публикация координат В СИСТЕМУ - раз в ~10 с (GPS_COORD_PUBLISH_MS минус
-   допуск TOL: при 10-секундных кадрах Allystar точный порог «бился» бы с
-   периодом). Нет фикса - координаты уже обнулены в Gps_CommitSecond, LoRa
-   каждый цикл получает (0, 0, flag=0) «данные невалидны», трек нулями НЕ
-   кормится (gps_last_valid_* у LoRa хранит последнюю ВАЛИДНУЮ точку), гейт
-   сбрасывается - первый же фикс опубликуется сразу.
-   КОНТЕКСТ: receiver_task (каждый кадр, решение - по тику).                 */
+/* Публикация навигационных данных В СИСТЕМУ - каждые GPS_COORD_PUBLISH_MS
+   (~10 с минус допуск TOL: при 10-секундных кадрах Allystar точный порог
+   «бился» бы с периодом). Ритм ОБЩИЙ для обоих состояний (решение автора):
+   Lora_UpdateGPSTrack получает данные раз в ~10 с ВСЕГДА - при фиксе
+   (lat_scaled, lon_scaled, navigation=1), без фикса (0, 0, 0): обнулённые
+   координаты и тот же флаг. При потере НЕ возвращаемся раньше времени и НЕ
+   сбрасываем гейт - данные идут строго ритмично, валидность несёт флаг.
+   На стороне LoRa вызовы с flag=0 трек и счётчик fix_interval не трогают
+   (ранний выход в Lora_UpdateGPSTrack), gps_last_valid_* хранит последнюю
+   ВАЛИДНУЮ точку. КОНТЕКСТ: receiver_task (каждый кадр, решение - по тику). */
 static void Gps_Publish_Coords(void)
 {
 	if (gps_nav.navigation == 0u) {
-#if CONFIG_LORA
-		/* Нет фикса (решение автора): КАЖДЫЙ цикл - раз в секунду у LOCOSYS,
-		   раз в 10 с у Allystar - сообщаем LoRa, что данные НЕВАЛИДНЫ:
-		   координаты 0 и flag_navigation=0. Не «краем» один раз за пропажу:
-		   периодическое уведомление сходится к истине, даже если отдельный
-		   вызов пропал (LoRa ещё не под START, перезапуск модема). Трек и
-		   счётчик fix_interval на стороне LoRa такие вызовы НЕ трогают
-		   (ранний выход при flag=0), gps_last_valid_* хранит последнюю
-		   ВАЛИДНУЮ точку.                                                  */
-		Lora_UpdateGPSTrack(0, 0, 0);
-#endif
-		s_coord_pub_once = 0u;      /* первый фикс после потери - сразу */
-		return;
+		/* Нет фикса: данные НЕВАЛИДНЫ - координаты строго обнуляем
+		   (подтверждаем инвариант Gps_CommitSecond) и ИЗ ФУНКЦИИ НЕ
+		   ВЫХОДИМ: нули с флагом 0 уйдут в LoRa/журнал тем же общим
+		   10-секундным ритмом.                                          */
+		gps_nav.latitude  = 0;
+		gps_nav.longitude = 0;
 	}
+
+	/* Гейт ~10 с. s_coord_pub_once - «первая публикация уже была»: самый
+	   первый кадр после старта проходит сразу (иначе пришлось бы ждать,
+	   пока GetTick() перевалит за порог), далее - строго по ритму.       */
 	if ((s_coord_pub_once != 0u) &&
 		((GetTick() - s_coord_pub_tick) < (GPS_COORD_PUBLISH_MS - GPS_COORD_PUBLISH_TOL_MS))) {
 		return;                     /* ~10 с ещё не прошло (допуск - см. TOL) */
 	}
 	s_coord_pub_tick = GetTick();
 	s_coord_pub_once = 1u;
-
 
 	gps_nav.lat_scaled = (int32_t)(NmeaToDecimalDegrees(gps_nav.latitude)  * 10000000.0);
 	gps_nav.lon_scaled = (int32_t)(NmeaToDecimalDegrees(gps_nav.longitude) * 10000000.0);
@@ -992,14 +992,13 @@ static void Gps_Publish_Coords(void)
 	}
 #endif
 #if CONFIG_LORA
-	/* Точка трека - раз в ~10 с (внутри Lora_UpdateGPSTrack свой дополнительный
-	   делитель LORA_CFG_GET_GPSFIX). Флаг навигации передаём ПЕРЕМЕННОЙ
-	   (правка автора 54167dd), а не литералом: здесь он гарантированно 1 -
-	   ветка потери вышла раньше, но так честнее.                          */
+	/* Данные в LoRa раз в ~10 с: координаты + флаг навигации (при потере -
+	   0,0,0 «данные невалидны»; внутри Lora_UpdateGPSTrack свой счётчик
+	   fix_interval для истории трека - вызовы с flag=0 его не трогают).
+	   Флаг передаём ПЕРЕМЕННОЙ (правка автора 54167dd).                 */
 	Lora_UpdateGPSTrack(gps_nav.lat_scaled, gps_nav.lon_scaled, gps_nav.navigation);
 #endif
 }
-
 void Gps_Receive(void)
 {
     /* СНИМОК кадра: +1 байт под гарантированный концевой '\0'. static -

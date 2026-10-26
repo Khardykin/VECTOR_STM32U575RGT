@@ -564,13 +564,12 @@ extern void     Lora_SetPulseSerial(uint16_t serial);
 extern void     Lora_SetPulseData(uint8_t battery_percent, uint8_t heart_rate, uint8_t spo2_percent);
 
 #if CONFIG_GPS
-/* Точка GPS-трека + состояние навигации. Зовёт Gps.c: раз в ~10 с при фиксе
-   (lat/lon, flag=1) и КАЖДЫЙ цикл без фикса (0, 0, flag=0) - периодическое
-   уведомление «данные невалидны» сходится к истине, даже если отдельный вызов
-   пропал (решение автора). flag_navigation = gps_nav.navigation: LoRa
-   переключается по ФЛАГУ, а не по проверке «координаты != 0». При flag=0
-   трек, gps_fix_counter и gps_last_valid_* НЕ трогаются - последняя ВАЛИДНАЯ
-   точка сохраняется.                                                       */
+/* Точка GPS-трека + состояние навигации. Зовёт Gps.c (Gps_Publish_Coords)
+   ЕДИНЫМ ритмом раз в ~10 с в обоих состояниях (решение автора): при фиксе
+   (lat, lon, flag=1), без фикса (0, 0, flag=0) - «данные невалидны».
+   flag_navigation = gps_nav.navigation: LoRa переключается по ФЛАГУ, а не
+   по проверке «координаты != 0». При flag=0 трек, gps_fix_counter и
+   gps_last_valid_* НЕ трогаются - последняя ВАЛИДНАЯ точка сохраняется.    */
 extern void Lora_UpdateGPSTrack(int32_t cur_lat, int32_t cur_lon, uint8_t flag_navigation);
 #endif
 
