@@ -82,6 +82,12 @@ extern "C" {
 #define BLE_WAIT_UART_TIMEOUT	(35u)		// мс ожидания ответа модуля (как в Avis)
 #define BLE_WAIT_UART_DELAY		(5u)		// мс добавки на дотекание хвоста ответа
 
+// Метки ответа модуля на AT-команду (в Avis - массивы AdvOK/AdvERROR;
+// спецификация Mirax-Ble-protocol-v1 §4.0: ответ = [данные + 0x0D], затем
+// «OK» или «ERROR»). Ищутся strstr() в Ble_ReadAnswer - см. BLE_RES_*.
+#define BLE_RES_OK				("OK")
+#define BLE_RES_ERROR			("ERROR")
+
 // Команды AT-протокола модуля MK01 (строковый индекс = BLE_CMD_t)
 typedef enum {
 	CMD_AT = 0,				// Проверка связи

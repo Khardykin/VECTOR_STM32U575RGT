@@ -87,6 +87,21 @@ uint16_t Vector_HexStringToBytes(const char *hex_str, uint8_t *out, uint16_t out
 /* Смена скорости UART на ходу - см. макрос usart_init() и прототип
    Uart_SetBaudrate() в main.h (реализация в vector_macros.c).                */
 
+/* --- SAI: вывод звука (платформенный слой библиотеки audio_player) ----------
+ * Библиотеки модулей не должны звать HAL напрямую (кроссплатформенность,
+ * решение автора): старт/стоп DMA SAI1_A и его параметры - здесь, HAL внутри
+ * vector_macros.c. Обратная сторона: входные колбэки HAL
+ * (HAL_SAI_TxHalfCplt/TxCplt/ErrorCallback) тоже в vector_macros.c - они зовут
+ * хуки Audio_Out_On*() из audio_player.h (реализация в audio_player.c).
+ * Возврат Sai_StartDMA: 0 = стартовало; ненуль = код ошибки платформы (в лог).
+ * КОНТЕКСТ: поток плеера / инициализация до планировщика.                     */
+int      Sai_StartDMA(uint8_t *buf, uint32_t samples);
+void     Sai_StopDMA(void);
+uint32_t Sai_GetClockFreq(void);    /* частота ядра SAI1 (PLL3P), Гц          */
+uint32_t Sai_GetErrorCode(void);    /* ErrorCode SAI - диагностика            */
+uint32_t Sai_GetMckdiv(void);       /* Init.Mckdiv (0 трактуется как 1)       */
+int      Sai_DmaIsCircular(void);   /* 1 = DMA circular (linked-list, U5)     */
+
 /* --- ЧАСЫ прибора: календарный RTC <-> Unix-секунды (подход автора) ----
  * Замена AT32 rtc_counter_get/set из Avis: на U5 RTC - календарь (LSE,
  * backup-домен, идёт от VBAT при снятом VDD). RTC_ReadTime() преобразует

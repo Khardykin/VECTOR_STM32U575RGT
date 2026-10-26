@@ -149,9 +149,11 @@ PA8 (SCK) = 1 411 200 Гц (= 32 × FS, кадр I2S 16 бит × 2 слота).
               └── ext_read(смещение += CHUNK) + громкость + тишина в хвосте
 ```
 
-* **ISR** (`HAL_SAI_TxHalfCpltCallback` / `HAL_SAI_TxCpltCallback`,
-  GPDMA1_Channel11) только считает выданные сэмплы, ставит флаг «половина
-  освободилась» и будит поток. Читать flash из ISR нельзя — там мьютекс.
+* **ISR** (GPDMA1_Channel11): HAL-колбэки `HAL_SAI_TxHalfCpltCallback` /
+  `HAL_SAI_TxCpltCallback` живут в платформенном слое `vector_macros.c` и зовут
+  хуки `Audio_Out_OnHalfBlock` / `Audio_Out_OnBlockDone` (`audio_player.c` —
+  библиотека HAL не зовёт): хук только считает выданные сэмплы, ставит флаг
+  «половина освободилась» и будит поток. Читать flash из ISR нельзя — там мьютекс.
 * **Поток** (`stream_service()`) дозагружает освободившуюся половину:
   `ext_read` куском 8 КБ (~3 мс по DMA), громкость, хвост добивается тишиной.
 * Запас на дозагрузку = `CHUNK / 44100` = **93 мс** при стоимости чтения

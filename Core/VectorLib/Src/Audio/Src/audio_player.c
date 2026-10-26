@@ -36,8 +36,8 @@
 #include "spiflash.h"
 #include "extstore.h"
 #include "audio_beep.h"
-#include "sai.h"
-#include "main.h"
+#include "main.h"          /* SF_OK/sf_status_type: статусы возврата spiflash */
+#include "vector_macros.h" /* Sai_*: платформенный слой вывода (HAL не зовём) */
 #include "tx_api.h"
 #include "vector_log.h"   /* консольный лог: VECTOR_LOG_ENABLE в vector_config.h */
 #include "vector_tick.h"   /* VTICK_MS() - время только от тика RTOS */
@@ -80,7 +80,7 @@ static audio_img_entry_t  ap_tab[AP_MAX_SOUNDS];
  * ap_buf - ОДИН на всё устройство. В режиме стриминга (рабочем) используются
  * только первые 2*AP_CHUNK сэмплов: DMA крутится по кругу, поток дозагружает
  * освободившуюся половину. Полный буфер AUDIO_BUF_SAMPLES (65535 сэмплов) -
- * это предел uint16_t Size у HAL_SAI_Transmit_DMA, он нужен только запасному
+ * это предел uint16_t Size у DMA SAI (Sai_StartDMA), он нужен только запасному
  * пути "одной транзакцией" (если в CubeMX сброшен Mode = Circular у SAI DMA):
  * 65535 сэмплов = 1.49 с при 44.1 кГц. VECTOR_AUDIO_STREAM_SMALLBUF 1
  * (теперь по умолчанию) урезает буфер до двух кусков: 16 КБ вместо 131 КБ.  */
@@ -238,7 +238,7 @@ static void ap_loop_update(void)
 
 /* Watchdog звучания. КОНТЕКСТ: поток плеера, вызывается только на
    heartbeat-проходе (событий не было). Если звук "играет" дольше расчётного
-   времени + запас, значит колбэк HAL_SAI_TxCpltCallback не пришёл (не включён
+   времени + запас, значит хук Audio_Out_OnBlockDone не пришёл (не включён
    GPDMA1_Channel11_IRQn, ошибка SAI, сбой DMA) - принудительно гасим передачу,
    иначе очередь встала бы навсегда. Рост audio_status.cnt_watchdog = искать проблему в
    цепочке SAI/GPDMA, а не в кнопках.                                        */
@@ -254,7 +254,7 @@ static void ap_check_stuck(void)
 #if VECTOR_AUDIO_STREAM
       ap_st.active = 0;
 #endif
-      (void)HAL_SAI_Abort(&hsai_BlockA1);
+      Sai_StopDMA();
       ap_mark_silent();
       ap_play_deadline  = 0;
       audio_status.cnt_watchdog++;
@@ -270,7 +270,7 @@ static void apply_volume(int16_t *p, uint32_t n);   /* объявление: с�
  * или const-массив во внутренней flash (аварийный писк).
  *
  * Разделение ответственности:
- *   ISR (HAL_SAI_TxHalfCplt / TxCplt) - только счётчик выданных сэмплов,
+ *   ISR (хуки Audio_Out_OnHalfBlock/OnBlockDone) - только счётчик сэмплов,
  *        флаг "половина освободилась" и tx_semaphore_put. Читать flash из ISR
  *        нельзя (там ожидание на мьютексе и семафоре).
  *   Поток (stream_service)            - дозагружает освободившуюся половину:
@@ -283,19 +283,17 @@ static void apply_volume(int16_t *p, uint32_t n);   /* объявление: с�
 
 /* Признак того, что SAI-DMA сконфигурирована как circular linked-list.
    Это делает CubeMX (SAI1_A -> DMA -> GPDMA1 Channel11 -> Mode = Circular):
-   на U5 circular для GPDMA реализуется связным списком, и только в режиме
-   DMA_LINKEDLIST_CIRCULAR HAL НЕ гасит SAI по завершении блока - поэтому
-   стыки кусков проходят без щелей и щелчков.                               */
+   на U5 circular для GPDMA реализуется связным списком, и только в circular-
+   режиме платформа НЕ гасит SAI по завершении блока - поэтому стыки кусков
+   проходят без щелей и щелчков. Проверка - в платформенном слое
+   (Sai_DmaIsCircular, vector_macros.c).                                    */
 static int stream_dma_circular(void)
 {
 #if VECTOR_AUDIO_STREAM
-  DMA_HandleTypeDef *h = hsai_BlockA1.hdmatx;
-  if (h != (DMA_HandleTypeDef *)0)
-  {
-    return (h->Mode == DMA_LINKEDLIST_CIRCULAR) ? 1 : 0;
-  }
-#endif
+  return Sai_DmaIsCircular();   /* платформенный слой (vector_macros.c)     */
+#else
   return 0;
+#endif
 }
 
 #if VECTOR_AUDIO_STREAM
@@ -374,7 +372,7 @@ static void stream_service(void)
   if (ap_st.played >= ap_st.total)
   {
     ap_st.active = 0;
-    (void)HAL_SAI_Abort(&hsai_BlockA1);
+    Sai_StopDMA();
     audio_status.cnt_played++;
     ap_mark_silent();
     ap_play_deadline  = 0;
@@ -389,7 +387,7 @@ static audio_err_t stream_start_src(int32_t idx, uint8_t use_flash,
                                     const int16_t *src, uint32_t src_off,
                                     uint32_t total)
 {
-  HAL_StatusTypeDef hs;
+  int sai_rc;
 
   if (!stream_dma_circular())
   {
@@ -414,13 +412,12 @@ static audio_err_t stream_start_src(int32_t idx, uint8_t use_flash,
   stream_fill(0);
   stream_fill(1);
 
-  hs = HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t *)ap_buf,
-                            (uint16_t)(2u * AP_CHUNK));
-  if (hs != HAL_OK)
+  sai_rc = Sai_StartDMA((uint8_t *)ap_buf, 2u * AP_CHUNK);
+  if (sai_rc != 0)
   {
     audio_status.cnt_errors++;
     audio_status.last_error = AUDIO_ERR_IO;
-    LOG_E(VLOG_M_AUDIO, "stream: SAI DMA start fail hal=%d (1=err 2=busy)", (int32_t)hs);
+    LOG_E(VLOG_M_AUDIO, "stream: SAI DMA start fail rc=%d (1=err 2=busy)", (int32_t)sai_rc);
     return AUDIO_ERR_IO;
   }
 
@@ -483,14 +480,13 @@ static audio_err_t beep_now(void)
   }
 #endif
   {
-    HAL_StatusTypeDef hs = HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t *)audio_beep_pcm,
-                                                (uint16_t)audio_beep_samples);
-    if (hs != HAL_OK)
+    int sai_rc = Sai_StartDMA((uint8_t *)audio_beep_pcm, audio_beep_samples);
+    if (sai_rc != 0)
     {
       audio_status.cnt_errors++;
       audio_status.last_error = AUDIO_ERR_IO;
-      LOG_E(VLOG_M_AUDIO, "beep DMA fail: hal=%d (1=err 2=busy) sai_err=%x SD_MODE?",
-            (int32_t)hs, (uint32_t)hsai_BlockA1.ErrorCode);
+      LOG_E(VLOG_M_AUDIO, "beep DMA fail: rc=%d (1=err 2=busy) sai_err=%x SD_MODE?",
+            (int32_t)sai_rc, Sai_GetErrorCode());
       return AUDIO_ERR_IO;
     }
     LOG_I(VLOG_M_AUDIO, "beep started, %u samples", audio_beep_samples);
@@ -528,7 +524,7 @@ static void ap_note_started(uint16_t idx)
    а его значение - они совпадают по построению образа).
    Возврат: AUDIO_OK, иначе код ошибки (audio_status.last_error
    и счётчик audio_status.cnt_errors).
-   НЕ блокирует: окончание звучания придёт из HAL_SAI_TxCpltCallback.        */
+   НЕ блокирует: окончание звучания придёт из хука Audio_Out_OnBlockDone.   */
 static audio_err_t start_now(uint16_t idx)
 {
   const audio_img_entry_t *e;
@@ -599,13 +595,12 @@ static audio_err_t start_now(uint16_t idx)
     {
       apply_volume(ap_buf, e->length / 2u);
       {
-        HAL_StatusTypeDef hs = HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t *)ap_buf,
-                                                    (uint16_t)(e->length / 2u));
-        if (hs != HAL_OK)
+        int sai_rc = Sai_StartDMA((uint8_t *)ap_buf, e->length / 2u);
+        if (sai_rc != 0)
         {
           rc = AUDIO_ERR_IO;
-          LOG_E(VLOG_M_AUDIO, "SAI DMA fail: hal=%d (1=err 2=busy) sai_err=%x",
-                (int32_t)hs, (uint32_t)hsai_BlockA1.ErrorCode);
+          LOG_E(VLOG_M_AUDIO, "SAI DMA fail: rc=%d (1=err 2=busy) sai_err=%x",
+                (int32_t)sai_rc, Sai_GetErrorCode());
         }
         else
         {
@@ -652,7 +647,7 @@ static void stop_now(void)
   if (ap_is_silent() == 0)
   {
     int32_t was = audio_status.sound_index;
-    (void)HAL_SAI_Abort(&hsai_BlockA1);
+    Sai_StopDMA();
     ap_mark_silent();
     LOG_I(VLOG_M_AUDIO, "stop (aborted idx=%d)", was);
   }
@@ -710,7 +705,7 @@ static void ap_thread_entry(ULONG arg)
      поток, поэтому чтение идёт тем же DMA-путём, что и подкачка звука.
      Подробности: VECTOR_SPI_SELFTEST в vector_config.h, sf_selftest() в
      spiflash.c. На боевой прошивке выставить VECTOR_SPI_SELFTEST 0.          */
-  if (sf_selftest(AUDIO_IMG_BASE_ADDR, 8192u, VECTOR_SPI_SELFTEST) != HAL_OK)
+  if (sf_selftest(AUDIO_IMG_BASE_ADDR, 8192u, VECTOR_SPI_SELFTEST) != SF_OK)
   {
     LOG_E(VLOG_M_AUDIO, "SPI selftest: two reads DIFFER -> noisy SPI line (see sf_dbg_selftest_bad)");
   }
@@ -927,15 +922,15 @@ static void ap_thread_entry(ULONG arg)
 /* Чтение блока образа с повторами. КОНТЕКСТ: audio_init() (до планировщика -
    просто повтор без сна) и audio_reload_image() (поток - сон между попытками
    допустим и полезен).                                                        */
-static HAL_StatusTypeDef img_read(uint32_t addr, uint8_t *dst, uint32_t len)
+static sf_status_type img_read(uint32_t addr, uint8_t *dst, uint32_t len)
 {
-  HAL_StatusTypeDef st = HAL_ERROR;
+  sf_status_type st = SF_ERROR;
   uint32_t t;
 
   for (t = 0; t < SF_READ_TRIES; t++)
   {
     st = sf_read(addr, dst, len);
-    if (st == HAL_OK)
+    if (st == SF_OK)
     {
       break;
     }
@@ -966,13 +961,13 @@ static void load_image(void)
 
   /* КРИТИЧНО: заголовок читаем СРАЗУ в ap_hdr, а не в raw: иначе второе
      чтение (таблица) перезатрёт его, CRC не сойдётся никогда.               */
-  if (img_read(AUDIO_IMG_BASE_ADDR, (uint8_t *)&ap_hdr, sizeof ap_hdr) == HAL_OK)
+  if (img_read(AUDIO_IMG_BASE_ADDR, (uint8_t *)&ap_hdr, sizeof ap_hdr) == SF_OK)
   {
     if ((ap_hdr.magic == AUDIO_IMG_MAGIC) && (ap_hdr.version == AUDIO_IMG_VERSION) &&
         (ap_hdr.count > 0u) && (ap_hdr.count <= AP_MAX_SOUNDS))
     {
       tbl_bytes = (uint32_t)ap_hdr.count * AUDIO_IMG_ENTRY_SIZE;
-      if (img_read(AUDIO_IMG_BASE_ADDR + AUDIO_IMG_HEADER_SIZE, raw, tbl_bytes) == HAL_OK)
+      if (img_read(AUDIO_IMG_BASE_ADDR + AUDIO_IMG_HEADER_SIZE, raw, tbl_bytes) == SF_OK)
       {
         uint32_t crc = 0;
         uint32_t i;
@@ -1074,30 +1069,29 @@ static void load_image(void)
 /* =============================================================== публичное */
 /* ПРЯМАЯ проверка звукового тракта: БЕЗ очереди, БЕЗ потока плеера, БЕЗ
    состояний и БЕЗ внешней flash. Const-массив писка из внутренней flash ->
-   HAL_SAI_Transmit_DMA -> усилитель.
+   Sai_StartDMA (платформенный слой vector_macros.c) -> усилитель.
    КОНТЕКСТ: любой, включая main() до старта планировщика (поэтому completion
    ждём активным опросом состояния SAI с ограничением по числу проходов, а не
    по тику: до планировщика тика RTOS нет вовсе, см. vector_tick.h).
-   Возврат: 0 = DMA стартовала и завершилась; 1 = не стартовала (код HAL в
-   логе); 2 = стартовала, но не завершилась (нет прерывания GPDMA1_Channel11).
+   Возврат: 0 = DMA стартовала и завершилась; 1 = не стартовала (код платформы
+   в логе); 2 = стартовала, но не завершилась (нет прерывания GPDMA1_Channel11).
    Писк длится 240 мс; guard показывает, сколько проходов заняло ожидание
    завершения DMA (время в проекте - только тик RTOS, см. vector_tick.h).   */
 int audio_selftest(void)
 {
-  HAL_StatusTypeDef hs;
+  int sai_rc;
   uint32_t t0 = VTICK_MS();          /* до планировщика = 0 */
   uint32_t guard = 0;
 
   ap_sai_blk_done = 0;
 
-  hs = HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t *)audio_beep_pcm,
-                            (uint16_t)audio_beep_samples);
-  if (hs != HAL_OK)
+  sai_rc = Sai_StartDMA((uint8_t *)audio_beep_pcm, audio_beep_samples);
+  if (sai_rc != 0)
   {
     audio_status.cnt_errors++;
     audio_status.last_error = AUDIO_ERR_IO;
-    LOG_E(VLOG_M_AUDIO, "selftest: SAI DMA start FAIL hal=%d (1=err 2=busy)",
-          (int32_t)hs);
+    LOG_E(VLOG_M_AUDIO, "selftest: SAI DMA start FAIL rc=%d (1=err 2=busy)",
+          (int32_t)sai_rc);
     return 1;
   }
   LOG_I(VLOG_M_AUDIO, "selftest: beep %u samples via SAI DMA (no queue, no ext flash)",
@@ -1112,7 +1106,7 @@ int audio_selftest(void)
   {
     guard++;
   }
-  (void)HAL_SAI_Abort(&hsai_BlockA1);
+  Sai_StopDMA();
 
   if (ap_sai_blk_done == 0u)
   {
@@ -1153,8 +1147,8 @@ void audio_init(void)
      43066 Гц (-2.34%: звук ниже на 41 цент и длиннее на 2.4%).
      Расчёт и таблица PLL3 - docs/AUDIO.md, раздел 2 «Тактирование SAI1».   */
   {
-    uint32_t sai_ck = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_SAI1);
-    uint32_t mckdiv = (hsai_BlockA1.Init.Mckdiv != 0u) ? hsai_BlockA1.Init.Mckdiv : 1u;
+    uint32_t sai_ck = Sai_GetClockFreq();
+    uint32_t mckdiv = Sai_GetMckdiv();
     uint32_t fs_mhz = (uint32_t)(((uint64_t)sai_ck * 1000u) / (256u * mckdiv));
     uint32_t need   = AUDIO_SAMPLE_RATE * 1000u;      /* то же в миллигерцах  */
     uint32_t tol    = need / 1000u;                   /* допуск 0.1% (~17 центов) */
@@ -1350,90 +1344,83 @@ const char *audio_name(uint16_t idx)
   return ap_tab[idx].name;
 }
 
-/* ================================================== колбэки HAL SAI (ISR) ==
- * КОНТЕКСТ: прерывание GPDMA1_Channel11. Здесь нельзя ничего блокирующего -
- * только счётчики, флаги и tx_semaphore_put(), который будит поток.
+/* ============================== хуки вывода SAI (ISR) =======================
+ * КОНТЕКСТ: прерывание GPDMA1_Channel11. Хуки вызываются из колбэков HAL
+ * (HAL_SAI_TxHalfCplt/TxCplt/ErrorCallback), которые живут в платформенном
+ * слое - vector_macros.c (фильтр «только наш блок SAI1_A» тоже там): сама
+ * библиотека HAL не зовёт (кроссплатформенность, решение автора). Здесь
+ * нельзя ничего блокирующего - только счётчики, флаги и tx_semaphore_put(),
+ * который будит поток.
  *
- * В режиме СТРИМИНГА (circular DMA) эти колбэки приходят постоянно, по разу на
+ * В режиме СТРИМИНГА (circular DMA) хуки приходят постоянно, по разу на
  * каждую половину буфера:
- *   HAL_SAI_TxHalfCpltCallback - первая половина ушла в SAI, её можно
- *                                перезаписать (поток сделает stream_fill(0));
- *   HAL_SAI_TxCpltCallback     - вторая половина ушла, DMA пошла по кругу,
- *                                перезаписывать можно вторую (stream_fill(1)).
+ *   Audio_Out_OnHalfBlock - первая половина ушла в SAI, её можно
+ *                           перезаписать (поток сделает stream_fill(0));
+ *   Audio_Out_OnBlockDone - вторая половина ушла, DMA пошла по кругу,
+ *                           перезаписывать можно вторую (stream_fill(1)).
  * Окончание звука определяет поток по ap_st.played >= ap_st.total, а НЕ приход
- * TxCplt: в circular-режиме передача не завершается никогда.
+ * OnBlockDone: в circular-режиме передача не завершается никогда.
  *
- * В режиме ОДНОЙ транзакции (Normal DMA) TxCplt и есть конец звука.          */
+ * В режиме ОДНОЙ транзакции (Normal DMA) OnBlockDone и есть конец звука.    */
 
 /* Половина (или весь блок в Normal-режиме) выдана в SAI. */
-void HAL_SAI_TxHalfCpltCallback(SAI_HandleTypeDef *hsai)
+void Audio_Out_OnHalfBlock(void)
 {
 #if VECTOR_AUDIO_STREAM
-  if (hsai->Instance == SAI1_Block_A)
+  ap_sai_blk_done = 1;
+  if (ap_st.active != 0u)
   {
-    ap_sai_blk_done = 1;
-    if (ap_st.active != 0u)
-    {
-      /* первая половина отыграна: разрешаем потоку её перезаписать.
-         Если флаг ЕЩЁ стоит - поток не успел обслужить прошлый запрос, DMA
-         прокрутила половину по второму кругу (на слух - заикание).          */
-      ap_st.played += AP_CHUNK;
-      if (ap_st.req0 != 0u) { audio_status.cnt_underruns++; }
-      ap_st.req0    = 1;
-      (void)tx_semaphore_put(&ap_wake);
-    }
+    /* первая половина отыграна: разрешаем потоку её перезаписать.
+       Если флаг ЕЩЁ стоит - поток не успел обслужить прошлый запрос, DMA
+       прокрутила половину по второму кругу (на слух - заикание).            */
+    ap_st.played += AP_CHUNK;
+    if (ap_st.req0 != 0u) { audio_status.cnt_underruns++; }
+    ap_st.req0    = 1;
+    (void)tx_semaphore_put(&ap_wake);
   }
-#else
-  (void)hsai;
 #endif
 }
 
-void HAL_SAI_TxCpltCallback(SAI_HandleTypeDef *hsai)
+void Audio_Out_OnBlockDone(void)
 {
-  if (hsai->Instance == SAI1_Block_A)
-  {
-    ap_sai_blk_done = 1;
+  ap_sai_blk_done = 1;
 #if VECTOR_AUDIO_STREAM
-    if (ap_st.active != 0u)
-    {
-      /* вторая половина отыграна, DMA пошла по кругу */
-      ap_st.played += AP_CHUNK;
-      if (ap_st.req1 != 0u) { audio_status.cnt_underruns++; }
-      ap_st.req1    = 1;
-      (void)tx_semaphore_put(&ap_wake);
-      return;
-    }
+  if (ap_st.active != 0u)
+  {
+    /* вторая половина отыграна, DMA пошла по кругу */
+    ap_st.played += AP_CHUNK;
+    if (ap_st.req1 != 0u) { audio_status.cnt_underruns++; }
+    ap_st.req1    = 1;
+    (void)tx_semaphore_put(&ap_wake);
+    return;
+  }
 #endif
-    if (ap_is_silent() == 0)
-    {
-      audio_status.cnt_played++;
-      ap_mark_silent();
-      ap_play_deadline  = 0;
-      (void)tx_semaphore_put(&ap_wake);
-    }
+  if (ap_is_silent() == 0)
+  {
+    audio_status.cnt_played++;
+    ap_mark_silent();
+    ap_play_deadline  = 0;
+    (void)tx_semaphore_put(&ap_wake);
   }
 }
 
 /* Ошибка SAI/DMA (OVRUDR и т.п.): снимаем флаг "играет" и будим поток, иначе
-   очередь встала бы навсегда. Сырой код HAL - в audio_status.sai_error_code,
-   туда же ставится last_error = AUDIO_ERR_IO (раньше оба числа смешивались
-   в одном поле как 0x1000 | ErrorCode).                                    */
-void HAL_SAI_ErrorCallback(SAI_HandleTypeDef *hsai)
+   очередь встала бы навсегда. Сырой код платформы - в
+   audio_status.sai_error_code, туда же ставится last_error = AUDIO_ERR_IO
+   (раньше оба числа смешивались в одном поле как 0x1000 | ErrorCode).       */
+void Audio_Out_OnError(uint32_t error_code)
 {
-  if (hsai->Instance == SAI1_Block_A)
-  {
-    audio_status.cnt_errors++;
-    audio_status.last_error     = AUDIO_ERR_IO;
-    audio_status.sai_error_code = (uint32_t)hsai->ErrorCode;
-    LOG_E(VLOG_M_AUDIO, "SAI error callback, code=%x", (uint32_t)hsai->ErrorCode);
+  audio_status.cnt_errors++;
+  audio_status.last_error     = AUDIO_ERR_IO;
+  audio_status.sai_error_code = error_code;
+  LOG_E(VLOG_M_AUDIO, "SAI error callback, code=%x", error_code);
 #if VECTOR_AUDIO_STREAM
-    ap_st.active = 0;
+  ap_st.active = 0;
 #endif
-    if (ap_is_silent() == 0)
-    {
-      ap_mark_silent();
-      ap_play_deadline  = 0;
-      (void)tx_semaphore_put(&ap_wake);
-    }
+  if (ap_is_silent() == 0)
+  {
+    ap_mark_silent();
+    ap_play_deadline  = 0;
+    (void)tx_semaphore_put(&ap_wake);
   }
 }

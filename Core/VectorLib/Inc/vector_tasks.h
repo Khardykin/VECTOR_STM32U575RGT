@@ -1,8 +1,8 @@
 /**
   ******************************************************************************
   * @file    vector_tasks.h
-  * @brief   Потоки прибора: receiver_task (приём/парсинг UART) и measure_task
-  *          (периодика прибора -> Vector_Run_Measure() -> модули BLE/LoRa/LTE)
+  * @brief   Потоки прибора: receiver_task (приём/парсинг UART), measure_task
+  *          (периодика прибора + сервис) и потоки модулей обмена (ble/lora/lte)
   *
   *          Структура - как в Avis_main.c на другом приборе, только вместо
   *          FreeRTOS здесь ThreadX/Azure RTOS:
@@ -10,16 +10,21 @@
   *            receiver_task_function()  приём и парсинг по КАЖДОМУ UART:
   *                                        command_message()  - COM/терминал
   *                                        Lora_Receive()     - LoRa S7678S
-  *                                        Ble_Receive()      - BLE-модуль
   *                                        Lte_Receive()      - LTE-модем
   *                                        Gps_Receive()      - GPS/GNSS (Gps.c)
   *                                        Uart_Channel_Receive() - сенсоры
-  *                                        Vector_Options_System() - сервис
-  *            measure_task_function()   периодика (1 с):
+  *            measure_task_function()   периодика (1 с) + сервис:
   *                                        Vector_Run_Measure()
   *                                          -> измерения прибора (наполнить)
-  *                                          -> Ble_Run(); Lora_Run(); Lte_Run(); Gps_Run();
+  *                                          -> Gps_Run()
   *                                        Vector_RunFlashMemory()
+  *                                        Vector_Options_System()
+  *            ble_task_function()       CONFIG_BLE:  Ble_Run() + Ble_Receive()
+  *                                      (кольцо TYPE_BLE читает Ble_TransmitReceive)
+  *            lora_task_function()      CONFIG_LORA: Lora_Run()
+  *            lte_task_function()       CONFIG_G4:   Lte_Run() (NB-IoT - аналогично)
+  *                                      Потоки модулей создаются в
+  *                                      vector_tasks_init() ТОЛЬКО при своих CONFIG_*.
   *
   *          Отличия API ThreadX от FreeRTOS, которые надо держать в голове при
   *          переносе кода с того прибора:
@@ -95,9 +100,10 @@ typedef struct
 
 extern volatile tasks_status_t tasks_status;
 
-/* Создать потоки receiver_task и measure_task. Вызывать ОДИН раз из
-   tx_application_define() (в проекте - рядом с audio_init()).
-   Контекст: инициализация, до старта планировщика.                          */
+/* Создать потоки прибора: receiver_task и measure_task - всегда; потоки
+   модулей обмена (BLE/LoRa/LTE) - только при CONFIG_BLE/CONFIG_LORA/CONFIG_G4.
+   Вызывать ОДИН раз из tx_application_define() (в проекте - рядом с
+   audio_init()). Контекст: инициализация, до старта планировщика.           */
 void vector_tasks_init(void);
 
 /* --- наполнение прибора (аналоги Avis_Run_* из Avis_main.c) -----------------
@@ -123,12 +129,16 @@ void Vector_Search_Temp_Start(uint16_t data);
  * Слабые (__attribute__((weak))) заглушки в Vector_main.c: когда перенесёте
  * свою реализацию в файл модуля, она автоматически заменит заглушку, править
  * Vector_main.c не придётся. Lora_Receive() уже есть в Lora_S7678S.c - она
- * вызывается напрямую под #if CONFIG_LORA.                                    */
+ * вызывается в receiver_task напрямую под #if CONFIG_LORA. Ble_Receive() -
+ * заглушка: кольцо TYPE_BLE читает Ble_TransmitReceive в потоке BLE Task.    */
 void command_message(void);        /* COM/UART4: разбор команд обмена         */
-void Ble_Receive(void);            /* USART3: InputBuffer[TYPE_BLE] -> парсер */
+void Ble_Receive(void);            /* USART3: заглушка (см. выше)             */
 void Lte_Receive(void);            /* модем LTE: InputBuffer[TYPE_LTE] -> парсер */
 
-/* --- МОДУЛИ: обмен (поток measure_task, из Vector_Run_Measure) -------------- */
+/* --- МОДУЛИ: обмен (Run - в своих потоках модулей, Gps_Run - в measure_task) -
+ * Ble_Run/Ble_Receive - поток "BLE Task" (CONFIG_BLE); Lora_Run - "LoRa Task"
+ * (CONFIG_LORA); Lte_Run - "LTE Task" (CONFIG_G4); Gps_Run - из
+ * Vector_Run_Measure (поток measure_task).                                   */
 void Ble_Run(void);
 void Lora_Run(void);
 void Lte_Run(void);

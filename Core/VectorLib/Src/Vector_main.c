@@ -4,20 +4,29 @@
   * @brief   Потоки прибора (аналог Avis_main.c): приём/парсинг UART и периодика
   *
   *          КАРТА ФАЙЛА
-  *            vector_tasks_init()        создать оба потока (из
-  *                                       tx_application_define)
+  *            vector_tasks_init()        создать потоки (из tx_application_define):
+  *                                       receiver/measure - всегда; потоки модулей
+  *                                       ble/lora/lte - только при CONFIG_BLE /
+  *                                       CONFIG_LORA / CONFIG_G4 (NB-IoT добавится
+  *                                       аналогично)
   *            receiver_task_function()   ПОТОК "Receiver Task": приём и парсинг
-  *                                       ПО КАЖДОМУ UART (COM, LoRa, BLE, LTE, GPS,
-  *                                       сенсоры) + Vector_Options_System()
+  *                                       ПО КАЖДОМУ UART (COM, LoRa - Lora_Receive,
+  *                                       BLE - Ble_Receive (заглушка), LTE -
+  *                                       Lte_Receive, GPS, сенсоры)
   *            measure_task_function()    ПОТОК "Measure Task": периодика
   *                                       такту timer.flag_1s (1 с от TIM3)
+  *                                       + Vector_Options_System() (сервис)
+  *            ble_task_function()        ПОТОК "BLE Task" (CONFIG_BLE): Ble_Run
+  *            lora_task_function()       ПОТОК "LoRa Task" (CONFIG_LORA): Lora_Run
+  *            lte_task_function()        ПОТОК "LTE Task" (CONFIG_G4): Lte_Run
   *            Vector_Run_Pre_Init()      однократно при старте (аналог
   *                                       Avis_Run_Pre_Init)
-  *            Vector_Run_Measure()       измерения прибора + вызов модулей
-  *                                       Ble_Run/Lora_Run/Lte_Run/Gps_Run (аналог
-  *                                       Avis_Run_Measure)
+  *            Vector_Run_Measure()       измерения прибора + Gps_Run (аналог
+  *                                       Avis_Run_Measure); BLE/LoRa/LTE Run -
+  *                                       в своих потоках модулей
   *            Vector_RunFlashMemory()    журнал/конфиг во внешней flash
-  *            Vector_Options_System()    сервис (аналог Avis_Options_System)
+  *            Vector_Options_System()    сервис (аналог Avis_Options_System),
+  *                                       поток Measure Task
   *            command_message(), Ble_Receive(), Lte_Receive(),
   *            Uart_Channel_Receive(), Ble_Run(), Lora_Run(), Lte_Run(),
  *            Gps_Run()
@@ -29,11 +38,15 @@
   *          (tasks_status) и порядок вызовов уже рабочие.
   *
   *          ПРАВИЛО ВЛАДЕЛЬЦА КОЛЬЦА (buffer.h, SPSC): у каждого UART ровно
-  *          ОДИН потребитель. Кольца радио-модулей читает ТОЛЬКО поток
-  *          "Receiver Task" (напрямую или через Lora_Receive()) - из других
-  *          потоков/таймеров в InputBuffer[] не лазить.
+  *          ОДИН потребитель-поток. Кольцо TYPE_BLE читает только
+  *          Ble_TransmitReceive (BLE Task). Кольцо TYPE_LORA в рабочем режиме
+  *          читает Lora_Receive() (Receiver Task); во время инициализации
+  *          AT-обмен Lora_TransmitReceive (LoRa Task) тоже читает его -
+  *          Lora_Receive() в это время не пускает гейт
+  *          get_state_init_flag_lora() (решение автора, «не ломается»).
+  *          Из прочих потоков/таймеров в InputBuffer[] не лазить.
   *
-  *          КОНТЕКСТ: оба потока - обычные потоки ThreadX, здесь можно
+  *          КОНТЕКСТ: все потоки - обычные потоки ThreadX, здесь можно
   *          блокироваться (мьютексы, сон, лог). Из ISR сюда не заходить.
   ******************************************************************************
   */
@@ -308,25 +321,41 @@ __attribute__((weak)) float Get_Conversion_factor_rf(uint8_t chan)
 
 static TX_THREAD receiver_task_handler;
 static TX_THREAD measure_task_handler;
-static TX_THREAD ble_task_handler;      /* п.65: отдельные потоки BLE и LoRa  */
-static TX_THREAD lora_task_handler;
 static uint8_t   receiver_task_stack[VECTOR_TASKS_RECEIVER_STACK] __attribute__((aligned(8)));
 static uint8_t   measure_task_stack[VECTOR_TASKS_MEASURE_STACK]   __attribute__((aligned(8)));
+#if CONFIG_BLE                          /* п.65: отдельные потоки BLE и LoRa  */
+static TX_THREAD ble_task_handler;
 static uint8_t   ble_task_stack[VECTOR_TASKS_BLE_STACK]           __attribute__((aligned(8)));
+#endif
+#if CONFIG_LORA
+static TX_THREAD lora_task_handler;
 static uint8_t   lora_task_stack[VECTOR_TASKS_LORA_STACK]         __attribute__((aligned(8)));
+#endif
+#if CONFIG_G4                           /* «для Lte_Run тоже нужен свой поток» (автор); NB-IoT - аналогично */
+static TX_THREAD lte_task_handler;
+static uint8_t   lte_task_stack[VECTOR_TASKS_LTE_STACK]           __attribute__((aligned(8)));
+#endif
 
 static void receiver_task_function(ULONG thread_input);
 static void measure_task_function(ULONG thread_input);
+#if CONFIG_BLE
 static void ble_task_function(ULONG thread_input);
+#endif
+#if CONFIG_LORA
 static void lora_task_function(ULONG thread_input);
+#endif
+#if CONFIG_G4
+static void lte_task_function(ULONG thread_input);
+#endif
 
 /* Функции модулей обмена зовутся из потоковых функций НИЖЕ, а определены ещё
    ниже (weak-заглушки ~1000) либо в файлах модулей при CONFIG_*=1 (их
    заголовки включены в Vector_main.h ПОД ТЕМИ ЖЕ гейтами). Объявления здесь -
    иначе при CONFIG_BLE=0/CONFIG_LORA=0 компилятор даст implicit-declaration:
    заголовки модулей выключены, а weak-заглушка ещё не объявлена.
-   (Lora_Receive не нужен: вызов в lora_task под #if CONFIG_LORA, и
-   Lora_S7678S.h включён тем же гейтом.)                                    */
+   (Lora_Receive объявлен в Lora_S7678S.h - вызов в receiver_task закрыт
+   гейтом CONFIG_LORA, заголовок включён тем же гейтом; Ble_Receive/
+   Lte_Receive/Lte_Run - в vector_tasks.h.)                                  */
 void Ble_Run(void);
 void Ble_Receive(void);
 void Lora_Run(void);
@@ -406,10 +435,11 @@ static void receiver_task_function(ULONG thread_input)
 
   /* В рабочий режим НЕ входим, пока Vector_Run_Pre_Init() (поток measure)
      не выставит DEVICE_TURNED_ON - логика автора из Avis (ни один поток не
-     работает до пред-инита). В частности, до этого момента не выполняется
-     секундная сверка календаря RTC из Vector_Options_System(): working_hours
-     ещё может нести ПРОШЛОЕ значение из конфига, и сверка отравила бы
-     backup-домен (стартовая гонка, PLAN п.59).                             */
+     работает до пред-инита). Секундная сверка календаря RTC из
+     Vector_Options_System() (теперь в потоке measure) до Pre_Init так же
+     не начинается: working_hours ещё может нести ПРОШЛОЕ значение из конфига,
+     и сверка отравила бы backup-домен (стартовая гонка, PLAN п.59); в measure
+     порядок гарантирован вызовом Pre_Init в том же потоке до цикла.        */
   while (device_turn == DEVICE_TURNED_OFF_PRE_INIT)
   {
     VTICK_SLEEP_MS(VECTOR_TASKS_RECEIVER_DELAY_MS);
@@ -433,10 +463,15 @@ static void receiver_task_function(ULONG thread_input)
     }
 #endif
 
-    /* --- LoRa и BLE УБРАНЫ в отдельные потоки (lora_task/ble_task, п.65):
-     * AT-обмен «запрос-ответ» слишком частый для общих ритмов; кольцо LoRa
-     * читает ТЕПЕРЬ lora_task (правило SPSC - единственный читатель).       */
+    /* --- LoRa/BLE: приём вернулся в receiver (решение автора; Run-циклы -
+     * в своих потоках ble_task/lora_task). AT-обмену Lora_TransmitReceive
+     * не мешает: до инициализации модуля Lora_Receive() не пускает гейт
+     * get_state_init_flag_lora() == 1, а обмен идёт как раз ДО выставления
+     * флага; в рабочем режиме гейт - TimeFlagRX (кадр по тишине 50 мс).
+     * Ble_Receive() - заглушка: кольцо TYPE_BLE читает Ble_TransmitReceive
+     * в BLE Task.                                                           */
 #if CONFIG_LORA
+    mod_receive_call(TASK_MOD_LORA);
     Lora_Receive();
 #endif
 #if CONFIG_BLE
@@ -456,8 +491,7 @@ static void receiver_task_function(ULONG thread_input)
     }
 #endif
 
-    /* --- сервис: soft reset, стирание flash, конец режима обмена ------------- */
-    Vector_Options_System();
+    /* Сервис Vector_Options_System() перенесён в measure_task (решение автора). */
 
     VTICK_SLEEP_MS(VECTOR_TASKS_RECEIVER_DELAY_MS);
   }
@@ -500,6 +534,12 @@ static void measure_task_function(ULONG thread_input)
     }
     Vector_RunFlashMemory();
 
+    /* --- сервис: soft reset, стирание flash, конец режима обмена, батарея и
+       сверка часов раз в секунду. Перенесено из receiver_task (решение автора);
+       заодно «предсмертная» запись save_event_type_2 перед NVIC_SystemReset
+       теперь соответствует правилу «во flash пишет только Measure Task».   */
+    Vector_Options_System();
+
     /*  (замечание автора п.5): меню/индикация здесь НЕ живут - они в
        потоке LVGL Task по образцу indication_task_function из Avis_main.c
        (timer.flag_100ms -> Vector_Run_Indication(), затем lv_timer_handler).
@@ -516,10 +556,13 @@ static void measure_task_function(ULONG thread_input)
  * частый ритм VECTOR_TASKS_BLE_DELAY_MS (5 мс). Ble_Run() держит ритм
  * (INIT/SET/SLEEP-таймеры, ADVMSDDATAGET, мосты п.66: Ble_UpdateInputData ->
  * ble_in в начале прохода, Ble_Control_States_Update -> Connected_device/
- * Ble_telemetry под TX_DISABLE и ERR_BLE под Sys_Cfg_Lock в конце),
- * Ble_Receive() - заглушка (ring TYPE_BLE читает Ble_TransmitReceive).
+ * Ble_telemetry под TX_DISABLE и ERR_BLE под Sys_Cfg_Lock в конце).
+ * Ble_Receive() (заглушка) зовётся из receiver_task (решение автора);
+ * ring TYPE_BLE читает Ble_TransmitReceive здесь. Поток создаётся ТОЛЬКО
+ * при CONFIG_BLE (vector_tasks_init).
  * КОНТЕКСТ: поток "BLE Task".
  * ============================================================================ */
+#if CONFIG_BLE
 static void ble_task_function(ULONG thread_input)
 {
   (void)thread_input;
@@ -539,16 +582,17 @@ static void ble_task_function(ULONG thread_input)
     VTICK_SLEEP_MS(VECTOR_TASKS_BLE_DELAY_MS);
   }
 }
+#endif /* CONFIG_BLE */
 
 /* ============================================================================
- * ПОТОК LoRa (п.65): Lora_Run() (мост Lora_UpdateInputData, ритм
- * TIMER_RTC_LORA_DATA_*, сборка/передача) + Lora_Receive() - ЕДИНСТВЕННЫЙ
- * читатель UART-кольца LoRa (правило SPSC; переехало из receiver). Приоритет
- * 12 = receiver: оба потока спят каждый проход, друг друга не глушат.
- * В будущем этот слот займёт модем 3G/IoT (автор) - структура потока
- * (Run + Receive + свой ритм) сохраняется.
+ * ПОТОК LoRa (п.65): Lora_Run() - мост Lora_UpdateInputData, ритм
+ * TIMER_RTC_LORA_DATA_*, сборка/передача. Приём Lora_Receive() - в
+ * receiver_task (решение автора). Приоритет 12 = receiver: оба потока спят
+ * каждый проход, друг друга не глушат. Поток создаётся ТОЛЬКО при CONFIG_LORA
+ * (vector_tasks_init).
  * КОНТЕКСТ: поток "LoRa Task".
  * ============================================================================ */
+#if CONFIG_LORA
 static void lora_task_function(ULONG thread_input)
 {
   (void)thread_input;
@@ -566,6 +610,35 @@ static void lora_task_function(ULONG thread_input)
     VTICK_SLEEP_MS(VECTOR_TASKS_LORA_DELAY_MS);
   }
 }
+#endif /* CONFIG_LORA */
+
+/* ============================================================================
+ * ПОТОК LTE (решение автора: «для Lte_Run тоже нужен свой поток»): AT-диалог
+ * модема - регистрация в сети, передача данных (Lte_Run - пока weak-заглушка,
+ * наполнить переносом с Avis). Приём Lte_Receive() - в receiver_task, НЕ здесь.
+ * Поток создаётся ТОЛЬКО при CONFIG_G4 (vector_tasks_init); когда появится
+ * NB-IoT - ему такой же слот (свой CONFIG_* и поток).
+ * КОНТЕКСТ: поток "LTE Task".
+ * ============================================================================ */
+#if CONFIG_G4
+static void lte_task_function(ULONG thread_input)
+{
+  (void)thread_input;
+
+  while (device_turn == DEVICE_TURNED_OFF_PRE_INIT)
+  {
+    VTICK_SLEEP_MS(VECTOR_TASKS_LTE_DELAY_MS);
+  }
+
+  while (1)
+  {
+    mod_run_call(TASK_MOD_LTE);
+    Lte_Run();
+
+    VTICK_SLEEP_MS(VECTOR_TASKS_LTE_DELAY_MS);
+  }
+}
+#endif /* CONFIG_G4 */
 
 /* ============================================================================
  *                               НАПОЛНЕНИЕ ПРИБОРА
@@ -717,12 +790,10 @@ void Vector_Run_Measure(void)
   }
 #endif
 
-  /* BLE и LoRa ВЫНЕСЕНЫ в отдельные потоки (ble_task/lora_task, п.65) -
-     здесь остались LTE и GPS; свой ритм каждый модуль держит внутри (RTC-
-     таймеры TIMER_RTC_*). Счётчики TASK_MOD_BLE/LORA ведутся в их потоках. */
-  mod_run_call(TASK_MOD_LTE);
-  Lte_Run();
-
+  /* BLE/LoRa/LTE ВЫНЕСЕНЫ в свои потоки (ble_task/lora_task/lte_task; п.65 +
+     решение автора «для Lte_Run тоже нужен свой поток») - здесь остался GPS;
+     свой ритм каждый модуль держит внутри (RTC-таймеры TIMER_RTC_*).
+     Счётчики TASK_MOD_* ведутся в потоках модулей.                          */
   mod_run_call(TASK_MOD_GPS);
   Gps_Run();
 }
@@ -866,13 +937,14 @@ void Vector_RunFlashMemory(void)
    battery_charge_percent/volt (MAX17048), пороги - BAT_MIN/BAT_MAX/
    BAT_LIM_1/BAT_LIM_2 (Config_common), биты - ST_COMMON_BIT_BAT_CHARGE /
    CRITICAL_BATTERY / CRITICAL_LOW_BATTERY, звук/LED - через API плеера и
-   backlight. КОНТЕКСТ: поток receiver_task.                                  */
+   backlight. КОНТЕКСТ: поток measure_task (зовётся из Vector_Options_System). */
 __attribute__((weak)) void Avis_Battery_System(void)
 {
 }
 
-/* Сервисные действия: вызываются из потока приёма каждый проход.
-   Аналог Avis_Options_System(). КОНТЕКСТ: поток receiver_task.               */
+/* Сервисные действия: вызываются из потока измерений каждый проход (50 мс).
+   Аналог Avis_Options_System(). КОНТЕКСТ: поток measure_task (перенесено из
+   receiver_task решением автора).                                            */
 void Vector_Options_System(void)
 {
   /* Реализовано (автор): мягкая перезагрузка прошивки (SoftResetProgram
@@ -884,9 +956,10 @@ void Vector_Options_System(void)
      - окончание режима обмена данными: очистить ST_COMMON_BIT_DATA_EXCHANGE
        и ST_COMMON_BIT_BLOCK_SOUND;
      - уход в сон при CONFIG_SLEEP (PLAN.md раздел 5, этап 5).
-     ВНИМАНИЕ: save_event_type_2 ниже пишет во flash из потока ПРИЁМА (не
-     Measure Task) - исключение из правила: это "предсмертная" запись перед
-     NVIC_SystemReset, best-effort (EXT_BUSY -> короткий ретрай внутри).     */
+     save_event_type_2 ниже пишет во flash уже из потока Measure Task -
+     правило «во flash пишет только Measure Task» соблюдается; «предсмертная»
+     запись перед NVIC_SystemReset остаётся best-effort (EXT_BUSY -> короткий
+     ретрай внутри).                                                          */
 	if(SoftResetProgram){
 		if(TEST_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM)){
 			RESET_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM);
@@ -1391,9 +1464,14 @@ const char *task_module_name(task_module_t mod)
   }
 }
 
-/* Создать потоки прибора. КОНТЕКСТ: tx_application_define() (стек MSP,
-   планировщик ещё не запущен) - как audio_init(): TX_AUTO_START означает, что
-   потоки реально побегут после tx_kernel_enter().                            */
+/* Создать потоки прибора: receiver/measure - ВСЕГДА; потоки модулей обмена -
+   только при включённых CONFIG_* (решение автора: «в vector_tasks_init
+   запускай потоки в зависимости от CONFIG_BLE / CONFIG_G4 / CONFIG_LORA»;
+   NB-IoT добавится аналогично). Выключенный модуль не тратит RAM на стек
+   и не создаёт поток.
+   КОНТЕКСТ: tx_application_define() (стек MSP, планировщик ещё не запущен) -
+   как audio_init(): TX_AUTO_START означает, что потоки реально побегут после
+   tx_kernel_enter().                                                         */
 void vector_tasks_init(void)
 {
   /* Мьютекс конфигурации - ДО потоков (Sys_Cfg_Lock/Unlock, п.65). */
@@ -1406,6 +1484,7 @@ void vector_tasks_init(void)
     LOG_E(VLOG_M_TASKS, "cfg mutex create FAIL");
   }
 
+#if CONFIG_BLE
   if (tx_thread_create(&ble_task_handler, "BLE Task", ble_task_function, 0,
                        ble_task_stack, (ULONG)VECTOR_TASKS_BLE_STACK,
                        (UINT)VECTOR_TASKS_BLE_PRIORITY,
@@ -1415,7 +1494,9 @@ void vector_tasks_init(void)
     LOG_E(VLOG_M_TASKS, "ble task create FAIL (stack=%u prio=%u)",
           (uint32_t)VECTOR_TASKS_BLE_STACK, (uint32_t)VECTOR_TASKS_BLE_PRIORITY);
   }
+#endif /* CONFIG_BLE */
 
+#if CONFIG_LORA
   if (tx_thread_create(&lora_task_handler, "LoRa Task", lora_task_function, 0,
                        lora_task_stack, (ULONG)VECTOR_TASKS_LORA_STACK,
                        (UINT)VECTOR_TASKS_LORA_PRIORITY,
@@ -1425,6 +1506,19 @@ void vector_tasks_init(void)
     LOG_E(VLOG_M_TASKS, "lora task create FAIL (stack=%u prio=%u)",
           (uint32_t)VECTOR_TASKS_LORA_STACK, (uint32_t)VECTOR_TASKS_LORA_PRIORITY);
   }
+#endif /* CONFIG_LORA */
+
+#if CONFIG_G4
+  if (tx_thread_create(&lte_task_handler, "LTE Task", lte_task_function, 0,
+                       lte_task_stack, (ULONG)VECTOR_TASKS_LTE_STACK,
+                       (UINT)VECTOR_TASKS_LTE_PRIORITY,
+                       (UINT)VECTOR_TASKS_LTE_PRIORITY,
+                       TX_NO_TIME_SLICE, TX_AUTO_START) != TX_SUCCESS)
+  {
+    LOG_E(VLOG_M_TASKS, "lte task create FAIL (stack=%u prio=%u)",
+          (uint32_t)VECTOR_TASKS_LTE_STACK, (uint32_t)VECTOR_TASKS_LTE_PRIORITY);
+  }
+#endif /* CONFIG_G4 */
 
   if (tx_thread_create(&receiver_task_handler, "Receiver Task", receiver_task_function, 0,
                        receiver_task_stack, (ULONG)VECTOR_TASKS_RECEIVER_STACK,
@@ -1446,11 +1540,11 @@ void vector_tasks_init(void)
           (uint32_t)VECTOR_TASKS_MEASURE_STACK, (uint32_t)VECTOR_TASKS_MEASURE_PRIORITY);
   }
 
-  LOG_I(VLOG_M_TASKS, "tasks init: rcv(%u/%u) meas(%u/%u) ble(%u/%u) lora(%u/%u)",
+  /* Приоритет/стек базовых потоков + какие модульные потоки включены. */
+  LOG_I(VLOG_M_TASKS, "tasks init: rcv(%u/%u) meas(%u/%u) ble=%u lora=%u lte=%u",
         (uint32_t)VECTOR_TASKS_RECEIVER_PRIORITY, (uint32_t)VECTOR_TASKS_RECEIVER_STACK,
         (uint32_t)VECTOR_TASKS_MEASURE_PRIORITY, (uint32_t)VECTOR_TASKS_MEASURE_STACK,
-        (uint32_t)VECTOR_TASKS_BLE_PRIORITY, (uint32_t)VECTOR_TASKS_BLE_STACK,
-        (uint32_t)VECTOR_TASKS_LORA_PRIORITY, (uint32_t)VECTOR_TASKS_LORA_STACK);
+        (uint32_t)CONFIG_BLE, (uint32_t)CONFIG_LORA, (uint32_t)CONFIG_G4);
 }
 
 #endif /* VECTOR_TASKS_ENABLE */

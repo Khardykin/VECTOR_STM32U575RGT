@@ -11,6 +11,8 @@
 #include "vector_macros.h"
 #include "main.h"          /* Uart_SetBaudrate, usart-макросы, HAL */
 #include "rtc.h"           /* hrtc: RTC_ReadTime/RTC_WriteTime (календарь) */
+#include "sai.h"           /* hsai_BlockA1: платформенный слой Sai_* (звук)  */
+#include "audio_player.h"  /* хуки Audio_Out_On*: зовутся из колбэков HAL SAI */
 #include <time.h>          /* mktime/gmtime: календарь RTC <-> Unix-секунды  */
 #include <string.h>
 
@@ -250,4 +252,93 @@ int RTC_WriteTime(uint32_t TimeCounter)
 	}
 
 	return (status == SUCCESS) ? 0 : -1;
+}
+
+/* ============================================================================
+ * SAI: ВЫВОД ЗВУКА - платформенный слой библиотеки audio_player (решение
+ * автора: библиотеки модулей кроссплатформенные и HAL напрямую НЕ зовут).
+ * Здесь HAL живёт: SAI1 Block A + circular GPDMA1 Channel11 (настроены в кубе).
+ *
+ * Обратная сторона - входные события: колбэки HAL (HAL_SAI_TxHalfCpltCallback/
+ * HAL_SAI_TxCpltCallback/HAL_SAI_ErrorCallback, контекст ISR
+ * GPDMA1_Channel11) определены ЗДЕСЬ и передают событие в библиотеку через
+ * хуки Audio_Out_On*() (audio_player.h/.c) - там только счётчики/флаги/
+ * tx_semaphore_put, ничего блокирующего.
+ * КОНТЕКСТ Sai_*: поток плеера или инициализация до планировщика.
+ * ============================================================================ */
+
+/* Стартовать DMA-вывод сэмплов (16 бит моно). Возврат: 0 = стартовало;
+   ненуль = код ошибки платформы (HAL_StatusTypeDef/‑1 = плохие аргументы) -
+   вызывающий печатает его в лог. samples ограничено пределом uint16_t Size
+   у HAL_SAI_Transmit_DMA.                                                    */
+int Sai_StartDMA(uint8_t *buf, uint32_t samples)
+{
+  if ((buf == (uint8_t *)0) || (samples == 0u) || (samples > 0xFFFFu))
+  {
+    return -1;
+  }
+  return (int)HAL_SAI_Transmit_DMA(&hsai_BlockA1, buf, (uint16_t)samples);
+}
+
+/* Погасить вывод (circular DMA сама не останавливается). */
+void Sai_StopDMA(void)
+{
+  (void)HAL_SAI_Abort(&hsai_BlockA1);
+}
+
+/* Частота ядра SAI1 (у нас PLL3P), Гц - контроль AUDIO_SAMPLE_RATE. */
+uint32_t Sai_GetClockFreq(void)
+{
+  return HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_SAI1);
+}
+
+/* Код ошибки SAI (HAL ErrorCode) - для диагностики в логе плеера. */
+uint32_t Sai_GetErrorCode(void)
+{
+  return (uint32_t)hsai_BlockA1.ErrorCode;
+}
+
+/* Делитель MCK из конфигурации куба (0 трактуем как 1 - как считал плеер). */
+uint32_t Sai_GetMckdiv(void)
+{
+  return (hsai_BlockA1.Init.Mckdiv != 0u) ? (uint32_t)hsai_BlockA1.Init.Mckdiv : 1u;
+}
+
+/* DMA SAI в режиме circular linked-list (на U5 только DMA_LINKEDLIST_CIRCULAR
+   не гасит SAI по завершении блока - условие бесшовного стриминга). */
+int Sai_DmaIsCircular(void)
+{
+  DMA_HandleTypeDef *h = hsai_BlockA1.hdmatx;
+
+  if (h != (DMA_HandleTypeDef *)0)
+  {
+    return (h->Mode == DMA_LINKEDLIST_CIRCULAR) ? 1 : 0;
+  }
+  return 0;
+}
+
+/* --- входные колбэки HAL -> хуки audio_player (только наш блок SAI1_A) ----- */
+
+void HAL_SAI_TxHalfCpltCallback(SAI_HandleTypeDef *hsai)
+{
+  if (hsai == &hsai_BlockA1)
+  {
+    Audio_Out_OnHalfBlock();
+  }
+}
+
+void HAL_SAI_TxCpltCallback(SAI_HandleTypeDef *hsai)
+{
+  if (hsai == &hsai_BlockA1)
+  {
+    Audio_Out_OnBlockDone();
+  }
+}
+
+void HAL_SAI_ErrorCallback(SAI_HandleTypeDef *hsai)
+{
+  if (hsai == &hsai_BlockA1)
+  {
+    Audio_Out_OnError((uint32_t)hsai->ErrorCode);
+  }
 }

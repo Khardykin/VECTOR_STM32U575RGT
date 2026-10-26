@@ -49,7 +49,9 @@ Audio/Inc, Audio/Src
                            AUDIO_IMG_BASE_ADDR
   audio_ids.h              индексы звуков SND_* (генерирует tools/pack_sounds.py)
   audio_beep.[ch]          аварийный писк (const PCM 44.1 кГц во внутренней flash)
-Src/Vector_main.c          ПОТОКИ ПРИБОРА: receiver_task (приём/парсинг UART), measure_task,
+Src/Vector_main.c          ПОТОКИ ПРИБОРА: receiver_task (приём/парсинг UART), measure_task
+                           (+ Vector_Options_System), потоки модулей ble/lora/lte_task
+                           (создаются только при CONFIG_BLE/CONFIG_LORA/CONFIG_G4),
                            Vector_Run_Measure/Pre_Init, датчики I2C1 (sensors_init/read), SNS_CFG
 Src/Config_save_read.c     конфиг и КОЛЬЦЕВОЙ журнал: save_param/read_param
 Inc/Config_save_read.h       с адресом области (sfmap.h), save_event (слот 64 Б + СОХРАНЕНИЕ
@@ -102,6 +104,10 @@ Src/TFT/TFT_indicator.[ch] индикация прибора из Avis - ВЫК�
 Common/Src/vector_macros.c Delay/DelayInt/GetTick/Search_text + Uart_SetBaudrate
                            + общие hex-хелперы Vector_IsHexChar/Vector_HexToByte/
                            Vector_HexStringToBytes (разбор hex-ответов BLE и LoRa)
+                           + платформенный слой SAI Sai_StartDMA/StopDMA/
+                           GetClockFreq/GetErrorCode/GetMckdiv/DmaIsCircular и
+                           колбэки HAL_SAI_Tx*/ErrorCallback -> хуки Audio_Out_On*
+                           (audio_player HAL не зовёт - кроссплатформенность)
 Inc/vector_macros.h        макросы и хелперы проекта: TIME_DEL_1, TIME_OUT_LORA,
                            VECTOR_DEVICE_IS_ON (статусы - в shared_macros.h)
 Common/Src/vector_log.c    консольный лог: ITM/SWO и/или UART (выключается макросом)
@@ -162,7 +168,9 @@ main()
       ├─ audio_init()       семафор ap_wake, очередь ap_queue, поток "Audio Player",
       │                     load_image()  <-- чтение таблицы образа из внешней flash
       ├─ vector_tasks_init() потоки "Receiver Task" (приём/парсинг UART) и
-      │                     "Measure Task" (периодика прибора, Vector_main.c)
+      │                     "Measure Task" (периодика прибора, Vector_main.c);
+      │                     потоки модулей "BLE Task"/"LoRa Task"/"LTE Task" -
+      │                     только при CONFIG_BLE/CONFIG_LORA/CONFIG_G4
       └─ tx_thread_create(lvgl_thread)     заглушка под будущую графику
 ```
 
@@ -176,8 +184,11 @@ main()
 | Поток | Приоритет | Стек | Что делает |
 |---|---|---|---|
 | `Audio Player` (`ap_thread_entry`) | 10 | 4096 | **единственный владелец** SAI/DMA и `ap_buf[]`: ждёт `ap_wake` (heartbeat или будильник паузы повтора), разбирает команды, дозагружает половины стрим-буфера, запускает DMA, повторяет последний звук по кругу |
-| `Receiver Task` (`receiver_task_function`) | 12 | 2048 | **единственный потребитель** колец приёма `InputBuffer[TYPE_USART/TYPE_LORA/TYPE_BLE/TYPE_LTE/TYPE_SENSOR]` (GPS — исключение: байты из ISR идут прямо в `Gps_Data_Verification()`, а `Gps_Receive()` разбирает внутренний буфер `Gps.c`): `command_message()`, `Lora_Receive()`, `Ble_Receive()` (strong-реализация в `Ble_vector.c` ПУСТАЯ — обмен с модулем синхронный внутри `Ble_TransmitReceive` (Measure Task), он единственный читатель кольца `TYPE_BLE`; в Avis Receiver Task BLE тоже не обслуживает), `Lte_Receive()`, `Gps_Receive()`, `Uart_Channel_Receive()`, затем `Vector_Options_System()`; пауза `VECTOR_TASKS_RECEIVER_DELAY_MS` |
-| `Measure Task` (`measure_task_function`) | 13 | 4096 | `Vector_Run_Pre_Init()` один раз (`sensors_init()`, биты включения модулей), затем по флагу `timer.flag_1s` (такт 1 с от TIM3): `Vector_Run_Measure()` → `sensors_read()` (BME280/LIS3DH/MAX17048), поворот экрана по 6D-ориентации, `Ble_Run/Lora_Run/Lte_Run/Gps_Run`; и `Vector_RunFlashMemory()` каждый проход — журнал/конфиг во внешнюю flash только в «окно тишины» (пока звучит звук, флаги живут до следующего прохода); `Ble_Run()` — обмен с BLE-модулем (потенциально блокирующий до ~0.5 с на команду, как в Avis); меню здесь БОЛЬШЕ НЕ живёт (переехало в LVGL Task) |
+| `Receiver Task` (`receiver_task_function`) | 12 | 2048 | приём/парсинг колец `InputBuffer[TYPE_USART/TYPE_LORA/TYPE_LTE/TYPE_SENSOR]` (GPS — исключение: байты из ISR идут прямо в `Gps_Data_Verification()`, а `Gps_Receive()` разбирает внутренний буфер `Gps.c`): `command_message()`, `Lora_Receive()` (CONFIG_LORA; AT-обмену `Lora_TransmitReceive` не мешает — до инициализации модуля гейт `get_state_init_flag_lora()`, в работе — `TimeFlagRX` 50 мс тишины), `Lte_Receive()` (CONFIG_G4), `Gps_Receive()`, `Uart_Channel_Receive()`; кольцо `TYPE_BLE` читает только `Ble_TransmitReceive` (BLE Task); пауза `VECTOR_TASKS_RECEIVER_DELAY_MS` |
+| `BLE Task` (`ble_task_function`, только CONFIG_BLE) | 11 | 2048 | цикл AT «запрос-ответ» с модулем MK01: `Ble_Run()` (ритм 5 мс: INIT/SET/SLEEP-таймеры, `ADVMSDDATAGET`, мосты входа/выхода) + `Ble_Receive()` (заглушка — кольцо `TYPE_BLE` читает `Ble_TransmitReceive`); пауза `VECTOR_TASKS_BLE_DELAY_MS` |
+| `LoRa Task` (`lora_task_function`, только CONFIG_LORA) | 12 | 2048 | `Lora_Run()`: мост `Lora_UpdateInputData()`, ритм `TIMER_RTC_LORA_DATA_*`, сборка/передача пакетов; приём `Lora_Receive()` — в Receiver Task; пауза `VECTOR_TASKS_LORA_DELAY_MS` |
+| `LTE Task` (`lte_task_function`, только CONFIG_G4) | 12 | 2048 | `Lte_Run()`: AT-диалог модема (регистрация, передача; пока weak-заглушка TODO); приём `Lte_Receive()` — в Receiver Task; NB-IoT получит такой же слот; пауза `VECTOR_TASKS_LTE_DELAY_MS` |
+| `Measure Task` (`measure_task_function`) | 13 | 4096 | `Vector_Run_Pre_Init()` один раз (`sensors_init()`, биты включения модулей), затем по флагу `timer.flag_1s` (такт 1 с от TIM3): `Vector_Run_Measure()` → `sensors_read()` (BME280/LIS3DH/MAX17048), поворот экрана по 6D-ориентации, `Gps_Run()` (BLE/LoRa/LTE Run — в своих потоках); `Vector_RunFlashMemory()` каждый проход — журнал/конфиг во внешнюю flash только в «окно тишины» (пока звучит звук, флаги живут до следующего прохода); `Vector_Options_System()` каждый проход — сервис (soft reset, батарея/сверка часов раз в секунду; перенесено из Receiver Task); меню здесь БОЛЬШЕ НЕ живёт (переехало в LVGL Task) |
 | `LVGL Task` | 15 | 4096 | ПОТОК ИНДИКАЦИИ (аналог `indication_task_function` Avis): ждёт `cnt_pre_init`, затем по `timer.flag_100ms` (100 мс) — `Vector_Run_Indication()` (switch `device_turn` → `Menu_Run()`: жесты кнопок, навигация, авто-возврат, отрисовка), при `TFT_Initialized==1` — `lv_timer_handler()`; цикл 10 мс. Стек поднять до 8–16 КБ при подключении LVGL (PLAN п.48е) |
 
 Мёртвый поток `Audio Task` и семафор `audio_done_sem` удалены: звуком владеет
@@ -192,7 +203,7 @@ main()
 | IRQ | Что в нём | Можно ли звать ThreadX |
 |---|---|---|
 | `EXTI1/2/3` | `audio_demo_key_handler` → `audio_play_now/stop/set_volume` → очередь + `tx_semaphore_put(ap_wake)` | да |
-| `GPDMA1_Channel11` | DMA звука SAI1_A → `HAL_SAI_TxHalfCplt/TxCpltCallback` → счётчик выданных сэмплов, флаг «половина освободилась», `tx_semaphore_put(ap_wake)` | да |
+| `GPDMA1_Channel11` | DMA звука SAI1_A → `HAL_SAI_TxHalfCplt/TxCpltCallback` (vector_macros.c) → хуки `Audio_Out_OnHalfBlock/OnBlockDone` (audio_player.c) → счётчик выданных сэмплов, флаг «половина освободилась», `tx_semaphore_put(ap_wake)` | да |
 | `GPDMA1_Channel10` + `SPI1` | DMA приёма SPI1 → ЕOT → `HAL_SPI_RxCpltCallback` → `tx_semaphore_put(sf_dma_sem)` | да |
 | `UART4` / `USART2` / `USART3` | 1 байт → кольцо (`add_to_buffer`) или эхо в TDR | да |
 | `USART1` (GPS, PB6/PB7) | 1 байт → `Gps_Data_Verification()` (кадр NMEA и таймаут ведёт `Gps.c`) | да, но из ISR только накопление байта |
@@ -230,7 +241,8 @@ EXTI -> audio_demo_key_handler -> audio_play_now(idx)
 
 **Половина отыграла → дозагрузка**
 ```
-GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
+GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback (vector_macros.c)
+     -> Audio_Out_OnHalfBlock/OnBlockDone (audio_player.c) -> played += CHUNK,
      req0/req1 = 1, put(ap_wake)
      -> ap_thread: stream_service -> stream_fill(половина)
           ext_read(смещение += CHUNK; ретраи VECTOR_SF_READ_RETRY) -> тишина в хвосте
@@ -253,7 +265,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 | SPI1 + внешняя flash | `extstore` | `ext_mtx` (TX_INHERIT, на всю операцию включая стирание), ожидание ограниченное: чтения — до `VECTOR_EXT_LOCK_READ_MS` (250 мс), записи — try-lock (`VECTOR_EXT_LOCK_WRITE_MS` = 0), занято → `EXT_BUSY (-2)`, вызывающий повторяет. Стирания не стартуют, пока звучит звук (`audio_is_busy()`), — откладываются в «окно тишины» (пауза повтора 500 мс / конец звука); `Vector_RunFlashMemory()` заходит во flash тоже только в тишину |
 | SAI1_A + GPDMA ch11 + `ap_buf[]` (2 × 4096 сэмплов = 16 КБ) | поток `Audio Player` | один владелец: ISR ставит только флаги «половина освободилась» и счётчик, дозагружает всегда поток |
 | USART1/UART4 (лог) | `vector_log.c` (`VECTOR_LOG_ENABLE`) | только инициализация/поток, из ISR вызов отбрасывается; UART4 занят только логом |
-| Кольца приёма `InputBuffer[TYPE_*]` | поток `Receiver Task` | SPSC: производитель — ISR UART (`add_to_buffer`), потребитель — **только** `receiver_task_function()` (напрямую или через `Lora_Receive()`) |
+| Кольца приёма `InputBuffer[TYPE_*]` | поток `Receiver Task` (исключение — `TYPE_BLE`) | SPSC: производитель — ISR UART (`add_to_buffer`), потребитель — `receiver_task_function()` (напрямую или через `Lora_Receive()`/`Lte_Receive()`); кольцо `TYPE_BLE` читает только `Ble_TransmitReceive` в `BLE Task`; во время AT-обмена LoRa кольцо `TYPE_LORA` читает `Lora_TransmitReceive` (`LoRa Task`) — `Lora_Receive()` в это время не пускают гейты `get_state_init_flag_lora()`/`TimeFlagRX` |
 | Состояние плеера `audio_status` | `audio_player.c` | volatile-структура целиком; пишут поток и ISR SAI-DMA, порядок записи `sound_index`→`output` фиксирован |
 | I2C1 (PB8/PB9): BME280 0x76, LIS3DH 0x19, MAX17048 0x36 | поток `Measure Task` (`Vector_main.c`) | один владелец: чтение только из `sensors_read()`, блокирующий обмен через макросы `I2C_Master_Transmit/Receive` (main.h) |
 | `LCD_platform.c` | ошибки SPI2/DMA экрана, принудительное освобождение порта, предупреждения о конфигурации куба |
@@ -290,7 +302,8 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback -> played += CHUNK,
 переносятся только после успешного `read_param` — аналог
 `ReadCurrentAddrFile()` в `Avis_Run_Pre_Init`. Хвост чипа `0x603000..8 МБ` —
 резерв. Владелец конфигов — `Config_save_read.c`, запись
-только из потока `Measure Task` (`Vector_Run_Pre_Init` / `Vector_RunFlashMemory`)
+только из потока `Measure Task` (`Vector_Run_Pre_Init` / `Vector_RunFlashMemory` /
+`Vector_Options_System` — «предсмертная» запись перед soft reset)
 и только в «окно тишины» — пока звучит звук, `Vector_RunFlashMemory()` не пишет,
 а стирания откладываются и внутри `extstore` (`compare_param()` событие не
 пишет сам, а взводит `SaveEvent`/`TypeLogEvent`). Журнал единый для обоих видов

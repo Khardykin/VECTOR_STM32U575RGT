@@ -19,6 +19,7 @@ uint8_t Gps_Auto_Detect_Chip(void);
 static const char *Nmea_Field(const char *s, uint8_t n);
 static uint8_t Nmea_Field_Empty(const char *f);
 static uint8_t Nmea_IsType(const char *p, const char *type);
+static uint8_t Nmea_SentenceComplete(const char *p, const char *end);
 static void Gps_ParseGga(const char *s);
 static void Gps_CollectGsv(const char *s);
 static void Gps_UpdateSignal(void);
@@ -636,7 +637,13 @@ static double_t NmeaToDecimalDegrees(double_t nmea_coord)
  *     прежнего счётчика кадров; сами GGA/GSV обрабатываются КАЖДУЮ секунду,
  *     чтобы усреднение сигнала не искажалось (у Allystar то же самое,
  *     период у сообщения задаётся в Gps_Init, а не «железом» модуля);
- *   - нет фикса: широта/долгота строго 0.0, Gps_signal_db_hz строго 0.
+ *   - нет фикса: широта/долгота строго 0.0, Gps_signal_db_hz строго 0;
+ *   - кадр ПРИЁМНОГО БУФЕРА - не обязательно одна секунда: при задержке
+ *     receiver'а в нём копится несколько секунд подряд, а при переполнении
+ *     буфера хвост обрезан. Поэтому разбор ПОПРЕДЛОЖЕНЧЕСКИЙ с проверкой
+ *     полноты ('*'/перевод строки), а граница секунды - приход GGA (см.
+ *     Gps_Receive): каждая секунда закрывается отдельно, среднее C/No
+ *     секунд НЕ смешивает, итоговое состояние - по последней полной секунде.
  * КОНТЕКСТ: поток receiver_task (вызывается из Gps_Receive).
  * ======================================================================== */
 #define GPS_COORD_PUBLISH_MS   (10000u)  /* интервал выдачи навигационной точки */
@@ -646,6 +653,9 @@ static uint8_t  s_snr[GPS_SNR_MAX];      /* уровни C/No текущей с�
 static uint8_t  s_snr_cnt = 0;
 static uint32_t s_coord_pub_tick = 0;    /* тик последней публикации координат */
 static uint8_t  s_coord_pub_once = 0;    /* 1 = публикация уже была (первый фикс - сразу) */
+#if CONFIG_LORA
+static uint8_t  s_lora_loss_sent = 0;    /* 1 = потеря фикса уже сообщена LoRa (край) */
+#endif
 
 /* Указатель на начало поля номер n NMEA-предложения (0 = заголовок "$GxGGA").
    Граница поля - ','; конец предложения - '*' (контрольная сумма), '\r', '\n',
@@ -696,6 +706,21 @@ static uint8_t Nmea_IsType(const char *p, const char *type)
 		}
 	}
 	return 1u;
+}
+
+/* Полнота предложения: ищем в [p, end) '*' (контрольная сумма - есть всегда
+   у LOCOSYS/Allystar) или '\n' (конец строки - страховка для потока без
+   контрольной суммы). Обрезанный хвост при переполнении буфера не имеет
+   ни того, ни другого - такой огрызок НЕ парсится (мусор хуже потери).    */
+static uint8_t Nmea_SentenceComplete(const char *p, const char *end)
+{
+	while ((p < end) && (*p != '\0')) {
+		if ((*p == '*') || (*p == '\n')) {
+			return 1u;
+		}
+		p++;
+	}
+	return 0u;
 }
 
 /* GGA по спеке: поле 2/3 = широта + N/S, 4/5 = долгота + E/W, 6 = качество
@@ -816,9 +841,22 @@ static void Gps_UpdateSignal(void)
 static void Gps_Publish_Coords(void)
 {
 	if (Gps_flag_navigation == 0u) {
-		s_coord_pub_once = 0u;
+#if CONFIG_LORA
+		/* Потеря фикса: сообщаем LoRa ОДИН раз за пропажу (край) - флаг
+		   навигации там переключается по flag_navigation, а не по проверке
+		   «координаты != 0». Трек нулями не кормим, gps_last_valid_* на
+		   стороне LoRa сохраняет последнюю ВАЛИДНУЮ точку.                */
+		if (s_lora_loss_sent == 0u) {
+			s_lora_loss_sent = 1u;
+			Lora_UpdateGPSTrack(0, 0, 0);
+		}
+#endif
+		s_coord_pub_once = 0u;      /* первый фикс после потери - сразу */
 		return;
 	}
+#if CONFIG_LORA
+	s_lora_loss_sent = 0u;
+#endif
 	if ((s_coord_pub_once != 0u) &&
 		((GetTick() - s_coord_pub_tick) < GPS_COORD_PUBLISH_MS)) {
 		return;                     /* 10 с ещё не прошло */
@@ -842,8 +880,8 @@ static void Gps_Publish_Coords(void)
 #endif
 #if CONFIG_LORA
 	/* Точка трека - раз в 10 с (внутри Lora_UpdateGPSTrack свой дополнительный
-	   делитель LORA_CFG_GET_GPSFIX) */
-	Lora_UpdateGPSTrack(g_lat_scaled, g_lon_scaled);
+	   делитель LORA_CFG_GET_GPSFIX); flag_navigation=1 - фикс есть.        */
+	Lora_UpdateGPSTrack(g_lat_scaled, g_lon_scaled, 1);
 #endif
 }
 
@@ -863,28 +901,61 @@ void Gps_Receive(void)
         buffer_uart_gps.TimeFlagRX = 0;
 
         /* === СПЕКА NMEA (ОБЩАЯ для LOCOSYS и Allystar - оба чипа настроены
-           в Gps_Init на GGA + GSV каждую секунду): из потока обрабатываются
-           только строки GGA и GSV, остальные пропускаются (их и в буфере
-           нет - фильтр ISR Gps_Data_Verification). Обход кадра по '$': тип
-           предложения - символы 3..5. Кадр = одна секунда NMEA. === */
-        const char *p = (const char *)data_gps;
+           в Gps_Init на GGA + GSV каждую секунду): обрабатываются только
+           предложения GGA и GSV, остальные пропускаются (их и в буфере нет -
+           фильтр ISR Gps_Data_Verification).
 
-        s_snr_cnt = 0;                      /* сигнал считаем заново каждую секунду */
+           Кадр - НЕ обязательно одна секунда: при задержке receiver'а в
+           буфере копится несколько секунд подряд ("$…*hh\r
+" друг за
+           другом), а при переполнении (768 Б ~ 2-3 с потока) хвост обрезан.
+           Поэтому обход ПОПРЕДЛОЖЕНЧЕСКИЙ:
+             - предложение = от '$' до следующего '$' / конца буфера;
+             - неполное (нет '*' и '\n' - обрезанный хвост) ПРОПУСКАЕТСЯ;
+             - GGA - начало секунды: сначала закрываем ПРЕДЫДУЩУЮ секунду
+               (сигнал по её GSV + решение о публикации координат), затем
+               берём новую GGA и сбрасываем сборщик C/No.
+           Итог: секунды разбираются независимо, среднее не смешивается,
+           состояние (nav/сигнал/координаты) - по последней полной секунде;
+           публикацию координат гейт по тику всё равно делает раз в 10 с. === */
+        const char *p = (const char *)data_gps;
+        uint8_t seen_gga = 0u;
+
+        s_snr_cnt = 0;
 
         while (*p != '\0') {
-            if (*p == '$') {
+            const char *end;
+
+            if (*p != '$') {
+                p++;
+                continue;
+            }
+            end = p + 1;                    /* граница: следующий '$' или '\0' */
+            while ((*end != '\0') && (*end != '$')) {
+                end++;
+            }
+
+            if (Nmea_SentenceComplete(p, end) != 0u) {
                 if (Nmea_IsType(p, "GGA") != 0u) {
-                    Gps_ParseGga(p);        /* фикс/спутники/координаты - каждую секунду */
+                    if (seen_gga != 0u) {
+                        Gps_UpdateSignal();     /* закрыть ПРЕДЫДУЩУЮ секунду */
+                        Gps_Publish_Coords();
+                    }
+                    Gps_ParseGga(p);            /* фикс/спутники/координаты */
+                    s_snr_cnt = 0;              /* новая секунда - новый набор C/No */
+                    seen_gga = 1u;
                 }
-                else if (Nmea_IsType(p, "GSV") != 0u) {
-                    Gps_CollectGsv(p);      /* накопление C/No текущей секунды */
+                else if ((Nmea_IsType(p, "GSV") != 0u) && (seen_gga != 0u)) {
+                    Gps_CollectGsv(p);          /* GSV до первой GGA - секунда неизвестна, мимо */
                 }
             }
-            p++;
+            p = end;
         }
 
-        Gps_UpdateSignal();                 /* «золотая четвёрка»; нет фикса -> 0 */
-        Gps_Publish_Coords();               /* в систему - строго раз в 10 с */
+        if (seen_gga != 0u) {                   /* закрыть ПОСЛЕДНЮЮ секунду кадра */
+            Gps_UpdateSignal();
+            Gps_Publish_Coords();
+        }
 
         buffer_uart_gps.TimerReceive = GetTick();
         Gps_flag_err = 0;

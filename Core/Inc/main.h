@@ -88,8 +88,8 @@ extern "C" {
    аргументы databits/stopbits макросом игнорируются. Реализация
    Uart_SetBaudrate() - в vector_macros.c.                                  */
 #define UART_OK							HAL_OK
-#define Uart_Init(x1)						HAL_UART_Init(x1)
-#define Uart_Enable_IT(x1,x2)				__HAL_UART_ENABLE_IT(x1,x2)
+#define Uart_Init(x1)					HAL_UART_Init(x1)
+#define Uart_Enable_IT(x1,x2)			__HAL_UART_ENABLE_IT(x1,x2)
 #define UART_IT_RX_ERR					UART_IT_ERR
 #define UART_IT_RX_BYTE					UART_IT_RXNE
 #define USART_DATA_8BITS				(8u)
@@ -97,6 +97,14 @@ extern "C" {
 #define usart_init(port,baud,databits,stopbits)	Uart_SetBaudrate(&(port),(baud))
 
 void Uart_SetBaudrate(UART_HandleTypeDef *huart, uint32_t baud);
+
+/* --- Внешняя flash (spiflash/extstore): коды возврата -----------------------
+   API spiflash возвращает HAL_StatusTypeDef; библиотеки (audio_player)
+   сравнивают результаты через эти макросы, не называя HAL напрямую -
+   тот же подход, что SPI_OK/i2c_status_type выше.                            */
+#define sf_status_type					HAL_StatusTypeDef
+#define SF_OK							HAL_OK
+#define SF_ERROR						HAL_ERROR
 
 #define READ_PIN_IN(x)  	(LL_GPIO_IsInputPinSet(x##_GPIO_Port, x##_Pin))
 #define READ_PIN_OUT(x)  	(LL_GPIO_IsOutputPinSet(x##_GPIO_Port, x##_Pin))

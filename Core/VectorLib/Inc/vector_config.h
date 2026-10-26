@@ -320,11 +320,14 @@
 #define VECTOR_TASKS_MEASURE_DELAY_MS    50u
 #endif
 
-/* --- Отдельные потоки BLE и LoRa (п.65, решение автора: убрать оба из
+/* --- Отдельные потоки модулей обмена (п.65, решение автора: убрать из
  * measure/receiver - AT-обмен «запрос-ответ» слишком частый для мерного ритма
- * 50 мс; запросов много, они последовательные). В будущем слот LoRa-потока
- * займёт модем 3G/IoT - интерфейс потока (Run+Receive) сохранён.
- * Приоритеты: audio=10 (AP_PRIORITY) > BLE=11 > receiver=LoRa=12 > measure=13. */
+ * 50 мс; запросов много, они последовательные). Свой поток у каждого радио:
+ * BLE (CONFIG_BLE), LoRa (CONFIG_LORA), LTE (CONFIG_G4, «для Lte_Run тоже
+ * нужен свой поток» - автор); NB-IoT получит такой же слот (CONFIG_NBIOT).
+ * vector_tasks_init() создаёт потоки ТОЛЬКО под включённые CONFIG_*.
+ * Приём (Lora_Receive/Lte_Receive) - в receiver_task, в потоках модулей - Run.
+ * Приоритеты: audio=10 (AP_PRIORITY) > BLE=11 > receiver=LoRa=LTE=12 > measure=13. */
 #ifndef VECTOR_TASKS_BLE_PRIORITY
 #define VECTOR_TASKS_BLE_PRIORITY        11u
 #endif
@@ -342,6 +345,15 @@
 #endif
 #ifndef VECTOR_TASKS_LORA_DELAY_MS
 #define VECTOR_TASKS_LORA_DELAY_MS       10u
+#endif
+#ifndef VECTOR_TASKS_LTE_PRIORITY
+#define VECTOR_TASKS_LTE_PRIORITY        12u
+#endif
+#ifndef VECTOR_TASKS_LTE_STACK
+#define VECTOR_TASKS_LTE_STACK           2048u
+#endif
+#ifndef VECTOR_TASKS_LTE_DELAY_MS
+#define VECTOR_TASKS_LTE_DELAY_MS        50u
 #endif
 
 /* --- BLE: мастерская сторона модуля MK01 (Ble_vector.c) ---------------

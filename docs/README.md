@@ -106,8 +106,11 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 | `VECTOR_TASKS_ENABLE` | `1` | `0` = потоки прибора не создаются, вызовы вырождаются в макросы |
 | `VECTOR_TASKS_RECEIVER_PRIORITY` / `_STACK` | `12` / `2048` | поток приёма/парсинга UART (Audio = 10, LVGL = 15) |
 | `VECTOR_TASKS_RECEIVER_DELAY_MS` | `10` | пауза между проходами потока приёма (тик RTOS = 10 мс) |
-| `VECTOR_TASKS_MEASURE_PRIORITY` / `_STACK` | `13` / `4096` | поток периодики прибора |
+| `VECTOR_TASKS_MEASURE_PRIORITY` / `_STACK` | `13` / `4096` | поток периодики прибора (+ `Vector_Options_System()` каждый проход) |
 | `VECTOR_TASKS_MEASURE_DELAY_MS` | `50` | пауза между проходами потока измерений |
+| `VECTOR_TASKS_BLE_PRIORITY` / `_STACK` / `_DELAY_MS` | `11` / `2048` / `5` | поток «BLE Task» — создаётся только при `CONFIG_BLE`: `Ble_Run()` + `Ble_Receive()` (заглушка) |
+| `VECTOR_TASKS_LORA_PRIORITY` / `_STACK` / `_DELAY_MS` | `12` / `2048` / `10` | поток «LoRa Task» — только при `CONFIG_LORA`: `Lora_Run()` (приём `Lora_Receive()` — в receiver) |
+| `VECTOR_TASKS_LTE_PRIORITY` / `_STACK` / `_DELAY_MS` | `12` / `2048` / `50` | поток «LTE Task» — только при `CONFIG_G4`: `Lte_Run()` (приём `Lte_Receive()` — в receiver); NB-IoT добавится аналогично |
 
 ### Экран TFT (ST7789P3 172×320, SPI2 + DMA) и датчики
 

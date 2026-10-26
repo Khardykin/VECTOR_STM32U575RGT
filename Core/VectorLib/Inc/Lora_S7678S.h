@@ -564,7 +564,12 @@ extern void     Lora_SetPulseSerial(uint16_t serial);
 extern void     Lora_SetPulseData(uint8_t battery_percent, uint8_t heart_rate, uint8_t spo2_percent);
 
 #if CONFIG_GPS
-extern void Lora_UpdateGPSTrack(int32_t cur_lat, int32_t cur_lon);
+/* Точка GPS-трека + состояние навигации (зовёт Gps.c: раз в 10 с при фиксе
+   (lat/lon, flag=1) и один раз при потере фикса (0, 0, flag=0)).
+   flag_navigation = Gps_flag_navigation: LoRa переключается по ФЛАГУ, а не
+   по проверке «координаты != 0» (решение автора). При flag=0 координаты
+   в gps_last_valid_* НЕ пишутся - последняя ВАЛИДНАЯ точка сохраняется.   */
+extern void Lora_UpdateGPSTrack(int32_t cur_lat, int32_t cur_lon, uint8_t flag_navigation);
 #endif
 
 #if LORA_DEBUG

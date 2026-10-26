@@ -148,7 +148,7 @@ static buffer_uart_ble_t buffer_uart_ble = {{0}, 0, 0};
 // Cortex-M33 атомарны - блокировка не нужна (правило п.65, Vector_main.h).
 typedef struct {
 	uint32_t serial;		/* (SerialHi<<16)|SerialLo - имя модуля (ADVBLENAMESET)   */
-	uint8_t  label;			/* метка сборки: 0 = MIRAX ("VEC"), 1 = BACS ("22.")      */
+	uint8_t  label;			/* метка сборки: 0 = MIRAX ("VEC"), 1 = BACS (не задана) */
 	uint8_t  turn_on;		/* снимок ST_COMMON_BIT_TURN_ON_BLE (Config_common.State) */
 } ble_input_t;
 
@@ -779,8 +779,13 @@ static uint8_t Ble_ReadAnswer(BLE_CMD_t command)
 
 	switch (command) {
 	case CMD_MODINFO:								// информация о модуле
-		if ((strstr((char*)buffer_uart_ble.receive, "BLE") != NULL) && (len > 18u)) {
-			memcpy(ModInfo, buffer_uart_ble.receive, (len > 38u) ? 38u : len);
+		/* Спека §4.0: ответ AT+MODINFO? = hex(ModInfo) - разбираем общим
+		   hex-хелпером, как BLEADDR?/DATAGET (прежняя проверка strstr("BLE")
+		   в спецификации не описана - убрана по замечанию автора).          */
+		if (len > 2u) {
+			memset(ModInfo, 0, sizeof(ModInfo));
+			(void)Vector_HexStringToBytes((const char *)&buffer_uart_ble.receive[2],
+										  ModInfo, sizeof(ModInfo));
 		}
 		break;
 	case CMD_BLEADDR:								// MAC-адрес модуля (hex-парами)
@@ -809,11 +814,11 @@ static uint8_t Ble_ReadAnswer(BLE_CMD_t command)
 		break;
 	}
 
-	if (strstr((char*)buffer_uart_ble.receive, "OK") != NULL) {
+	if (strstr((char*)buffer_uart_ble.receive, BLE_RES_OK) != NULL) {
 		ble_status.cnt_ok++;
 		tasks_status.mod[TASK_MOD_BLE].cnt_rx_frames++;
 		return 0;
-	} else if (strstr((char*)buffer_uart_ble.receive, "ERROR") != NULL) {
+	} else if (strstr((char*)buffer_uart_ble.receive, BLE_RES_ERROR) != NULL) {
 		ble_status.cnt_error++;
 		tasks_status.mod[TASK_MOD_BLE].cnt_errors++;
 		LOG_W(VLOG_M_COM, "BLE: ERROR cmd=%d", (int)command);
@@ -831,11 +836,11 @@ static uint8_t Ble_ReadAnswer(BLE_CMD_t command)
  * @param  serial  (SerialHi<<16)|SerialLo.
  * @retval Нет. Контекст: BLE-поток (из Ble_Init).
  * Формат Avis (Device2_1): label + "%04d%04d" (Hi 0..9999, Lo 0..9999).
- * Метка VECTOR предварительно "VEC"/"22." — TODO автор (имя в сети).
+ * Метка VECTOR — "VEC" (для BACS метка пока не задана — TODO автор).
  */
 void BLE_InitName(uint32_t serial)
 {
-	const char *BLE_Label[2] = { "VEC", "22." };		// [0]=MIRAX, [1]=BACS
+	const char *BLE_Label[2] = { "VEC" };				// [0]=MIRAX; [1]=BACS не задана (NULL)
 	/* Метка сборки - из входного моста (ble_in.label читает current_build_type,
 	   п.66: код модуля внешние структуры напрямую не читает). Метка VECTOR
 	   предварительно "VEC" - TODO автор.                                   */
@@ -843,7 +848,11 @@ void BLE_InitName(uint32_t serial)
 
 	/* Формат Avis (format_type=0): метка + "%04d%04d" от serial/10000 и
 	   serial%10000 (serial = (SerialHi<<16)|SerialLo целиком).              */
-	sprintf(Ble_string, "%s%04d%04d", BLE_Label[label],
+	/* Метка BACS пока не определена (BLE_Label[1] = NULL) - подставляем общую
+	   "VEC", чтобы sprintf("%s") не получил NULL. TODO автор: имя сети BACS.  */
+	const char *label_str = ((label < 2u) && (BLE_Label[label] != NULL))
+							  ? BLE_Label[label] : BLE_Label[0];
+	sprintf(Ble_string, "%s%04d%04d", label_str,
 			(int)(serial / 10000u), (int)(serial % 10000u));
 	(void)Ble_TransmitReceive(CMD_ADVBLENAMESET, 0);
 }

@@ -61,7 +61,7 @@ extern "C" {
 #define AUDIO_SAMPLE_RATE     44100u
 
 /* RAM-буфер под один звук в запасном режиме "одной транзакцией". 65535
-   сэмплов - предел uint16_t Size в HAL_SAI_Transmit_DMA: при 44.1 кГц это
+   сэмплов - предел uint16_t Size у DMA SAI (Sai_StartDMA): при 44.1 кГц это
    максимум 1.49 с на звук. Рабочий режим - стриминг (длина не ограничена),
    см. VECTOR_AUDIO_STREAM в vector_config.h.                               */
 #define AUDIO_BUF_SAMPLES     65535u
@@ -130,6 +130,19 @@ audio_err_t audio_play_now(uint16_t idx);  /* прервать текущий и
 audio_err_t audio_play_name(const char *name);
 void        audio_stop(void);
 void        audio_beep(void);      /* аварийный писк из внутренней flash */
+
+/* --- ХУКИ платформенного вывода SAI/DMA: реализованы в audio_player.c,
+   вызываются из vector_macros.c (там живут HAL-колбэки SAI - библиотека
+   кроссплатформенная и HAL не зовёт). КОНТЕКСТ: ISR GPDMA1_Channel11 -
+   только счётчики/флаги/tx_semaphore_put, ничего блокирующего.
+     Audio_Out_OnHalfBlock - первая половина буфера выдана в SAI (можно
+                             перезаписать: stream_fill(0));
+     Audio_Out_OnBlockDone - вторая половина выдана, DMA пошла по кругу
+                             (в one-shot режиме это конец звука);
+     Audio_Out_OnError     - ошибка SAI/DMA, error_code = код платформы.   */
+void Audio_Out_OnHalfBlock(void);
+void Audio_Out_OnBlockDone(void);
+void Audio_Out_OnError(uint32_t error_code);
 
 /* --- ЦИКЛ: повтор последнего запущенного звука ---------------------------
  * audio_set_loop(1) включает повтор: звук, запущенный audio_play()/

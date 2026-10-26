@@ -607,6 +607,11 @@ static int32_t Lora_CalcDeltaMeters(int32_t target, int32_t reference, int32_t r
 
 static int32_t gps_last_valid_lat = 0;
 static int32_t gps_last_valid_lon = 0;
+/* Флаг навигации от GPS: приходит из Gps_flag_navigation через
+   Lora_UpdateGPSTrack (решение автора). Заменил прежние проверки
+   «(gps_last_valid_lat != 0) || (gps_last_valid_lon != 0)» - нулевая
+   координата и отсутствие фикса - разные вещи.                            */
+static bool Lora_flag_navigation = false;
 
 static int32_t gps_hist_prev_lat = 0;
 static int32_t gps_hist_prev_lon = 0;
@@ -617,14 +622,21 @@ static uint8_t gps_hist_count = 0;
 static bool gps_hist_has_prev = false;
 static uint8_t gps_fix_counter = 0;
 
-void Lora_UpdateGPSTrack(int32_t cur_lat, int32_t cur_lon)
+void Lora_UpdateGPSTrack(int32_t cur_lat, int32_t cur_lon, uint8_t flag_navigation)
 {
     if (!LORA_TEST_FLAG(LORA_FLAG_START)) {
         return;
     }
 
-    gps_last_valid_lat = cur_lat;
-    gps_last_valid_lon = cur_lon;
+    Lora_flag_navigation = (flag_navigation != 0);
+
+    /* «Последняя ВАЛИДНАЯ» точка пишется только при фиксе: сообщение о
+       потере (0, 0, flag=0) не должно её затирать - якорь/трек эвакуации
+       продолжают пользоваться последними реальными координатами.          */
+    if (Lora_flag_navigation) {
+        gps_last_valid_lat = cur_lat;
+        gps_last_valid_lon = cur_lon;
+    }
 
     if (LORA_TEST_FLAG(LORA_FLAG_CONNECTION_LOST)) {
         return;
@@ -2401,7 +2413,7 @@ void Lora_DataSet(SNS_CFG *Cfg_struct)
             event_anchor.unix_time = lora_in.unix_time;
 
 #if CONFIG_GPS
-            if ((gps_last_valid_lat != 0) || (gps_last_valid_lon != 0)) {
+            if (Lora_flag_navigation) {   /* флаг фикса от GPS, а не проверка «координаты != 0» */
                 event_anchor.is_valid = true;
             }
 
@@ -2438,7 +2450,7 @@ void Lora_DataSet(SNS_CFG *Cfg_struct)
             }
 
             if (should_add && (gps_history.count < GPS_HISTORY_MAX_POINTS)) {
-                if ((gps_last_valid_lat != 0) || (gps_last_valid_lon != 0)) {
+                if (Lora_flag_navigation) {   /* флаг фикса от GPS (точка - последние валидные координаты) */
                     if (gps_history.count == 0) {
                         gps_history.first_point_unix_time = current_time;
                     }
