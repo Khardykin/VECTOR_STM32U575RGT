@@ -933,7 +933,7 @@ static void Gps_Publish_Coords(void)
 #if CONFIG_LORA
 	/* Точка трека - раз в 10 с (внутри Lora_UpdateGPSTrack свой дополнительный
 	   делитель LORA_CFG_GET_GPSFIX); flag_navigation=1 - фикс есть.        */
-	Lora_UpdateGPSTrack(g_lat_scaled, g_lon_scaled, 1);
+	Lora_UpdateGPSTrack(g_lat_scaled, g_lon_scaled, flag_navigation);
 #endif
 }
 
