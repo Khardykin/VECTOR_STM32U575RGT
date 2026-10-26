@@ -436,7 +436,12 @@ static void receiver_task_function(ULONG thread_input)
     /* --- LoRa и BLE УБРАНЫ в отдельные потоки (lora_task/ble_task, п.65):
      * AT-обмен «запрос-ответ» слишком частый для общих ритмов; кольцо LoRa
      * читает ТЕПЕРЬ lora_task (правило SPSC - единственный читатель).       */
-
+#if CONFIG_LORA
+    Lora_Receive();
+#endif
+#if CONFIG_BLE
+    Ble_Receive();
+#endif
     /* --- LTE/GSM ------------------------------------------------------------ */
 #if CONFIG_G4
     mod_receive_call(TASK_MOD_LTE);
@@ -530,7 +535,6 @@ static void ble_task_function(ULONG thread_input)
   {
     mod_run_call(TASK_MOD_BLE);
     Ble_Run();
-    Ble_Receive();
 
     VTICK_SLEEP_MS(VECTOR_TASKS_BLE_DELAY_MS);
   }
@@ -558,9 +562,6 @@ static void lora_task_function(ULONG thread_input)
   {
     mod_run_call(TASK_MOD_LORA);
     Lora_Run();
-#if CONFIG_LORA
-    Lora_Receive();
-#endif
 
     VTICK_SLEEP_MS(VECTOR_TASKS_LORA_DELAY_MS);
   }
