@@ -15,6 +15,14 @@ static uint16_t Gps_Crc(uint8_t *data, uint16_t count);
 static double_t NmeaToDecimalDegrees(double_t nmea_coord);
 void Uart_Gps_Set_Baudrate(uint32_t baud);
 uint8_t Gps_Auto_Detect_Chip(void);
+/* NMEA-разбор LOCOSYS по спеке (GGA + GSV, 1 Гц) - определения перед Gps_Receive */
+static const char *Nmea_Field(const char *s, uint8_t n);
+static uint8_t Nmea_Field_Empty(const char *f);
+static uint8_t Nmea_IsType(const char *p, const char *type);
+static void Gps_ParseGga(const char *s);
+static void Gps_CollectGsv(const char *s);
+static void Gps_UpdateSignal(void);
+static void Gps_Publish_Coords(void);
 //===========================================================================================================================
 static DETECT_STATE_t Gps_Detect_State = DETECT_STATE_START_115200;
 static uint32_t 		Gps_Detect_Timeout_Timer = 0;
@@ -23,7 +31,6 @@ static uint8_t 			Gps_Verification_Mode = 0;
 static uint8_t 			Gps_flag_err = 0;
 static uint8_t 			Gps_Init_flag = 0;
 static uint8_t			Gps_flag_receive = 0;
-static uint8_t			Gps_count_receive = 0;
 static uint8_t			Gps_flag_navigation = 0;
 //===========================================================================================================================
 Message_buffer_uart_gps buffer_uart_gps = {0};
@@ -33,6 +40,10 @@ double_t Longitude = 0;
 int32_t g_lat_scaled = 0;
 int32_t g_lon_scaled = 0;
 uint32_t Gps_type_nav_pre = 0;
+/* Выходы спеки LOCOSYS (GGA/GSV): спутники из GGA (поле 7) и сигнал дБ-Гц -
+   среднее четырёх лучших C/No из GSV за секунду; 0 при отсутствии фикса.   */
+int   Gps_satellites_used = 0;
+float Gps_signal_db_hz = 0.0f;
 //===========================================================================================================================
 static uint16_t Gps_Crc(uint8_t *data, uint16_t count)
 {
@@ -72,9 +83,19 @@ uint8_t Gps_Receive_flag_navigation(void)
 }
 
 //===========================================================================================================================
+/* Приём байта из ISR: кадр копится от '$' до тишины TIME_OUT_GPS (50 мс -
+   Uart_Gps_Receive_Timer_Inc взведёт TimeFlagRX). В рабочем режиме в буфер
+   попадают ТОЛЬКО предложения GGA/GSV (спека LOCOSYS) и GLL (legacy-чип
+   Allystar): тип предложения решается по его 6-му байту (символы 3..5 после
+   '$'), остальные предложения ОТКАТЫВАЮТСЯ - не занимают место в буфере.
+   В режиме верификации (Gps_Auto_Detect_Chip) поток пишется СЫРЬЁМ - детект
+   смотрит на первый символ ответа. КОНТЕКСТ: ISR приёма UART.              */
 void Gps_Data_Verification(uint8_t data)
 {
-	uint16_t len = 0;
+	/* Состояние текущего предложения: индекс его начала в receive[] и вердикт
+	   (2 = тип ещё не определён, 1 = пишем, 0 = отброшено).                  */
+	static uint16_t sent_start = 0;
+	static uint8_t  sent_keep = 2;
 
 	if((Gps_Verification_Mode == 0) && (get_state_init_flag_gps() == 0)){
 		return;
@@ -82,27 +103,50 @@ void Gps_Data_Verification(uint8_t data)
 
 	if(data == '$'){
 		if((Gps_Receive_flag_read() == 0)){
-			Gps_count_receive = 0;
+			/* первый '$' после тишины - новый кадр */
 			Gps_Receive_flag_set(1);
-		}
-	}
-	else if((Gps_Verification_Mode == 0) && (Gps_Receive_flag_read() == 1) && (Gps_count_receive >= 6)){
-		if(strstr((char *)buffer_uart_gps.receive, "GLL") != NULL){
-			buffer_uart_gps.TimeRX = TIME_OUT_GPS;
+			buffer_uart_gps.count_byter_r = 0;
+			sent_start = 0;
 		}
 		else{
-			Gps_Receive_flag_set(0);
-			len = buffer_uart_gps.count_byter_r;
-			buffer_uart_gps.count_byter_r = 0;
-			memset(&buffer_uart_gps.receive[0], 0, len);
+			sent_start = buffer_uart_gps.count_byter_r;   /* следующее предложение */
 		}
+		sent_keep = 2;
 	}
 
 	if(Gps_Receive_flag_read() == 1){
-		Gps_count_receive ++;
-		if(buffer_uart_gps.count_byter_r < 255){
-			buffer_uart_gps.receive[buffer_uart_gps.count_byter_r] = data;
-			buffer_uart_gps.count_byter_r++;
+		if(Gps_Verification_Mode == 0){
+			buffer_uart_gps.TimeRX = TIME_OUT_GPS;    /* байт есть - тишина сбрасывается */
+		}
+
+		if(buffer_uart_gps.count_byter_r < (uint16_t)(sizeof(buffer_uart_gps.receive) - 1u)){
+			uint16_t idx = buffer_uart_gps.count_byter_r;
+
+			if((Gps_Verification_Mode != 0) || (sent_keep != 0u)){
+				buffer_uart_gps.receive[idx] = data;
+				buffer_uart_gps.count_byter_r = (uint16_t)(idx + 1u);
+			}
+
+			/* Вердикт предложению - на его 6-м байте: символы 3..5 от '$'
+			   ("GGA"/"GSV"/"GLL"). Чужое предложение - откат записи.        */
+			if((Gps_Verification_Mode == 0) && (sent_keep == 2u) &&
+			   ((uint16_t)(idx + 1u - sent_start) >= 6u) &&
+			   (buffer_uart_gps.count_byter_r >= (uint16_t)(sent_start + 6u))){
+				const char *t = (const char *)&buffer_uart_gps.receive[sent_start + 3u];
+				if((strncmp(t, "GGA", 3) == 0) || (strncmp(t, "GSV", 3) == 0) ||
+				   (strncmp(t, "GLL", 3) == 0)){
+					sent_keep = 1u;
+				}
+				else{
+					sent_keep = 0u;
+					/* откат: обнулить записанный кусок - за count_byter_r должны
+					   оставаться только '\0', иначе разбор кадра прочтёт «призраки»
+					   отброшенного предложения (регион мал, <= длина строки NMEA) */
+					memset(&buffer_uart_gps.receive[sent_start], 0,
+						   (size_t)(buffer_uart_gps.count_byter_r - sent_start));
+					buffer_uart_gps.count_byter_r = sent_start;
+				}
+			}
 		}
 	}
 }
@@ -155,7 +199,7 @@ uint8_t Gps_Auto_Detect_Chip(void)
 			Gps_Verification_Mode = 1;
 			Gps_Receive_flag_set(0);
 			buffer_uart_gps.count_byter_r = 0;
-			memset(&buffer_uart_gps.receive, 0, 256);
+			memset(&buffer_uart_gps.receive, 0, sizeof(buffer_uart_gps.receive));
 
 			Uart_Gps_Set_Baudrate(115200);
 
@@ -229,16 +273,23 @@ uint8_t Gps_Init(SNS_CFG *Cfg_struct)
 
 	if (Gps_Chip_Type == CHIP_LOCOSYS_AIROHA_NEW)
 	{
-		// 1. Поштучно гасим лишние NMEA сообщения
-		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GGA, 0); Delay(25);
+		// 1. Спека LOCOSYS: в потоке обрабатываются ТОЛЬКО GGA и GSV - их и
+		//    включаем (аппаратный ритм модуля 1 с - его максимум; param2 у
+		//    LOCOSYS - вкл/выкл, lscfg_action в Gps_Transmit, не период).
+		//    GGA: качество фикса (поле 6), спутники (поле 7), координаты.
+		//    GSV: уровни C/No для сигнала («золотая четвёрка»).
+		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GGA, 1); Delay(25);
 		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GSA, 0); Delay(25);
-		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GSV, 0); Delay(25);
+		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GSV, 1); Delay(25);
 		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_RMC, 0); Delay(25);
 		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_VTG, 0); Delay(25);
 		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_ZDA, 0); Delay(25);
 
-		// 2. Настраиваем аппаратную выдачу GLL раз в 10 секунд (message_rate)
-		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GLL, message_rate); Delay(25);
+		// 2. GLL больше не нужен: навигация берётся из GGA («нет координат»
+		//    определяется ПУСТЫМИ полями и качеством фикса, а не нулевой
+		//    координатой), а ритм 10 с для координат держит программный
+		//    гейт в Gps_Receive (Gps_Publish_Coords), не модуль.
+		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GLL, 0); Delay(25);
 
 		// 3. Отключаем отладочный мусор $LSJAM и $LSSPF
 		Gps_Transmit(CMD_BLOCK_PROPRIETARY, 0, 0); Delay(25);
@@ -570,10 +621,227 @@ static double_t NmeaToDecimalDegrees(double_t nmea_coord)
     return degrees;
 }
 
+/* ===========================================================================
+ * NMEA-разбор LOCOSYS по спеке (GGA + GSV, аппаратный ритм 1 Гц):
+ *   - «отсутствие» параметра определяется ПУСТЫМ полем (следующие друг за
+ *     другом ','), а не нулевым значением координаты (прежняя проверка
+ *     g_lat_scaled != 0 путала «нет фикса» и «координата ровно 0»);
+ *   - координаты В СИСТЕМУ (g_lat_scaled/g_lon_scaled + трек LoRa) публикуются
+ *     СТРОГО раз в GPS_COORD_PUBLISH_MS (10 с) - программный гейт вместо
+ *     прежнего счётчика кадров; сами GGA/GSV обрабатываются КАЖДУЮ секунду,
+ *     чтобы усреднение сигнала не искажалось;
+ *   - нет фикса: широта/долгота строго 0.0, Gps_signal_db_hz строго 0.
+ * КОНТЕКСТ: поток receiver_task (вызывается из Gps_Receive).
+ * ======================================================================== */
+#define GPS_COORD_PUBLISH_MS   (10000u)  /* интервал выдачи навигационной точки */
+#define GPS_SNR_MAX            (48u)     /* C/No за секунду: до 12 GSV x 4 спутника */
+
+static uint8_t  s_snr[GPS_SNR_MAX];      /* уровни C/No текущей секунды       */
+static uint8_t  s_snr_cnt = 0;
+static uint32_t s_coord_pub_tick = 0;    /* тик последней публикации координат */
+static uint8_t  s_coord_pub_once = 0;    /* 1 = публикация уже была (первый фикс - сразу) */
+
+/* Указатель на начало поля номер n NMEA-предложения (0 = заголовок "$GxGGA").
+   Граница поля - ','; конец предложения - '*' (контрольная сумма), '\r', '\n',
+   '\0' и '$' (кадр в буфере - несколько предложений подряд, без разбиения на
+   строки). NULL = в предложении меньше n полей.                             */
+static const char *Nmea_Field(const char *s, uint8_t n)
+{
+	/* Старт ЗА ведущим '$' - иначе '$' (стоп-символ) остановил бы поиск
+	   первого же поля. От перескока на следующее предложение скан защищают
+	   '*' (контрольная сумма) и '\r'/'\n' - предложение всегда ими кончается;
+	   '$' в стоп-наборе - страховка для потока без контрольной суммы.       */
+	const char *p = (*s == '$') ? (s + 1) : s;
+	uint8_t i;
+
+	for (i = 0; i < n; i++) {
+		while ((*p != ',') && (*p != '*') && (*p != '$') &&
+			   (*p != '\r') && (*p != '\n') && (*p != '\0')) {
+			p++;
+		}
+		if (*p != ',') {
+			return NULL;            /* предложение кончилось раньше поля n */
+		}
+		p++;
+	}
+	return p;
+}
+
+/* Поле ПУСТОЕ (параметр отсутствует): при отсутствии значения NMEA выдаёт
+   ',' подряд. Так «нет координат» отличается от «координата равна нулю».   */
+static uint8_t Nmea_Field_Empty(const char *f)
+{
+	if (f == NULL) {
+		return 1u;
+	}
+	return (uint8_t)((*f == ',') || (*f == '*') || (*f == '$') ||
+					 (*f == '\r') || (*f == '\n') || (*f == '\0'));
+}
+
+/* Тип предложения у '$': три символа со смещением 3 (напр. "GGA"). Безопасно
+   для оборванного предложения в конце буфера ('\0' не совпадёт с символом). */
+static uint8_t Nmea_IsType(const char *p, const char *type)
+{
+	uint8_t i;
+
+	for (i = 0; i < 3u; i++) {
+		if (p[3u + i] != type[i]) {
+			return 0u;
+		}
+	}
+	return 1u;
+}
+
+/* GGA по спеке: поле 2/3 = широта + N/S, 4/5 = долгота + E/W, 6 = качество
+   фикса, 7 = число спутников. Качество == 0/пусто ИЛИ спутников < 4 ИЛИ поля
+   координат пусты -> связи нет: gps_flag_navigation = 0, широта/долгота
+   СТРОГО 0.0 (и масштабированные для LoRa тоже). Фикс есть -> флаг = 1,
+   Latitude/Longitude обновляются каждую секунду (в системе - см. гейт 10 с
+   в Gps_Publish_Coords). Формат Latitude/Longitude прежний (как parsing_gll):
+   NMEA DDMM.MMMM со знаком полушария.                                      */
+static void Gps_ParseGga(const char *s)
+{
+	const char *f_time = Nmea_Field(s, 1);
+	const char *f_lat  = Nmea_Field(s, 2);
+	const char *f_ns   = Nmea_Field(s, 3);
+	const char *f_lon  = Nmea_Field(s, 4);
+	const char *f_ew   = Nmea_Field(s, 5);
+	const char *f_qual = Nmea_Field(s, 6);
+	const char *f_sats = Nmea_Field(s, 7);
+	int qual;
+	int sats;
+
+	/* пустое поле = параметра нет: качество 0, спутников 0 */
+	qual = (Nmea_Field_Empty(f_qual) != 0u) ? 0 : atoi(f_qual);
+	sats = (Nmea_Field_Empty(f_sats) != 0u) ? 0 : atoi(f_sats);
+	Gps_satellites_used = sats;
+
+	if ((qual <= 0) || (sats < 4) ||
+		(Nmea_Field_Empty(f_lat) != 0u) || (Nmea_Field_Empty(f_ns) != 0u) ||
+		(Nmea_Field_Empty(f_lon) != 0u) || (Nmea_Field_Empty(f_ew) != 0u)) {
+		/* связи нет: флаг снять, координаты СТРОГО обнулить (спека) */
+		Gps_flag_navigation = 0;
+		Latitude  = 0;
+		Longitude = 0;
+		g_lat_scaled = 0;
+		g_lon_scaled = 0;
+		return;
+	}
+
+	Gps_flag_navigation = 1;
+
+	if (Nmea_Field_Empty(f_time) == 0u) {
+		Time_coord = atof(f_time);
+	}
+	Latitude = atof(f_lat);
+	if (*f_ns == 'S') {
+		Latitude = -Latitude;
+	}
+	Longitude = atof(f_lon);
+	if (*f_ew == 'W') {
+		Longitude = -Longitude;
+	}
+}
+
+/* GSV: сбор C/No (дБ-Гц) - 4-е поле каждого блока спутника (индексы полей
+   предложения 7, 11, 15, 19). Пустое поле = спутник виден, но не сопровождается
+   - ПРОПУСКАЕМ (нуль исказил бы среднее). За секунду может прийти несколько
+   GSV разных созвездий - копим в s_snr, расчёт в Gps_UpdateSignal.          */
+static void Gps_CollectGsv(const char *s)
+{
+	uint8_t idx;
+
+	for (idx = 7u; idx <= 19u; idx = (uint8_t)(idx + 4u)) {
+		const char *f = Nmea_Field(s, idx);
+		if (f == NULL) {
+			break;                  /* в предложении больше нет блоков */
+		}
+		if (Nmea_Field_Empty(f) != 0u) {
+			continue;
+		}
+		if (s_snr_cnt < GPS_SNR_MAX) {
+			s_snr[s_snr_cnt] = (uint8_t)atoi(f);
+			s_snr_cnt++;
+		}
+	}
+}
+
+/* «Золотая четвёрка»: четыре лучших C/No секунды (частичная сортировка
+   убыванием - полный sort не нужен), среднее арифметическое с округлением
+   до 0.1 дБ-Гц (целочисленно). КРИТИЧЕСКОЕ условие спеки: нет фикса ->
+   Gps_signal_db_hz ПРИНУДИТЕЛЬНО 0.                                        */
+static void Gps_UpdateSignal(void)
+{
+	uint32_t sum = 0;
+	uint8_t  k;
+	uint8_t  i;
+	uint8_t  j;
+
+	if ((Gps_flag_navigation == 0u) || (s_snr_cnt == 0u)) {
+		Gps_signal_db_hz = 0.0f;
+		return;
+	}
+
+	k = (s_snr_cnt < 4u) ? s_snr_cnt : 4u;
+	for (i = 0; i < k; i++) {
+		uint8_t best = i;
+		for (j = (uint8_t)(i + 1u); j < s_snr_cnt; j++) {
+			if (s_snr[j] > s_snr[best]) {
+				best = j;
+			}
+		}
+		if (best != i) {
+			uint8_t t = s_snr[i];
+			s_snr[i] = s_snr[best];
+			s_snr[best] = t;
+		}
+		sum += s_snr[i];
+	}
+	/* x10, округление, /k, /10 - один знак после запятой без float-шума */
+	Gps_signal_db_hz = (float)((sum * 10u + (uint32_t)(k / 2u)) / (uint32_t)k) / 10.0f;
+}
+
+/* Публикация координат В СИСТЕМУ - строго раз в GPS_COORD_PUBLISH_MS (10 с;
+   программный ритм поверх аппаратной 1 Гц). Нет фикса - публиковать нечего:
+   координаты уже обнулены в Gps_ParseGga, трек нулями НЕ кормим (у
+   Lora_UpdateGPSTrack gps_last_valid_* должен оставаться последней ВАЛИДНОЙ
+   точкой), а гейт сбрасывается - первый же фикс опубликуется сразу.
+   КОНТЕКСТ: receiver_task (каждую секунду, решение - по тику).              */
+static void Gps_Publish_Coords(void)
+{
+	if (Gps_flag_navigation == 0u) {
+		s_coord_pub_once = 0u;
+		return;
+	}
+	if ((s_coord_pub_once != 0u) &&
+		((GetTick() - s_coord_pub_tick) < GPS_COORD_PUBLISH_MS)) {
+		return;                     /* 10 с ещё не прошло */
+	}
+	s_coord_pub_tick = GetTick();
+	s_coord_pub_once = 1u;
+
+#if CONFIG_LORA
+	g_lat_scaled = (int32_t)(NmeaToDecimalDegrees(Latitude)  * 10000000.0);
+	g_lon_scaled = (int32_t)(NmeaToDecimalDegrees(Longitude) * 10000000.0);
+#if TEST_GPS
+	/* ПРЯМАЯ ПОДМЕНА масштабированных координат для теста (формат 1e-7 градуса,
+	   как ждёт Lora_UpdateGPSHistory) */
+	g_lat_scaled = (int32_t)(test_lats[test_gps_step] * 10000000.0);
+	g_lon_scaled = (int32_t)(test_lons[test_gps_step] * 10000000.0);
+
+	test_gps_step++;
+	if (test_gps_step >= 5) {
+		test_gps_step = 0;
+	}
+#endif
+	/* Точка трека - раз в 10 с (внутри Lora_UpdateGPSTrack свой дополнительный
+	   делитель LORA_CFG_GET_GPSFIX) */
+	Lora_UpdateGPSTrack(g_lat_scaled, g_lon_scaled);
+#endif
+}
+
 void Gps_Receive(void)
 {
-	static uint8_t soft_rate_counter = 0;
-    uint16_t len = 0;
     if (get_state_init_flag_gps() == 0) {
         return;
     }
@@ -587,41 +855,51 @@ void Gps_Receive(void)
     if (buffer_uart_gps.TimeFlagRX) {
         buffer_uart_gps.TimeFlagRX = 0;
 
-        if (strstr((char*)data_gps, "GLL") != NULL) {
-            // === ПРОГРАММНЫЙ ФИЛЬТР НА 10 СЕКУНД ДЛЯ LOCOSYS ===
-            if (Gps_Chip_Type == CHIP_LOCOSYS_AIROHA_NEW){
-                soft_rate_counter++;
+        if (Gps_Chip_Type == CHIP_LOCOSYS_AIROHA_NEW) {
+            /* === СПЕКА LOCOSYS: из потока обрабатываются только строки GGA и
+               GSV, остальные пропускаются (их и в буфере нет - фильтр ISR).
+               Обход кадра по '$': тип предложения - символы 3..5. Кадр = одна
+               секунда NMEA (модуль шлёт 1 Гц). === */
+            const char *p = (const char *)data_gps;
 
-                // Если 10 секунд еще не прошло — просто очищаем буфер и выходим.
-                // Никаких вычислений atof и отправки в LoRa не происходит.
-                if (soft_rate_counter < 10){
-                    len = buffer_uart_gps.count_byter_r;
-                    buffer_uart_gps.count_byter_r = 0;
-                    memset(&buffer_uart_gps.receive, 0, len);
-                    Gps_Receive_flag_set(0);
-                    return;
+            s_snr_cnt = 0;                  /* сигнал считаем заново каждую секунду */
+
+            while (*p != '\0') {
+                if (*p == '$') {
+                    if (Nmea_IsType(p, "GGA") != 0u) {
+                        Gps_ParseGga(p);    /* фикс/спутники/координаты - каждую секунду */
+                    }
+                    else if (Nmea_IsType(p, "GSV") != 0u) {
+                        Gps_CollectGsv(p);  /* накопление C/No текущей секунды */
+                    }
                 }
-                soft_rate_counter = 0;
+                p++;
             }
 
+            Gps_UpdateSignal();             /* «золотая четвёрка»; нет фикса -> 0 */
+            Gps_Publish_Coords();           /* в систему - строго раз в 10 с */
 
+            buffer_uart_gps.TimerReceive = GetTick();
+            Gps_flag_err = 0;
+        }
+        else if (strstr((char*)data_gps, "GLL") != NULL) {
+            /* LEGACY Allystar: GLL раз в 10 с (аппаратный ритм чипа), прежняя
+               логика - валидность по ненулевым масштабированным координатам. */
             parsing_gll(data_gps);
 #if CONFIG_LORA
-                g_lat_scaled = NmeaToDecimalDegrees(Latitude) * 10000000.0;
-                g_lon_scaled = NmeaToDecimalDegrees(Longitude) * 10000000.0;
+            g_lat_scaled = NmeaToDecimalDegrees(Latitude) * 10000000.0;
+            g_lon_scaled = NmeaToDecimalDegrees(Longitude) * 10000000.0;
 #if TEST_GPS
-                // ПРЯМАЯ ПОДМЕНА МАСШТАБИРОВАННЫХ КООРДИНАТ ДЛЯ ТЕСТА
-                // Умножаем тестовые double на 1e7, чтобы они соответствовали формату Lora_UpdateGPSHistory
-                g_lat_scaled = (int32_t)(test_lats[test_gps_step] * 10000000.0);
-                g_lon_scaled = (int32_t)(test_lons[test_gps_step] * 10000000.0);
+            /* ПРЯМАЯ ПОДМЕНА масштабированных координат для теста */
+            g_lat_scaled = (int32_t)(test_lats[test_gps_step] * 10000000.0);
+            g_lon_scaled = (int32_t)(test_lons[test_gps_step] * 10000000.0);
 
-                test_gps_step++;
-                if (test_gps_step >= 5) {
-                    test_gps_step = 0;
-                }
+            test_gps_step++;
+            if (test_gps_step >= 5) {
+                test_gps_step = 0;
+            }
 #endif
 #endif
-            // Проверка валидности и ненулевых координат
             if ((g_lat_scaled != 0) && (g_lon_scaled != 0)) {
                 Gps_flag_navigation = 1;
             }
@@ -629,16 +907,18 @@ void Gps_Receive(void)
                 Gps_flag_navigation = 0;
             }
 #if CONFIG_LORA
-			// Вызов обновления GPS History с уже готовыми int32_t значениями
-			Lora_UpdateGPSTrack(g_lat_scaled, g_lon_scaled);
+            // Вызов обновления GPS History с уже готовыми int32_t значениями
+            Lora_UpdateGPSTrack(g_lat_scaled, g_lon_scaled);
 #endif
-			buffer_uart_gps.TimerReceive = GetTick();
-			Gps_flag_err = 0;
+            buffer_uart_gps.TimerReceive = GetTick();
+            Gps_flag_err = 0;
         }
 
-        len = buffer_uart_gps.count_byter_r;
         buffer_uart_gps.count_byter_r = 0;
-        memset(&buffer_uart_gps.receive[0], 0, len);
+        /* чистим ВЕСЬ накопитель (а не len байт): гарантия инварианта «за
+           count только '\0'» при любом исходе (откаты предложений в ISR,
+           переполнение, переход из режима верификации). КОНТЕКСТ: поток.   */
+        memset(&buffer_uart_gps.receive[0], 0, sizeof(buffer_uart_gps.receive));
         Gps_Receive_flag_set(0);
     }
     uint32_t TimerErrRreceive = GetTick() - buffer_uart_gps.TimerReceive;
@@ -647,7 +927,7 @@ void Gps_Receive(void)
     }
 }
 
-//===========================================================================================================================
+//=========================================================================================================
 void parsing_gga(uint8_t *data)
 {
 		uint16_t pos = 0;

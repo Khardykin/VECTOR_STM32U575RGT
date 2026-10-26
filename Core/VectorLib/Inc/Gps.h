@@ -125,9 +125,11 @@ typedef enum{
 /* ---------------------------------------------------------------------------                                     */
 typedef struct
 {
-    uint8_t  receive[256];      /* накопитель принятых байтов               */
+    uint8_t  receive[768];      /* накопитель принятых байтов: секундный
+                                   всплеск LOCOSYS (GGA + GSV нескольких
+                                   созвездий) длиннее прежних 256          */
     uint8_t  transmit[400];     /* буфер передачи (команды модулю)          */
-    uint8_t  count_byter_r;     /* сколько байтов в receive                 */
+    uint16_t count_byter_r;     /* сколько байт в receive (буфер > 255)     */
     uint8_t  TimeRX;            /* таймаут межбайтового интервала (1 мс тики)*/
     uint8_t  TimeFlagRX;        /* 1 = кадр принят, можно разбирать         */
     uint32_t TimerReceive;      /* метка времени последнего кадра           */
@@ -147,6 +149,15 @@ extern int32_t   g_lat_scaled;
 extern int32_t   g_lon_scaled;
 extern uint32_t  Gps_type_nav_pre;      /* маска навигационных систем        */
 
+/* --- результаты разбора NMEA LOCOSYS (спека: GGA + GSV каждую секунду) ------
+ * Gps_satellites_used - число спутников из GGA (поле 7); 0 при отсутствии.
+ * Gps_signal_db_hz    - сигнал, дБ-Гц: среднее арифметическое четырёх лучших
+ *                       C/No из GSV за текущую секунду («золотая четвёрка»,
+ *                       один знак после запятой); ПРИНУДИТЕЛЬНО 0, если
+ *                       Gps_Receive_flag_navigation() == 0 (нет фикса).      */
+extern int   Gps_satellites_used;
+extern float Gps_signal_db_hz;
+
 /* --- инициализация и состояние модуля ------------------------------------ */
 uint8_t Gps_Init(SNS_CFG *Cfg_struct);          /* 1 = модуль инициализирован */
 void    Gps_Init_Nav_Sys(SNS_CFG *Cfg_struct);  /* выбор систем GPS/GLONASS/BDS/GAL */
@@ -158,7 +169,10 @@ void    Uart_Gps_Set_Baudrate(uint32_t baud);
 
 /* --- обмен ---------------------------------------------------------------- */
 void    Gps_Transmit(uint8_t command, uint16_t param1, uint16_t param2);
-void    Gps_Receive(void);              /* разбор принятого кадра (NMEA GLL) */
+void    Gps_Receive(void);              /* разбор принятого кадра: LOCOSYS -
+                                           GGA/GSV по спеке (координаты в систему
+                                           раз в 10 с, сигнал каждую секунду),
+                                           Allystar - legacy GLL              */
 
 /* --- приём байтов из ISR и таймаут кадра ---------------------------------- */
 void    Gps_Data_Verification(uint8_t data);   /* звать из ISR приёма UART   */
