@@ -96,6 +96,8 @@ Src/TFT/LCD_platform.[ch]  ДРАЙВЕР ПАНЕЛИ: SPI2 + GPDMA1 Ch8 (HAL),
 Src/TFT/TFT.[ch]           инициализация ST7789P3 172x320, окно, поворот, TFT_FlushBuffer
 Src/TFT/TFT_indicator.[ch] индикация прибора из Avis - ВЫКЛЮЧЕНА (CONFIG_TYPE_LCD_TFT == 2), ждёт переноса
 Common/Src/vector_macros.c Delay/DelayInt/GetTick/Search_text + Uart_SetBaudrate
+                           + общие hex-хелперы Vector_IsHexChar/Vector_HexToByte/
+                           Vector_HexStringToBytes (разбор hex-ответов BLE и LoRa)
 Inc/vector_macros.h        макросы и хелперы проекта: TIME_DEL_1, TIME_OUT_LORA,
                            VECTOR_DEVICE_IS_ON (статусы - в shared_macros.h)
 Common/Src/vector_log.c    консольный лог: ITM/SWO и/или UART (выключается макросом)

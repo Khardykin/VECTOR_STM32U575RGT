@@ -82,7 +82,6 @@
 #include "vector_log.h"      /* LOG_W/LOG_I + VLOG_M_COM */
 #include "tx_api.h"          /* TX_DISABLE: целые снимки Connected_device/Ble_telemetry (п.65) */
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 /* --- Прототипы внутренних (static) функций --------------------------------
@@ -198,32 +197,6 @@ typedef struct {
 static ble_stage_t ble_stg = {0};
 
 /**
- * @brief  Разбор hex-строки ответа ADVMSDDATAGET в сырые байты.
- * @param  hex  hex-ASCII данные; len — длина.
- * @retval Количество разобранных байт.
- * Контекст: BLE-поток (из Ble_Receive). Разбор ТОЛЕРАНТНЫЙ: останавливается
- * на первой не-hex паре (хвост ответа "OK"/CR/LF просто отсекается) - так же
- * ведёт себя sscanf("%02x...") у BLEADDR? в Avis.
- */
-static uint16_t Ble_HexToBin(const uint8_t *hex, uint16_t len)
-{
-	uint16_t out = 0;
-	for (uint16_t i = 0; i + 1u < len; i += 2u) {
-		char c[3] = { (char)hex[i], (char)hex[i + 1u], 0 };
-		char *end = NULL;
-		long v = strtol(c, &end, 16);
-		if (end != &c[2]) {
-			break;							// хвост ответа (OK/CR) - данные кончились
-		}
-		if (out >= sizeof ble_rx_raw) {
-			break;
-		}
-		ble_rx_raw[out++] = (uint8_t)v;
-	}
-	return out;
-}
-
-/**
  * @brief  Пакет GAS (legacy Avis ver 2/3, уже приведён к ver 3) -> отметка
  *         в промежуточном хранилище (публикация - Ble_Control_States_Update).
  * @param  src  структура пакета AVIS (str_ble_data_set_t); ВСЕГДА
@@ -272,7 +245,7 @@ static void Ble_ApplyConnectedDevice(const str_ble_data_set_t *src)
  * @retval Нет. Контекст: BLE-поток (Ble_ParsePacket).
  * Запись ble_beacon_t = 4 байта (ShortID u16 LE + Rssi i8 + Battery u8) -
  * совпадает с проводной раскладкой LoRa v4 п.4.7 (копия memcpy). Усечённый
- * пакет разбирается по целым записям (толерантность как у Ble_HexToBin).
+ * пакет разбирается по целым записям (толерантность как у Vector_HexStringToBytes).
  * Публикация в Ble_telemetry - Ble_Control_States_Update (п.66).
  */
 static void Ble_ApplyBeacons(const uint8_t *p, uint16_t len)
@@ -412,7 +385,7 @@ static void Ble_ApplyAgg(const uint8_t *raw, uint16_t len)
 
 /**
  * @brief  Диспетчер пакетов протокола v1 (ответ ADVMSDDATAGET).
- * @param  raw  сырые байты пакета (после Ble_HexToBin); len - длина (<= 256).
+ * @param  raw  сырые байты пакета (после Vector_HexStringToBytes); len - длина (<= 256).
  * @retval Нет. Контекст: BLE-поток (Ble_ReadAnswer, команда DATAGET).
  * Первый байт - Header: биты 7..4 тип (BLE_PKT_*), 3..0 версия. Тип 0 -
  * пакет Avis: первый байт = data_struct_ver, ВЕРСИЯ 3 = 6 байт/канал
@@ -821,8 +794,11 @@ static uint8_t Ble_ReadAnswer(BLE_CMD_t command)
 		}
 		break;
 	case CMD_ADVMSDDATAGET: {						// пакет протокола v1 (hex)
-		uint16_t n = Ble_HexToBin(&buffer_uart_ble.receive[2],
-								  (uint16_t)(len > 2u ? len - 2u : 0u));
+		/* Общий hex-разбор (vector_macros.h) вместо прежнего Ble_HexToBin на
+		   strtol: толерантный, стоп на хвосте ответа "OK"/CR; буфер
+		   '\0'-терминирован (buffer_uart_ble.receive[len] = 0), длина не нужна. */
+		uint16_t n = Vector_HexStringToBytes((const char *)&buffer_uart_ble.receive[2],
+											 ble_rx_raw, sizeof(ble_rx_raw));
 		ble_rx_raw_len = n;
 		if (n > 0u) {
 			Ble_ParsePacket(ble_rx_raw, n);			// legacy Avis / BEACONS / PPE / SUBDEV / AGG

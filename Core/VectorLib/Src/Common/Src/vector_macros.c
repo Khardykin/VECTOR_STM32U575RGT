@@ -72,6 +72,57 @@ uint16_t Search_text(uint8_t *data1, const char *data2)
   return (uint16_t)((index + 1) - data1);
 }
 
+/* --- hex-хелперы (общие для BLE и LoRa): см. объявления в vector_macros.h ----
+ * Чистые функции, HAL/RTOS не трогают. Заменяют прежние Ble_HexToBin (strtol)
+ * и Lora_IsHexChar/HexToByte/Lora_HexStringToBytes одной общей реализацией.   */
+
+uint8_t Vector_IsHexChar(char c)
+{
+  if (((c >= '0') && (c <= '9')) ||
+      ((c >= 'A') && (c <= 'F')) ||
+      ((c >= 'a') && (c <= 'f')))
+  {
+    return 1U;
+  }
+
+  return 0U;
+}
+
+uint8_t Vector_HexToByte(char high, char low)
+{
+#define VECTOR_HEX_VAL(c) (((c) >= '0' && (c) <= '9') ? ((c) - '0') : \
+                           ((c) >= 'a' && (c) <= 'f') ? ((c) - 'a' + 10) : \
+                           ((c) >= 'A' && (c) <= 'F') ? ((c) - 'A' + 10) : 0)
+
+  return (uint8_t)((VECTOR_HEX_VAL(high) << 4) | VECTOR_HEX_VAL(low));
+
+#undef VECTOR_HEX_VAL
+}
+
+uint16_t Vector_HexStringToBytes(const char *hex_str, uint8_t *out, uint16_t out_size)
+{
+  uint16_t count = 0U;
+
+  if ((hex_str == (const char *)0) || (out == (uint8_t *)0))
+  {
+    return 0U;
+  }
+
+  /* Читаем по паре, пока обе цифры hex и пока есть место в out. Первый не-hex
+     символ (в т.ч. '\0' или хвост "OK"/CR) останавливает разбор.             */
+  while ((count < out_size) &&
+         (Vector_IsHexChar(hex_str[0]) != 0U) &&
+         (Vector_IsHexChar(hex_str[1]) != 0U))
+  {
+    out[count] = Vector_HexToByte(hex_str[0], hex_str[1]);
+    count++;
+
+    hex_str += 2;
+  }
+
+  return count;
+}
+
 /* Смена скорости UART на ходу (Gps.c: автоопределение чипа GNSS на 115200/9600).
    Разрядность и стоп-биты не трогаем - их задаёт CubeMX (8N1). После
    HAL_UART_Init прерывания приёма сброшены, поэтому возвращаем их: ровно те,

@@ -720,9 +720,6 @@ static void Lora_CompleteDataSetAck(str_lora_data_set_ack_t *data_set);
 static uint8_t Lora_Transmit(COMMAND_LORA command, uint8_t *data);
 static uint8_t Lora_TransmitReceive(COMMAND_LORA command, uint8_t *data);
 static uint8_t Lora_Receive_wait(COMMAND_LORA command);
-static inline uint8_t HexToByte(char high, char low);
-static uint8_t Lora_IsHexChar(char c);
-static uint16_t Lora_HexStringToBytes(const char *hex_str, uint8_t *out, uint16_t out_size);
 static void Lora_HandleMessage(uint8_t seq, uint8_t len, const uint8_t *text);
 static void ParseLoraToStruct(const char* uart_buffer);
 static void Lora_ParseMacCommand(const char *cmd_str);
@@ -2782,45 +2779,10 @@ static uint8_t Lora_Transmit(COMMAND_LORA command, uint8_t *data)
 }
 
 //===========================================================================================================================
-static inline uint8_t HexToByte(char high, char low)
-{
-#define HEX_VAL(c) ((c >= '0' && c <= '9') ? (c - '0') : \
-                    (c >= 'a' && c <= 'f') ? (c - 'a' + 10) : \
-                    (c >= 'A' && c <= 'F') ? (c - 'A' + 10) : 0)
-
-    return (HEX_VAL(high) << 4) | HEX_VAL(low);
-}
-
-//===========================================================================================================================
-static uint8_t Lora_IsHexChar(char c)
-{
-    if ((c >= '0' && c <= '9') ||
-        (c >= 'A' && c <= 'F') ||
-        (c >= 'a' && c <= 'f')) {
-        return 1U;
-    }
-
-    return 0U;
-}
-
-//===========================================================================================================================
-static uint16_t Lora_HexStringToBytes(const char *hex_str, uint8_t *out, uint16_t out_size)
-{
-    uint16_t count = 0U;
-
-    while ((count < out_size) &&
-           (Lora_IsHexChar(hex_str[0]) != 0U) &&
-           (Lora_IsHexChar(hex_str[1]) != 0U)) {
-
-        out[count] = HexToByte(hex_str[0], hex_str[1]);
-        count++;
-
-        hex_str += 2;
-    }
-
-    return count;
-}
-
+// Hex-разбор (IsHexChar/HexToByte/HexStringToBytes) ВЫНЕСЕН в общий код:
+// Vector_IsHexChar / Vector_HexToByte / Vector_HexStringToBytes - см.
+// vector_macros.h (Common/Src/vector_macros.c). Общая реализация для LoRa и
+// BLE (Ble_vector.c); объявлены в vector_macros.h (подключён через Vector_main.h).
 //===========================================================================================================================
 // DOWNLINK PARSER
 //===========================================================================================================================
@@ -2850,7 +2812,7 @@ static void ParseLoraToStruct(const char* uart_buffer)
 
         static uint8_t payload[256];
 
-        uint16_t bytes_to_parse = Lora_HexStringToBytes(hex_ptr, payload, sizeof(payload));
+        uint16_t bytes_to_parse = Vector_HexStringToBytes(hex_ptr, payload, sizeof(payload));
 
         if (bytes_to_parse < 3) {
             return;
@@ -2967,7 +2929,7 @@ static void Lora_ParseMacCommand(const char *cmd_str)
         cmd_str++;
     }
 
-    len = Lora_HexStringToBytes(cmd_str, mac_cmd, sizeof(mac_cmd));
+    len = Vector_HexStringToBytes(cmd_str, mac_cmd, sizeof(mac_cmd));
 
     while (i < len) {
         uint8_t cid = mac_cmd[i];

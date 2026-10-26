@@ -63,6 +63,27 @@ uint32_t GetTick(void);
    поле через atof). Не найдено -> 0. КОНТЕКСТ: любой.                        */
 uint16_t Search_text(uint8_t *data1, const char *data2);
 
+/* --- hex-хелперы: ОБЩИЕ для BLE и LoRa (разбор hex-ответов AT-модулей) ------
+ * Оба модуля получают по UART hex-ASCII (ADVMSDDATAGET у BLE, RX/MAC-команды
+ * у LoRa) и разбирают его в сырые байты. Раньше было две реализации
+ * (Ble_HexToBin на strtol и связка Lora_IsHexChar/HexToByte/Lora_HexStringToBytes);
+ * теперь одна общая - здесь. Разбор ТОЛЕРАНТНЫЙ: останавливается на первом
+ * не-hex символе, поэтому хвост ответа ("OK"/CR/LF) просто отсекается.
+ * Функции чистые (без HAL/RTOS), КОНТЕКСТ: любой.                              */
+
+/* Символ - hex-цифра ([0-9A-Fa-f]) -> 1, иначе 0. */
+uint8_t Vector_IsHexChar(char c);
+
+/* Два hex-символа (старший, младший) -> байт. Не-hex символ трактуется как 0;
+   вызывающий (Vector_HexStringToBytes) такие не пропускает - заранее проверяет
+   пару через Vector_IsHexChar.                                                */
+uint8_t Vector_HexToByte(char high, char low);
+
+/* Hex-строка (до первого не-hex символа, '\0'-terminated) -> массив out.
+ * Пишет не более out_size байт. Возврат: число разобранных байт.
+ * hex_str/out == NULL -> 0.                                                    */
+uint16_t Vector_HexStringToBytes(const char *hex_str, uint8_t *out, uint16_t out_size);
+
 /* Смена скорости UART на ходу - см. макрос usart_init() и прототип
    Uart_SetBaudrate() в main.h (реализация в vector_macros.c).                */
 
