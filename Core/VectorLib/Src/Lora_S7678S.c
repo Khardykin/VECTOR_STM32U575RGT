@@ -650,6 +650,15 @@ void Lora_UpdateGPSTrack(int32_t cur_lat, int32_t cur_lon, uint8_t flag_navigati
         return;
     }
 
+    /* Нет фикса: флаг и last_valid уже обновлены выше - трек и ритм
+       gps_fix_counter НЕ трогаем. Иначе периодические уведомления о потере
+       (0,0,0 - GPS шлёт их каждый цикл) съедали бы счёт fix_interval, и
+       первая точка после возврата фикса запаздывала бы на произвольное
+       число периодов.                                                      */
+    if (!Lora_flag_navigation) {
+        return;
+    }
+
     gps_fix_counter++;
 
     if (gps_fix_counter < fix_interval) {

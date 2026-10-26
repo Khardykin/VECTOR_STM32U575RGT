@@ -694,9 +694,6 @@ typedef struct
 } gps_second_t;
 
 static gps_second_t s_sec = {0};
-#if CONFIG_LORA
-static uint8_t  s_lora_loss_sent = 0;    /* 1 = потеря фикса уже сообщена LoRa (край) */
-#endif
 
 /* Указатель на начало поля номер n NMEA-предложения (0 = заголовок "$GxGGA").
    Граница поля - ','; конец предложения - '*' (контрольная сумма), '\r', '\n',
@@ -951,30 +948,28 @@ static void Gps_UpdateSignal(void)
 
 /* Публикация координат В СИСТЕМУ - раз в ~10 с (GPS_COORD_PUBLISH_MS минус
    допуск TOL: при 10-секундных кадрах Allystar точный порог «бился» бы с
-   периодом). Нет фикса - публиковать нечего: координаты уже обнулены в
-   Gps_CommitSecond, трек нулями НЕ кормим (у
-   Lora_UpdateGPSTrack gps_last_valid_* должен оставаться последней ВАЛИДНОЙ
-   точкой), а гейт сбрасывается - первый же фикс опубликуется сразу.
-   КОНТЕКСТ: receiver_task (каждую секунду, решение - по тику).              */
+   периодом). Нет фикса - координаты уже обнулены в Gps_CommitSecond, LoRa
+   каждый цикл получает (0, 0, flag=0) «данные невалидны», трек нулями НЕ
+   кормится (gps_last_valid_* у LoRa хранит последнюю ВАЛИДНУЮ точку), гейт
+   сбрасывается - первый же фикс опубликуется сразу.
+   КОНТЕКСТ: receiver_task (каждый кадр, решение - по тику).                 */
 static void Gps_Publish_Coords(void)
 {
 	if (gps_nav.navigation == 0u) {
 #if CONFIG_LORA
-		/* Потеря фикса: сообщаем LoRa ОДИН раз за пропажу (край) - флаг
-		   навигации там переключается по flag_navigation, а не по проверке
-		   «координаты != 0». Трек нулями не кормим, gps_last_valid_* на
-		   стороне LoRa сохраняет последнюю ВАЛИДНУЮ точку.                */
-		if (s_lora_loss_sent == 0u) {
-			s_lora_loss_sent = 1u;
-			Lora_UpdateGPSTrack(0, 0, 0);
-		}
+		/* Нет фикса (решение автора): КАЖДЫЙ цикл - раз в секунду у LOCOSYS,
+		   раз в 10 с у Allystar - сообщаем LoRa, что данные НЕВАЛИДНЫ:
+		   координаты 0 и flag_navigation=0. Не «краем» один раз за пропажу:
+		   периодическое уведомление сходится к истине, даже если отдельный
+		   вызов пропал (LoRa ещё не под START, перезапуск модема). Трек и
+		   счётчик fix_interval на стороне LoRa такие вызовы НЕ трогают
+		   (ранний выход при flag=0), gps_last_valid_* хранит последнюю
+		   ВАЛИДНУЮ точку.                                                  */
+		Lora_UpdateGPSTrack(0, 0, 0);
 #endif
 		s_coord_pub_once = 0u;      /* первый фикс после потери - сразу */
 		return;
 	}
-#if CONFIG_LORA
-	s_lora_loss_sent = 0u;
-#endif
 	if ((s_coord_pub_once != 0u) &&
 		((GetTick() - s_coord_pub_tick) < (GPS_COORD_PUBLISH_MS - GPS_COORD_PUBLISH_TOL_MS))) {
 		return;                     /* ~10 с ещё не прошло (допуск - см. TOL) */
