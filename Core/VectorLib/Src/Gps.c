@@ -21,6 +21,7 @@ static uint8_t Nmea_Field_Empty(const char *f);
 static uint8_t Nmea_IsType(const char *p, const char *type);
 static uint8_t Nmea_SentenceComplete(const char *p, const char *end);
 static void Gps_ParseGga(const char *s);
+static void Gps_CommitSecond(void);
 static void Gps_CollectGsv(const char *s);
 static void Gps_UpdateSignal(void);
 static void Gps_Publish_Coords(void);
@@ -641,9 +642,15 @@ static double_t NmeaToDecimalDegrees(double_t nmea_coord)
  *   - кадр ПРИЁМНОГО БУФЕРА - не обязательно одна секунда: при задержке
  *     receiver'а в нём копится несколько секунд подряд, а при переполнении
  *     буфера хвост обрезан. Поэтому разбор ПОПРЕДЛОЖЕНЧЕСКИЙ с проверкой
- *     полноты ('*'/перевод строки), а граница секунды - приход GGA (см.
- *     Gps_Receive): каждая секунда закрывается отдельно, среднее C/No
- *     секунд НЕ смешивает, итоговое состояние - по последней полной секунде.
+ *     полноты ('*'/перевод строки);
+ *   - АРХИТЕКТУРА ЗАКРЫТИЯ (требование автора): цикл Gps_Receive только
+ *     ПАРСИТ - GGA пишется в ТЕНЬ секунды (s_sec; следующая GGA перезаписывает
+ *     предыдущую), GSV копятся в s_snr (сброс сборщика СТРОГО на новой GGA -
+ *     границе секунды, накопление внутри секунды не прерывается). Тяжёлые
+ *     Gps_UpdateSignal()/Gps_Publish_Coords() вызываются СТРОГО ОДИН РАЗ -
+ *     на выходе из Gps_Receive, после цикла: в многосекундном кадре нет
+ *     двойных срабатываний, итог - по последней полной секунде, среднее
+ *     C/No разных секунд не смешивается.
  * КОНТЕКСТ: поток receiver_task (вызывается из Gps_Receive).
  * ======================================================================== */
 #define GPS_COORD_PUBLISH_MS   (10000u)  /* интервал выдачи навигационной точки */
@@ -653,6 +660,26 @@ static uint8_t  s_snr[GPS_SNR_MAX];      /* уровни C/No текущей с�
 static uint8_t  s_snr_cnt = 0;
 static uint32_t s_coord_pub_tick = 0;    /* тик последней публикации координат */
 static uint8_t  s_coord_pub_once = 0;    /* 1 = публикация уже была (первый фикс - сразу) */
+
+/* ТЕНЬ последней секунды кадра (требование автора): цикл Gps_Receive только
+   ПАРСИТ предложения сюда, каждая следующая GGA перезаписывает предыдущую
+   секунду целиком; коммит в глобальные переменные (Gps_CommitSecond) и тяжёлые
+   закрытия (Gps_UpdateSignal/Gps_Publish_Coords) - СТРОГО ОДИН РАЗ на выходе
+   из Gps_Receive, после цикла. В многосекундном кадре (задержка receiver'а)
+   двойных вызовов закрытия нет, состояние - по последней полной секунде.    */
+typedef struct
+{
+	uint8_t  valid;     /* в кадре была GGA (секунда закрыта)                  */
+	uint8_t  nav;       /* фикс: качество > 0 И спутников >= 4 И координаты не пусты */
+	uint8_t  has_utc;   /* поле времени GGA не пустое                          */
+	int      qual;      /* поле 6 GGA - качество фикса                         */
+	int      sats;      /* поле 7 GGA - число спутников                        */
+	double_t utc;       /* поле 1 GGA - UTC hhmmss.ss                          */
+	double_t lat;       /* DDMM.MMMM со знаком полушария (формат Latitude)     */
+	double_t lon;
+} gps_second_t;
+
+static gps_second_t s_sec = {0};
 #if CONFIG_LORA
 static uint8_t  s_lora_loss_sent = 0;    /* 1 = потеря фикса уже сообщена LoRa (край) */
 #endif
@@ -739,39 +766,64 @@ static void Gps_ParseGga(const char *s)
 	const char *f_ew   = Nmea_Field(s, 5);
 	const char *f_qual = Nmea_Field(s, 6);
 	const char *f_sats = Nmea_Field(s, 7);
-	int qual;
-	int sats;
 
-	/* пустое поле = параметра нет: качество 0, спутников 0 */
-	qual = (Nmea_Field_Empty(f_qual) != 0u) ? 0 : atoi(f_qual);
-	sats = (Nmea_Field_Empty(f_sats) != 0u) ? 0 : atoi(f_sats);
-	Gps_satellites_used = sats;
+	/* Каждая GGA ПЕРЕЗАПИСЫВАЕТ тень секунды ЦЕЛИКОМ (в многосекундном кадре
+	   вторая секунда просто затирает первую). ПУСТОЕ поле (',' подряд) никогда
+	   не доходит до atoi/atof - сначала проверка Nmea_Field_Empty, затем
+	   Nmea_Field вернул бы NULL для несуществующего поля: сдвигов индексов и
+	   чтения мусора нет (защита п.3 требования автора).                      */
+	s_sec.valid   = 1u;
+	s_sec.qual    = (Nmea_Field_Empty(f_qual) != 0u) ? 0 : atoi(f_qual);
+	s_sec.sats    = (Nmea_Field_Empty(f_sats) != 0u) ? 0 : atoi(f_sats);
+	s_sec.has_utc = (uint8_t)((Nmea_Field_Empty(f_time) == 0u) ? 1u : 0u);
+	s_sec.utc     = (s_sec.has_utc != 0u) ? atof(f_time) : 0;
+	s_sec.lat     = 0;
+	s_sec.lon     = 0;
 
-	if ((qual <= 0) || (sats < 4) ||
+	if ((s_sec.qual <= 0) || (s_sec.sats < 4) ||
 		(Nmea_Field_Empty(f_lat) != 0u) || (Nmea_Field_Empty(f_ns) != 0u) ||
 		(Nmea_Field_Empty(f_lon) != 0u) || (Nmea_Field_Empty(f_ew) != 0u)) {
-		/* связи нет: флаг снять, координаты СТРОГО обнулить (спека) */
-		Gps_flag_navigation = 0;
-		Latitude  = 0;
-		Longitude = 0;
-		g_lat_scaled = 0;
-		g_lon_scaled = 0;
+		s_sec.nav = 0u;             /* связи нет - координаты не извлекаем      */
 		return;
 	}
 
-	Gps_flag_navigation = 1;
-
-	if (Nmea_Field_Empty(f_time) == 0u) {
-		Time_coord = atof(f_time);
-	}
-	Latitude = atof(f_lat);
+	s_sec.nav = 1u;
+	s_sec.lat = atof(f_lat);
 	if (*f_ns == 'S') {
-		Latitude = -Latitude;
+		s_sec.lat = -s_sec.lat;
 	}
-	Longitude = atof(f_lon);
+	s_sec.lon = atof(f_lon);
 	if (*f_ew == 'W') {
-		Longitude = -Longitude;
+		s_sec.lon = -s_sec.lon;
 	}
+}
+
+/* Коммит тени ПОСЛЕДНЕЙ секунды кадра в глобальные переменные - строго один
+   раз на кадр (зовётся на выходе Gps_Receive). ИНВАРИАНТ потери фикса (п.4
+   требования автора): qual == 0 ИЛИ sats < 4 -> Gps_flag_navigation = 0,
+   Latitude/Longitude/g_lat_scaled/g_lon_scaled/Gps_signal_db_hz - СТРОГО 0,
+   10-секундный счётчик публикации сброшен (после возврата фикса координаты
+   уйдут сразу). КОНТЕКСТ: receiver_task.                                    */
+static void Gps_CommitSecond(void)
+{
+	Gps_satellites_used = s_sec.sats;
+	Gps_flag_navigation = s_sec.nav;
+
+	if (s_sec.nav == 0u) {
+		Latitude     = 0;
+		Longitude    = 0;
+		g_lat_scaled = 0;
+		g_lon_scaled = 0;
+		Gps_signal_db_hz = 0.0f;    /* подтвердится и в Gps_UpdateSignal      */
+		s_coord_pub_once = 0u;      /* сброс 10-с счётчика                    */
+		return;
+	}
+
+	if (s_sec.has_utc != 0u) {
+		Time_coord = s_sec.utc;
+	}
+	Latitude  = s_sec.lat;          /* текущие значения - каждую секунду;     */
+	Longitude = s_sec.lon;          /* в систему - раз в 10 с (Publish)       */
 }
 
 /* GSV: сбор C/No (дБ-Гц) - 4-е поле каждого блока спутника (индексы полей
@@ -906,22 +958,22 @@ void Gps_Receive(void)
            фильтр ISR Gps_Data_Verification).
 
            Кадр - НЕ обязательно одна секунда: при задержке receiver'а в
-           буфере копится несколько секунд подряд ("$…*hh\r
-" друг за
-           другом), а при переполнении (768 Б ~ 2-3 с потока) хвост обрезан.
-           Поэтому обход ПОПРЕДЛОЖЕНЧЕСКИЙ:
+           буфере копится несколько секунд подряд, а при переполнении
+           (768 Б ~ 2-3 с потока) хвост обрезан. Обход ПОПРЕДЛОЖЕНЧЕСКИЙ:
              - предложение = от '$' до следующего '$' / конца буфера;
-             - неполное (нет '*' и '\n' - обрезанный хвост) ПРОПУСКАЕТСЯ;
-             - GGA - начало секунды: сначала закрываем ПРЕДЫДУЩУЮ секунду
-               (сигнал по её GSV + решение о публикации координат), затем
-               берём новую GGA и сбрасываем сборщик C/No.
-           Итог: секунды разбираются независимо, среднее не смешивается,
-           состояние (nav/сигнал/координаты) - по последней полной секунде;
-           публикацию координат гейт по тику всё равно делает раз в 10 с. === */
+             - неполное (нет '*' и перевода строки - обрезанный хвост)
+               ПРОПУСКАЕТСЯ: парсить огрызок хуже, чем потерять;
+             - GGA -> парсинг В ТЕНЬ s_sec (следующая GGA перезаписывает
+               предыдущую секунду целиком) + сброс сборщика C/No: граница
+               секунды отмечается СТРОГО на заголовке новой GGA;
+             - GSV -> накопление C/No (только после первой GGA кадра: без
+               неё «владение» секундой неизвестно).
+           Цикл ТОЛЬКО ПАРСИТ: закрытие секунды (коммит тени + сигнал +
+           публикация) - СТРОГО ОДИН РАЗ ниже, на выходе из функции. === */
         const char *p = (const char *)data_gps;
-        uint8_t seen_gga = 0u;
 
-        s_snr_cnt = 0;
+        s_snr_cnt   = 0;
+        s_sec.valid = 0u;                   /* тень секунды - с чистого листа */
 
         while (*p != '\0') {
             const char *end;
@@ -937,24 +989,25 @@ void Gps_Receive(void)
 
             if (Nmea_SentenceComplete(p, end) != 0u) {
                 if (Nmea_IsType(p, "GGA") != 0u) {
-                    if (seen_gga != 0u) {
-                        Gps_UpdateSignal();     /* закрыть ПРЕДЫДУЩУЮ секунду */
-                        Gps_Publish_Coords();
-                    }
-                    Gps_ParseGga(p);            /* фикс/спутники/координаты */
-                    s_snr_cnt = 0;              /* новая секунда - новый набор C/No */
-                    seen_gga = 1u;
+                    Gps_ParseGga(p);        /* в тень: секунда перезаписывается */
+                    s_snr_cnt = 0;          /* НОВАЯ GGA = новая секунда: сбор C/No заново */
                 }
-                else if ((Nmea_IsType(p, "GSV") != 0u) && (seen_gga != 0u)) {
-                    Gps_CollectGsv(p);          /* GSV до первой GGA - секунда неизвестна, мимо */
+                else if ((Nmea_IsType(p, "GSV") != 0u) && (s_sec.valid != 0u)) {
+                    Gps_CollectGsv(p);      /* накопление C/No текущей секунды */
                 }
             }
             p = end;
         }
 
-        if (seen_gga != 0u) {                   /* закрыть ПОСЛЕДНЮЮ секунду кадра */
-            Gps_UpdateSignal();
-            Gps_Publish_Coords();
+        /* ЗАКРЫТИЕ СЕКУНДЫ - СТРОГО ОДИН РАЗ на кадр, ПОСЛЕ цикла (требование
+           автора): даже если в буфер натекло 2-3 секунды, Gps_UpdateSignal и
+           Gps_Publish_Coords вызываются один раз - по последней полной
+           секунде; 10-секундный гейт публикации от этого не «тикает» лишнего.
+           Кадр без единой полной GGA (обрезок) globals НЕ трогает.          */
+        if (s_sec.valid != 0u) {
+            Gps_CommitSecond();             /* тень -> globals (инвариант обнуления) */
+            Gps_UpdateSignal();             /* «золотая четвёрка»; нет фикса -> 0 */
+            Gps_Publish_Coords();           /* в систему - раз в 10 с (гейт по тику) */
         }
 
         buffer_uart_gps.TimerReceive = GetTick();
