@@ -8,8 +8,9 @@
 #include "Gps.h"
 #if CONFIG_GPS
 
-#include <string.h>   /* memset/strncmp ( strstr/strlen - legacy parsing_*) */
-#include <stdio.h>    /* sprintf (ветка TEST_GPS) */
+#include <string.h>   /* memset/strncmp/memcpy                              */
+#include <stdio.h>    /* sprintf (Gps_Transmit, ветка TEST_GPS)             */
+#include "tx_api.h"   /* TX_DISABLE: снимок кадра в Gps_Receive без гонки с ISR */
 
 static uint16_t Gps_Crc(uint8_t *data, uint16_t count);
 static double_t NmeaToDecimalDegrees(double_t nmea_coord);
@@ -21,6 +22,7 @@ static uint8_t Nmea_Field_Empty(const char *f);
 static uint8_t Nmea_IsType(const char *p, const char *type);
 static uint8_t Nmea_SentenceComplete(const char *p, const char *end);
 static void Gps_ParseGga(const char *s);
+static void Gps_ParseGll(const char *s);
 static void Gps_CommitSecond(void);
 static void Gps_CollectGsv(const char *s);
 static void Gps_UpdateSignal(void);
@@ -33,19 +35,12 @@ static uint8_t 			Gps_Verification_Mode = 0;
 static uint8_t 			Gps_flag_err = 0;
 static uint8_t 			Gps_Init_flag = 0;
 static uint8_t			Gps_flag_receive = 0;
-static uint8_t			Gps_flag_navigation = 0;
 //===========================================================================================================================
 Message_buffer_uart_gps buffer_uart_gps = {0};
-double_t Time_coord = 0;
-double_t Latitude = 0;
-double_t Longitude = 0;
-int32_t g_lat_scaled = 0;
-int32_t g_lon_scaled = 0;
 uint32_t Gps_type_nav_pre = 0;
-/* Выходы спеки LOCOSYS (GGA/GSV): спутники из GGA (поле 7) и сигнал дБ-Гц -
-   среднее четырёх лучших C/No из GSV за секунду; 0 при отсутствии фикса.   */
-int   Gps_satellites_used = 0;
-float Gps_signal_db_hz = 0.0f;
+/* ВСЕ выходы разбора NMEA (спека: GGA/GSV + GLL резервно) - одна структура,
+   экземпляр объявляет Gps.h. Пишет только receiver_task (закрытие кадра).  */
+gps_nav_t gps_nav = {0};
 //===========================================================================================================================
 static uint16_t Gps_Crc(uint8_t *data, uint16_t count)
 {
@@ -81,15 +76,17 @@ uint8_t Gps_Receive_flag_read(void)
 //===========================================================================================================================
 uint8_t Gps_Receive_flag_navigation(void)
 {
-	return Gps_flag_navigation;
+	return gps_nav.navigation;
 }
 
 //===========================================================================================================================
 /* Приём байта из ISR: кадр копится от '$' до тишины TIME_OUT_GPS (50 мс -
    Uart_Gps_Receive_Timer_Inc взведёт TimeFlagRX). В рабочем режиме в буфер
    попадают ТОЛЬКО предложения GGA/GSV (спека - общая для LOCOSYS и
-   Allystar): тип предложения решается по его 6-му байту (символы 3..5 после
-   '$'), остальные предложения ОТКАТЫВАЮТСЯ - не занимают место в буфере.
+   Allystar) и GLL (резервный источник координат - обрабатывается, только
+   если в кадре нет GGA): тип предложения решается по его 6-му байту
+   (символы 3..5 после '$'), остальные предложения ОТКАТЫВАЮТСЯ - не
+   занимают место в буфере.
    В режиме верификации (Gps_Auto_Detect_Chip) поток пишется СЫРЬЁМ - детект
    смотрит на первый символ ответа. КОНТЕКСТ: ISR приёма UART.              */
 void Gps_Data_Verification(uint8_t data)
@@ -130,13 +127,14 @@ void Gps_Data_Verification(uint8_t data)
 			}
 
 			/* Вердикт предложению - на его 6-м байте: символы 3..5 от '$'
-			   ("GGA"/"GSV" - спека, общая для LOCOSYS и Allystar). Чужое
-			   предложение - откат записи.                                 */
+			   ("GGA"/"GSV" - спека; "GLL" - резерв). Чужое предложение -
+			   откат записи.                                              */
 			if((Gps_Verification_Mode == 0) && (sent_keep == 2u) &&
 			   ((uint16_t)(idx + 1u - sent_start) >= 6u) &&
 			   (buffer_uart_gps.count_byter_r >= (uint16_t)(sent_start + 6u))){
 				const char *t = (const char *)&buffer_uart_gps.receive[sent_start + 3u];
-				if((strncmp(t, "GGA", 3) == 0) || (strncmp(t, "GSV", 3) == 0)){
+				if((strncmp(t, "GGA", 3) == 0) || (strncmp(t, "GSV", 3) == 0) ||
+				   (strncmp(t, "GLL", 3) == 0)){
 					sent_keep = 1u;
 				}
 				else{
@@ -310,16 +308,20 @@ uint8_t Gps_Init(SNS_CFG *Cfg_struct)
 	else
 	{
 		// Инициализируем бинарный протокол Allystar на скорости 9600.
-		// Та же спека, что у LOCOSYS: GGA + GSV КАЖДУЮ СЕКУНДУ (param2 у
-		// Allystar - период в секундах, 0 = выкл), GLL выключен - навигация
-		// берётся из GGA, ритм 10 с для координат держит программный гейт
-		// Gps_Publish_Coords. Бюджет канала: GGA+GSV на 1 Гц - до ~650 Б/с,
-		// 9600 бод (~960 Б/с) вмещают.
-		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GGA, 1);
+		// Спека та же, что у LOCOSYS (GGA + GSV, GLL выключен - навигация из
+		// GGA), НО период 10 с (param2 у Allystar - период в секундах, 0 = выкл;
+		// решение автора: «меньше прерывания мучают uart» - реже ISR и расход
+		// батареи). Система потребляет координаты как раз раз в ~10 с: гейт
+		// Gps_Publish_Coords имеет допуск GPS_COORD_PUBLISH_TOL_MS, поэтому
+		// 10-секундные кадры не «бьются» с порогом (иначе кадр в 9.998 с
+		// пролетал бы мимо, а следующий был бы только через 20 с). Порог
+		// «нет данных» 20 с (Gps_flag_err) = 2 кадра - запас есть. Парсинг GLL
+		// (Gps_ParseGll) остаётся резервом на конфигурацию без GGA.
+		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GGA, 10);
 		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GLL, 0);
 		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GSA, 0);
 		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GRS, 0);
-		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GSV, 1);
+		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GSV, 10);
 		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_RMC, 0);
 		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_VTG, 0);
 		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_ZDA, 0);
@@ -628,17 +630,21 @@ static double_t NmeaToDecimalDegrees(double_t nmea_coord)
 }
 
 /* ===========================================================================
- * NMEA-разбор по спеке (GGA + GSV, аппаратный ритм 1 Гц - ОБЩЕЕ для чипов
- * LOCOSYS и Allystar, оба настраиваются в Gps_Init):
+ * NMEA-разбор по спеке (GGA + GSV; ОБЩЕЕ для чипов LOCOSYS и Allystar, оба
+ * настраиваются в Gps_Init: LOCOSYS - аппаратный ритм 1 Гц, Allystar -
+ * период 10 с на сообщение, чтобы зря не дёргать UART-прерывания):
+ *   - GLL - РЕЗЕРВНЫЙ источник координат (тот же безопасный разбор):
+ *     обрабатывается, только если в кадре нет ни одной GGA (GGA авторитетнее -
+ *     в ней качество фикса и спутники);
  *   - «отсутствие» параметра определяется ПУСТЫМ полем (следующие друг за
  *     другом ','), а не нулевым значением координаты (прежняя проверка
- *     g_lat_scaled != 0 путала «нет фикса» и «координата ровно 0»);
- *   - координаты В СИСТЕМУ (g_lat_scaled/g_lon_scaled + трек LoRa) публикуются
- *     СТРОГО раз в GPS_COORD_PUBLISH_MS (10 с) - программный гейт вместо
- *     прежнего счётчика кадров; сами GGA/GSV обрабатываются КАЖДУЮ секунду,
- *     чтобы усреднение сигнала не искажалось (у Allystar то же самое,
- *     период у сообщения задаётся в Gps_Init, а не «железом» модуля);
- *   - нет фикса: широта/долгота строго 0.0, Gps_signal_db_hz строго 0;
+ *     «координата != 0» путала «нет фикса» и «координата ровно 0»);
+ *   - координаты В СИСТЕМУ (gps_nav.lat_scaled/lon_scaled + трек LoRa)
+ *     публикуются раз в ~GPS_COORD_PUBLISH_MS (10 с, допуск на биение с
+ *     10-секундным периодом кадров Allystar) - программный гейт вместо
+ *     прежнего счётчика кадров; сами GGA/GSV обрабатываются КАЖДЫЙ кадр;
+ *   - нет фикса: gps_nav.latitude/longitude/lat_scaled/lon_scaled строго 0,
+ *     gps_nav.signal_db_hz строго 0;
  *   - кадр ПРИЁМНОГО БУФЕРА - не обязательно одна секунда: при задержке
  *     receiver'а в нём копится несколько секунд подряд, а при переполнении
  *     буфера хвост обрезан. Поэтому разбор ПОПРЕДЛОЖЕНЧЕСКИЙ с проверкой
@@ -654,7 +660,13 @@ static double_t NmeaToDecimalDegrees(double_t nmea_coord)
  * КОНТЕКСТ: поток receiver_task (вызывается из Gps_Receive).
  * ======================================================================== */
 #define GPS_COORD_PUBLISH_MS   (10000u)  /* интервал выдачи навигационной точки */
-#define GPS_SNR_MAX            (48u)     /* C/No за секунду: до 12 GSV x 4 спутника */
+/* ДОПУСК гейта: у Allystar кадр приходит ровно раз в 10 с, и точный порог
+   10000 мс «бился» бы с периодом кадров (кадр в 9998 мс пролетал бы мимо
+   гейта, следующий - только через 20 с). С допуском гейт открывается на
+   первом кадре после ~9.5 с; при 1 Гц (LOCOSYS) ритм не меняется - публикация
+   всё равно на 10-й секунде.                                                */
+#define GPS_COORD_PUBLISH_TOL_MS (500u)
+#define GPS_SNR_MAX            (48u)     /* C/No за кадр: до 12 GSV x 4 спутника */
 
 static uint8_t  s_snr[GPS_SNR_MAX];      /* уровни C/No текущей секунды       */
 static uint8_t  s_snr_cnt = 0;
@@ -669,13 +681,15 @@ static uint8_t  s_coord_pub_once = 0;    /* 1 = публикация уже бы
    двойных вызовов закрытия нет, состояние - по последней полной секунде.    */
 typedef struct
 {
-	uint8_t  valid;     /* в кадре была GGA (секунда закрыта)                  */
-	uint8_t  nav;       /* фикс: качество > 0 И спутников >= 4 И координаты не пусты */
-	uint8_t  has_utc;   /* поле времени GGA не пустое                          */
-	int      qual;      /* поле 6 GGA - качество фикса                         */
-	int      sats;      /* поле 7 GGA - число спутников                        */
-	double_t utc;       /* поле 1 GGA - UTC hhmmss.ss                          */
-	double_t lat;       /* DDMM.MMMM со знаком полушария (формат Latitude)     */
+	uint8_t  valid;     /* секунда закрыта (в кадре была GGA или GLL)          */
+	uint8_t  nav;       /* фикс: GGA - качество > 0 И спутников >= 4 И координаты
+	                       не пусты; GLL - статус 'A' и координаты не пусты    */
+	uint8_t  has_utc;   /* поле времени не пустое                              */
+	uint8_t  has_sats;  /* 1 = спутники известны (GGA); у GLL их нет           */
+	int      qual;      /* GGA поле 6 - качество фикса (у GLL: 1 при 'A')      */
+	int      sats;      /* GGA поле 7 - число спутников                        */
+	double_t utc;       /* UTC hhmmss.ss (GGA поле 1 / GLL поле 5)             */
+	double_t lat;       /* DDMM.MMMM со знаком полушария (формат gps_nav.latitude) */
 	double_t lon;
 } gps_second_t;
 
@@ -752,11 +766,10 @@ static uint8_t Nmea_SentenceComplete(const char *p, const char *end)
 
 /* GGA по спеке: поле 2/3 = широта + N/S, 4/5 = долгота + E/W, 6 = качество
    фикса, 7 = число спутников. Качество == 0/пусто ИЛИ спутников < 4 ИЛИ поля
-   координат пусты -> связи нет: gps_flag_navigation = 0, широта/долгота
-   СТРОГО 0.0 (и масштабированные для LoRa тоже). Фикс есть -> флаг = 1,
-   Latitude/Longitude обновляются каждую секунду (в системе - см. гейт 10 с
-   в Gps_Publish_Coords). Формат Latitude/Longitude прежний (как parsing_gll):
-   NMEA DDMM.MMMM со знаком полушария.                                      */
+   координат пусты -> связи нет (nav = 0; обнуление координат сделает коммит
+   Gps_CommitSecond - СТРОГО, по инварианту потери). Фикс есть -> nav = 1,
+   координаты DDMM.MMMM со знаком полушария (в gps_nav - каждую секунду,
+   в систему - раз в ~10 с, см. Gps_Publish_Coords). Пишет ТОЛЬКО в тень s_sec. */
 static void Gps_ParseGga(const char *s)
 {
 	const char *f_time = Nmea_Field(s, 1);
@@ -772,7 +785,8 @@ static void Gps_ParseGga(const char *s)
 	   не доходит до atoi/atof - сначала проверка Nmea_Field_Empty, затем
 	   Nmea_Field вернул бы NULL для несуществующего поля: сдвигов индексов и
 	   чтения мусора нет (защита п.3 требования автора).                      */
-	s_sec.valid   = 1u;
+	s_sec.valid    = 1u;
+	s_sec.has_sats = 1u;                /* у GGA спутники известны */
 	s_sec.qual    = (Nmea_Field_Empty(f_qual) != 0u) ? 0 : atoi(f_qual);
 	s_sec.sats    = (Nmea_Field_Empty(f_sats) != 0u) ? 0 : atoi(f_sats);
 	s_sec.has_utc = (uint8_t)((Nmea_Field_Empty(f_time) == 0u) ? 1u : 0u);
@@ -798,32 +812,83 @@ static void Gps_ParseGga(const char *s)
 	}
 }
 
+/* GLL - РЕЗЕРВНЫЙ источник (тот же безопасный разбор, что у Gps_ParseGga):
+   поля 1/2 = широта + N/S, 3/4 = долгота + E/W, 5 = UTC, 6 = статус A/V.
+   Фикс = статус 'A' И все координатные поля НЕ пусты (пустое поле - ','
+   подряд - atof никогда не достаётся). Качества и спутников в GLL нет:
+   has_sats = 0, коммит сохранит последнее известное число спутников.
+   Вызывается ТОЛЬКО если в кадре не было GGA (GGA авторитетнее).
+   КОНТЕКСТ: receiver_task (из Gps_Receive).                                */
+static void Gps_ParseGll(const char *s)
+{
+	const char *f_lat  = Nmea_Field(s, 1);
+	const char *f_ns   = Nmea_Field(s, 2);
+	const char *f_lon  = Nmea_Field(s, 3);
+	const char *f_ew   = Nmea_Field(s, 4);
+	const char *f_time = Nmea_Field(s, 5);
+	const char *f_stat = Nmea_Field(s, 6);
+
+	s_sec.valid    = 1u;
+	s_sec.has_sats = 0u;                /* в GLL числа спутников нет */
+	s_sec.has_utc  = (uint8_t)((Nmea_Field_Empty(f_time) == 0u) ? 1u : 0u);
+	s_sec.utc      = (s_sec.has_utc != 0u) ? atof(f_time) : 0;
+	s_sec.lat      = 0;
+	s_sec.lon      = 0;
+
+	if ((Nmea_Field_Empty(f_stat) != 0u) || (*f_stat != 'A') ||
+		(Nmea_Field_Empty(f_lat) != 0u) || (Nmea_Field_Empty(f_ns) != 0u) ||
+		(Nmea_Field_Empty(f_lon) != 0u) || (Nmea_Field_Empty(f_ew) != 0u)) {
+		s_sec.nav  = 0u;                /* статус V/пусто - фикс потерян */
+		s_sec.qual = 0;
+		return;
+	}
+
+	s_sec.nav  = 1u;
+	s_sec.qual = 1;                     /* условно: «данные действительны» */
+	s_sec.lat = atof(f_lat);
+	if (*f_ns == 'S') {
+		s_sec.lat = -s_sec.lat;
+	}
+	s_sec.lon = atof(f_lon);
+	if (*f_ew == 'W') {
+		s_sec.lon = -s_sec.lon;
+	}
+}
+
 /* Коммит тени ПОСЛЕДНЕЙ секунды кадра в глобальные переменные - строго один
    раз на кадр (зовётся на выходе Gps_Receive). ИНВАРИАНТ потери фикса (п.4
-   требования автора): qual == 0 ИЛИ sats < 4 -> Gps_flag_navigation = 0,
-   Latitude/Longitude/g_lat_scaled/g_lon_scaled/Gps_signal_db_hz - СТРОГО 0,
-   10-секундный счётчик публикации сброшен (после возврата фикса координаты
-   уйдут сразу). КОНТЕКСТ: receiver_task.                                    */
+   требования автора): nav == 0 -> gps_nav.navigation = 0, latitude/longitude/
+   lat_scaled/lon_scaled/signal_db_hz - СТРОГО 0, 10-секундный счётчик
+   публикации сброшен (после возврата фикса координаты уйдут сразу).
+   КОНТЕКСТ: receiver_task.                                                   */
 static void Gps_CommitSecond(void)
 {
-	Gps_satellites_used = s_sec.sats;
-	Gps_flag_navigation = s_sec.nav;
+	gps_nav.navigation = s_sec.nav;
+
+	/* Спутники: GGA даёт точное число; при GLL-питании (has_sats = 0) держим
+	   последнее известное, а при потере фикса - не оставляем устаревшее.    */
+	if (s_sec.has_sats != 0u) {
+		gps_nav.satellites_used = s_sec.sats;
+	}
+	else if (s_sec.nav == 0u) {
+		gps_nav.satellites_used = 0;
+	}
 
 	if (s_sec.nav == 0u) {
-		Latitude     = 0;
-		Longitude    = 0;
-		g_lat_scaled = 0;
-		g_lon_scaled = 0;
-		Gps_signal_db_hz = 0.0f;    /* подтвердится и в Gps_UpdateSignal      */
-		s_coord_pub_once = 0u;      /* сброс 10-с счётчика                    */
+		gps_nav.latitude     = 0;
+		gps_nav.longitude    = 0;
+		gps_nav.lat_scaled   = 0;
+		gps_nav.lon_scaled   = 0;
+		gps_nav.signal_db_hz = 0.0f;  /* подтвердится и в Gps_UpdateSignal    */
+		s_coord_pub_once = 0u;        /* сброс 10-с счётчика                  */
 		return;
 	}
 
 	if (s_sec.has_utc != 0u) {
-		Time_coord = s_sec.utc;
+		gps_nav.utc = s_sec.utc;
 	}
-	Latitude  = s_sec.lat;          /* текущие значения - каждую секунду;     */
-	Longitude = s_sec.lon;          /* в систему - раз в 10 с (Publish)       */
+	gps_nav.latitude  = s_sec.lat;  /* текущие значения - каждую секунду;     */
+	gps_nav.longitude = s_sec.lon;  /* в систему - раз в ~10 с (Publish)      */
 }
 
 /* GSV: сбор C/No (дБ-Гц) - 4-е поле каждого блока спутника (индексы полей
@@ -852,7 +917,7 @@ static void Gps_CollectGsv(const char *s)
 /* «Золотая четвёрка»: четыре лучших C/No секунды (частичная сортировка
    убыванием - полный sort не нужен), среднее арифметическое с округлением
    до 0.1 дБ-Гц (целочисленно). КРИТИЧЕСКОЕ условие спеки: нет фикса ->
-   Gps_signal_db_hz ПРИНУДИТЕЛЬНО 0.                                        */
+   gps_nav.signal_db_hz ПРИНУДИТЕЛЬНО 0.                                    */
 static void Gps_UpdateSignal(void)
 {
 	uint32_t sum = 0;
@@ -860,8 +925,8 @@ static void Gps_UpdateSignal(void)
 	uint8_t  i;
 	uint8_t  j;
 
-	if ((Gps_flag_navigation == 0u) || (s_snr_cnt == 0u)) {
-		Gps_signal_db_hz = 0.0f;
+	if ((gps_nav.navigation == 0u) || (s_snr_cnt == 0u)) {
+		gps_nav.signal_db_hz = 0.0f;
 		return;
 	}
 
@@ -881,18 +946,19 @@ static void Gps_UpdateSignal(void)
 		sum += s_snr[i];
 	}
 	/* x10, округление, /k, /10 - один знак после запятой без float-шума */
-	Gps_signal_db_hz = (float)((sum * 10u + (uint32_t)(k / 2u)) / (uint32_t)k) / 10.0f;
+	gps_nav.signal_db_hz = (float)((sum * 10u + (uint32_t)(k / 2u)) / (uint32_t)k) / 10.0f;
 }
 
-/* Публикация координат В СИСТЕМУ - строго раз в GPS_COORD_PUBLISH_MS (10 с;
-   программный ритм поверх аппаратной 1 Гц). Нет фикса - публиковать нечего:
-   координаты уже обнулены в Gps_ParseGga, трек нулями НЕ кормим (у
+/* Публикация координат В СИСТЕМУ - раз в ~10 с (GPS_COORD_PUBLISH_MS минус
+   допуск TOL: при 10-секундных кадрах Allystar точный порог «бился» бы с
+   периодом). Нет фикса - публиковать нечего: координаты уже обнулены в
+   Gps_CommitSecond, трек нулями НЕ кормим (у
    Lora_UpdateGPSTrack gps_last_valid_* должен оставаться последней ВАЛИДНОЙ
    точкой), а гейт сбрасывается - первый же фикс опубликуется сразу.
    КОНТЕКСТ: receiver_task (каждую секунду, решение - по тику).              */
 static void Gps_Publish_Coords(void)
 {
-	if (Gps_flag_navigation == 0u) {
+	if (gps_nav.navigation == 0u) {
 #if CONFIG_LORA
 		/* Потеря фикса: сообщаем LoRa ОДИН раз за пропажу (край) - флаг
 		   навигации там переключается по flag_navigation, а не по проверке
@@ -910,20 +976,20 @@ static void Gps_Publish_Coords(void)
 	s_lora_loss_sent = 0u;
 #endif
 	if ((s_coord_pub_once != 0u) &&
-		((GetTick() - s_coord_pub_tick) < GPS_COORD_PUBLISH_MS)) {
-		return;                     /* 10 с ещё не прошло */
+		((GetTick() - s_coord_pub_tick) < (GPS_COORD_PUBLISH_MS - GPS_COORD_PUBLISH_TOL_MS))) {
+		return;                     /* ~10 с ещё не прошло (допуск - см. TOL) */
 	}
 	s_coord_pub_tick = GetTick();
 	s_coord_pub_once = 1u;
 
 
-	g_lat_scaled = (int32_t)(NmeaToDecimalDegrees(Latitude)  * 10000000.0);
-	g_lon_scaled = (int32_t)(NmeaToDecimalDegrees(Longitude) * 10000000.0);
+	gps_nav.lat_scaled = (int32_t)(NmeaToDecimalDegrees(gps_nav.latitude)  * 10000000.0);
+	gps_nav.lon_scaled = (int32_t)(NmeaToDecimalDegrees(gps_nav.longitude) * 10000000.0);
 #if TEST_GPS
 	/* ПРЯМАЯ ПОДМЕНА масштабированных координат для теста (формат 1e-7 градуса,
 	   как ждёт Lora_UpdateGPSHistory) */
-	g_lat_scaled = (int32_t)(test_lats[test_gps_step] * 10000000.0);
-	g_lon_scaled = (int32_t)(test_lons[test_gps_step] * 10000000.0);
+	gps_nav.lat_scaled = (int32_t)(test_lats[test_gps_step] * 10000000.0);
+	gps_nav.lon_scaled = (int32_t)(test_lons[test_gps_step] * 10000000.0);
 
 	test_gps_step++;
 	if (test_gps_step >= 5) {
@@ -931,46 +997,70 @@ static void Gps_Publish_Coords(void)
 	}
 #endif
 #if CONFIG_LORA
-	/* Точка трека - раз в 10 с (внутри Lora_UpdateGPSTrack свой дополнительный
-	   делитель LORA_CFG_GET_GPSFIX); flag_navigation=1 - фикс есть.        */
-	Lora_UpdateGPSTrack(g_lat_scaled, g_lon_scaled, flag_navigation);
+	/* Точка трека - раз в ~10 с (внутри Lora_UpdateGPSTrack свой дополнительный
+	   делитель LORA_CFG_GET_GPSFIX). Флаг навигации передаём ПЕРЕМЕННОЙ
+	   (правка автора 54167dd), а не литералом: здесь он гарантированно 1 -
+	   ветка потери вышла раньше, но так честнее.                          */
+	Lora_UpdateGPSTrack(gps_nav.lat_scaled, gps_nav.lon_scaled, gps_nav.navigation);
 #endif
 }
 
 void Gps_Receive(void)
 {
+    /* СНИМОК кадра: +1 байт под гарантированный концевой '\0'. static -
+       функция зовётся из единственного потока receiver_task.              */
+    static uint8_t gps_frame[sizeof(buffer_uart_gps.receive) + 1u];
+    uint16_t snap_len;
+    TX_INTERRUPT_SAVE_AREA;
+
     if (get_state_init_flag_gps() == 0) {
         return;
     }
 
+    if (buffer_uart_gps.TimeFlagRX) {
+        /* Снимок кадра и освобождение накопителя - одной короткой критической
+           секцией (TX_DISABLE): пока разбираем копию, ISR уже может копить
+           СЛЕДУЮЩИЙ кадр с нулевого байта - сообщения не теряются, даже если
+           receiver задержался и разбор наложился на новый всплеск (без
+           снимка хвостовая очистка стёрла бы его начало). Секция = memcpy +
+           memset ~768 Б, единицы мкс; байт UART на 115200 живёт ~87 мкс -
+           RXNE не переполняется. КОНТЕКСТ: поток.                          */
+        TX_DISABLE;
+        buffer_uart_gps.TimeFlagRX    = 0;
+        snap_len                      = buffer_uart_gps.count_byter_r;
+        memcpy(gps_frame, buffer_uart_gps.receive, snap_len);
+        gps_frame[snap_len]           = '\0';
+        memset(buffer_uart_gps.receive, 0, sizeof(buffer_uart_gps.receive));
+        buffer_uart_gps.count_byter_r = 0;
+        Gps_Receive_flag_set(0);
+        TX_RESTORE;
+
 #if 0 // TEST_GPS
-    uint8_t * data_gps = test_gps;
+        const uint8_t *data_gps = test_gps;
 #else
-    uint8_t * data_gps = buffer_uart_gps.receive;
+        const uint8_t *data_gps = gps_frame;
 #endif
 
-    if (buffer_uart_gps.TimeFlagRX) {
-        buffer_uart_gps.TimeFlagRX = 0;
-
         /* === СПЕКА NMEA (ОБЩАЯ для LOCOSYS и Allystar - оба чипа настроены
-           в Gps_Init на GGA + GSV каждую секунду): обрабатываются только
-           предложения GGA и GSV, остальные пропускаются (их и в буфере нет -
-           фильтр ISR Gps_Data_Verification).
+           в Gps_Init на GGA + GSV; LOCOSYS 1 Гц, Allystar 1 раз в 10 с):
+           обрабатываются GGA и GSV, плюс GLL как РЕЗЕРВНЫЙ источник
+           координат - только если в кадре нет ни одной GGA (GGA
+           авторитетнее: в ней качество фикса и спутники). Прочие
+           предложения пропускаются (в снимок они и не попали - фильтр ISR).
 
-           Кадр - НЕ обязательно одна секунда: при задержке receiver'а в
+           Кадр - не обязательно одна секунда: при задержке receiver'а в
            буфере копится несколько секунд подряд, а при переполнении
-           (768 Б ~ 2-3 с потока) хвост обрезан. Обход ПОПРЕДЛОЖЕНЧЕСКИЙ:
-             - предложение = от '$' до следующего '$' / конца буфера;
+           (768 Б) хвост обрезан. Обход ПОПРЕДЛОЖЕНЧЕСКИЙ:
+             - предложение = от '$' до следующего '$' / конца снимка;
              - неполное (нет '*' и перевода строки - обрезанный хвост)
                ПРОПУСКАЕТСЯ: парсить огрызок хуже, чем потерять;
-             - GGA -> парсинг В ТЕНЬ s_sec (следующая GGA перезаписывает
-               предыдущую секунду целиком) + сброс сборщика C/No: граница
-               секунды отмечается СТРОГО на заголовке новой GGA;
-             - GSV -> накопление C/No (только после первой GGA кадра: без
-               неё «владение» секундой неизвестно).
+             - GGA/GLL - граница секунды: парсинг В ТЕНЬ s_sec (следующая
+               секунда перезаписывает предыдущую целиком) + сброс сборщика
+               C/No (накопление внутри секунды не прерывается).
            Цикл ТОЛЬКО ПАРСИТ: закрытие секунды (коммит тени + сигнал +
            публикация) - СТРОГО ОДИН РАЗ ниже, на выходе из функции. === */
         const char *p = (const char *)data_gps;
+        uint8_t frame_has_gga = 0u;
 
         s_snr_cnt   = 0;
         s_sec.valid = 0u;                   /* тень секунды - с чистого листа */
@@ -990,10 +1080,15 @@ void Gps_Receive(void)
             if (Nmea_SentenceComplete(p, end) != 0u) {
                 if (Nmea_IsType(p, "GGA") != 0u) {
                     Gps_ParseGga(p);        /* в тень: секунда перезаписывается */
+                    frame_has_gga = 1u;     /* есть GGA - GLL в этом кадре игнор */
                     s_snr_cnt = 0;          /* НОВАЯ GGA = новая секунда: сбор C/No заново */
                 }
+                else if ((Nmea_IsType(p, "GLL") != 0u) && (frame_has_gga == 0u)) {
+                    Gps_ParseGll(p);        /* резервный источник (конфиг без GGA) */
+                    s_snr_cnt = 0;          /* GLL - тоже граница секунды       */
+                }
                 else if ((Nmea_IsType(p, "GSV") != 0u) && (s_sec.valid != 0u)) {
-                    Gps_CollectGsv(p);      /* накопление C/No текущей секунды */
+                    Gps_CollectGsv(p);      /* накопление C/No текущей секунды  */
                 }
             }
             p = end;
@@ -1003,88 +1098,20 @@ void Gps_Receive(void)
            автора): даже если в буфер натекло 2-3 секунды, Gps_UpdateSignal и
            Gps_Publish_Coords вызываются один раз - по последней полной
            секунде; 10-секундный гейт публикации от этого не «тикает» лишнего.
-           Кадр без единой полной GGA (обрезок) globals НЕ трогает.          */
+           Кадр без единой полной GGA/GLL (обрезки) globals НЕ трогает.     */
         if (s_sec.valid != 0u) {
-            Gps_CommitSecond();             /* тень -> globals (инвариант обнуления) */
+            Gps_CommitSecond();             /* тень -> gps_nav (инвариант обнуления) */
             Gps_UpdateSignal();             /* «золотая четвёрка»; нет фикса -> 0 */
-            Gps_Publish_Coords();           /* в систему - раз в 10 с (гейт по тику) */
+            Gps_Publish_Coords();           /* в систему - раз в ~10 с (гейт по тику) */
         }
 
         buffer_uart_gps.TimerReceive = GetTick();
         Gps_flag_err = 0;
-
-        buffer_uart_gps.count_byter_r = 0;
-        /* чистим ВЕСЬ накопитель (а не len байт): гарантия инварианта «за
-           count только '\0'» при любом исходе (откаты предложений в ISR,
-           переполнение, переход из режима верификации). КОНТЕКСТ: поток.   */
-        memset(&buffer_uart_gps.receive[0], 0, sizeof(buffer_uart_gps.receive));
-        Gps_Receive_flag_set(0);
     }
     uint32_t TimerErrRreceive = GetTick() - buffer_uart_gps.TimerReceive;
     if(TimerErrRreceive > 20000){
     	Gps_flag_err = 1;
     }
-}
-
-//=========================================================================================================
-void parsing_gga(uint8_t *data)
-{
-		uint16_t pos = 0;
-		pos = Search_text(data, "GGA");
-		pos += Search_text(&data[pos], ",");
-		//
-		Time_coord  = atof((char *)&data[pos]);
-		pos += Search_text(&data[pos], ",");
-		//
-		Latitude  = atof((char *)&data[pos]);
-
-		pos += Search_text(&data[pos], ",");
-		pos += Search_text(&data[pos], ",");
-		//
-		Longitude = atof((char *)&data[pos]);
-}
-
-void parsing_gll(uint8_t *data)
-{
-		uint16_t pos = 0;
-		pos = Search_text(data, "GLL");
-		pos += Search_text(&data[pos], ",");
-		//
-		Latitude  = atof((char *)&data[pos]);
-
-		pos += Search_text(&data[pos], ",");
-		if(data[pos] == 'S'){
-			Latitude *= (-1);
-		}
-		pos += Search_text(&data[pos], ",");
-		//
-		Longitude = atof((char *)&data[pos]);
-
-		pos += Search_text(&data[pos], ",");
-		if(data[pos] == 'W'){
-			Longitude *= (-1);
-		}
-		pos += Search_text(&data[pos], ",");
-		//
-		Time_coord  = atof((char *)&data[pos]);
-}
-
-void parsing_rmc(uint8_t *data)
-{
-		uint16_t pos = 0;
-		pos = Search_text(data, "RMC");
-		pos += Search_text(&data[pos], ",");
-		//
-		Time_coord  = atof((char *)&data[pos]);
-		pos += Search_text(&data[pos], ",");
-		pos += Search_text(&data[pos], ",");
-		//
-		Latitude  = atof((char *)&data[pos]);
-
-		pos += Search_text(&data[pos], ",");
-		pos += Search_text(&data[pos], ",");
-		//
-		Longitude = atof((char *)&data[pos]);
 }
 
 #endif

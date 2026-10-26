@@ -1484,7 +1484,7 @@ uint16_t LCD_Fill_Template(SNS_CFG *pSnsCfg)
 	//-------------------------------
 	// 2. Инфо-панель
 #if TEST_GPS
-	sprintf(str_lcd, "GPS %.5f , %.5f",	Latitude, Longitude);
+	sprintf(str_lcd, "GPS %.5f , %.5f",	gps_nav.latitude, gps_nav.longitude);
 #else
 	sprintf(str_lcd, info_format[APPLANG],
 			(int32_t)sensors_status.Temperature,

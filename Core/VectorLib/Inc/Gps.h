@@ -137,27 +137,33 @@ typedef struct
 
 extern Message_buffer_uart_gps buffer_uart_gps;
 //===========================================================================================================================
-extern double_t Time_coord;
-extern double_t Latitude;
-extern double_t Longitude;
 //===========================================================================================================================
-/* Результат разбора NMEA: координаты в градусах (double) и масштабированные
-   в 1e-7 градуса (int32) - именно их забирает LoRa-трек
-   (Lora_UpdateGPSTrack).                                                    */
-extern GNSS_CHIP_TYPE Gps_Chip_Type;    /* какой чип определился при старте  */
-extern int32_t   g_lat_scaled;
-extern int32_t   g_lon_scaled;
-extern uint32_t  Gps_type_nav_pre;      /* маска навигационных систем        */
+/* ВСЕ результаты разбора NMEA - в ОДНОЙ структуре (решение автора: «может
+   структуру будет красивей сделать»; в отладчике - один символ gps_nav).
+   Пишет ТОЛЬКО поток receiver_task (закрытие кадра в Gps_Receive); читатели:
+   журнал (Config_save_read.c), LoRa-трек (через Lora_UpdateGPSTrack),
+   индикация. Флаг навигации - через Gps_Receive_flag_navigation().          */
+typedef struct
+{
+	uint8_t  navigation;      /* фикс: GGA качество > 0 И спутников >= 4 И
+	                             координатные поля не пусты (GLL: статус 'A') */
+	uint8_t  satellites_used; /* спутники из GGA (поле 7); при GLL-питании
+	                             неизвестны - сохраняется последнее известное */
+	float    signal_db_hz;    /* сигнал дБ-Гц: среднее четырёх лучших C/No из
+	                             GSV («золотая четвёрка», 1 знак); 0 без фикса */
+	double_t latitude;        /* DDMM.MMMM со знаком полушария (каждую секунду;
+	                             строго 0.0 при потере фикса)                */
+	double_t longitude;
+	double_t utc;             /* hhmmss.ss из поля 1 GGA (бывш. Time_coord)    */
+	int32_t  lat_scaled;      /* градусы x1e-7 - СИСТЕМНЫЙ выход (журнал/LoRa):
+	                             раз в ~10 с, при потере фикса строго 0       */
+	int32_t  lon_scaled;
+} gps_nav_t;
 
-/* --- результаты разбора NMEA (спека: GGA + GSV каждую секунду; общая для
- * чипов LOCOSYS и Allystar) --------------------------------------------------
- * Gps_satellites_used - число спутников из GGA (поле 7); 0 при отсутствии.
- * Gps_signal_db_hz    - сигнал, дБ-Гц: среднее арифметическое четырёх лучших
- *                       C/No из GSV за текущую секунду («золотая четвёрка»,
- *                       один знак после запятой); ПРИНУДИТЕЛЬНО 0, если
- *                       Gps_Receive_flag_navigation() == 0 (нет фикса).      */
-extern int   Gps_satellites_used;
-extern float Gps_signal_db_hz;
+extern gps_nav_t gps_nav;
+
+extern GNSS_CHIP_TYPE Gps_Chip_Type;    /* какой чип определился при старте  */
+extern uint32_t  Gps_type_nav_pre;      /* маска навигационных систем        */
 
 /* --- инициализация и состояние модуля ------------------------------------ */
 uint8_t Gps_Init(SNS_CFG *Cfg_struct);          /* 1 = модуль инициализирован */
@@ -171,9 +177,12 @@ void    Uart_Gps_Set_Baudrate(uint32_t baud);
 /* --- обмен ---------------------------------------------------------------- */
 void    Gps_Transmit(uint8_t command, uint16_t param1, uint16_t param2);
 void    Gps_Receive(void);              /* разбор принятого кадра: NMEA GGA/GSV
-                                           по спеке - общая для LOCOSYS и Allystar
-                                           (координаты в систему раз в 10 с,
-                                           сигнал каждую секунду)             */
+                                           по спеке (общая для LOCOSYS и Allystar),
+                                           GLL - резервный источник координат,
+                                           если в кадре нет GGA; снимок кадра
+                                           под TX_DISABLE; координаты в систему
+                                           раз в ~10 с, закрытие секунды - одно
+                                           на кадр                            */
 
 /* --- приём байтов из ISR и таймаут кадра ---------------------------------- */
 void    Gps_Data_Verification(uint8_t data);   /* звать из ISR приёма UART   */
@@ -181,11 +190,6 @@ void    Uart_Gps_Receive_Timer_Inc(void);      /* звать с периодом
 void    Gps_Receive_flag_set(uint8_t flag);
 uint8_t Gps_Receive_flag_read(void);
 uint8_t Gps_Receive_flag_navigation(void);     /* 1 = есть валидные координаты */
-
-/* --- разбор NMEA-строк ---------------------------------------------------- */
-void    parsing_gga(uint8_t *data);
-void    parsing_gll(uint8_t *data);
-void    parsing_rmc(uint8_t *data);
 
 #endif /* CONFIG_GPS */
 

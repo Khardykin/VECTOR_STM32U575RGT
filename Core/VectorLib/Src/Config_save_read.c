@@ -364,13 +364,10 @@ static int log_time_at(uint32_t ptr, uint32_t *t)
 //---------------------------------------------------------------------------------------------------------------------------
 // ПОСТРОЕНИЕ ЗАПИСЕЙ (§4): снимок данных НА МОМЕНТ ВЫЗОВА (log_post) -
 // задержка переноса во flash время записи не искажает. Источники: SNS_CFG,
-// sensors_status, GPS (g_lat/g_lon_scaled, ×1e7). Чего пока нет (каналы
-// AVIS, СИЗ по BLE, aqi, удар/неактивность в motion) - нули (§9: «SNAPSHOT
-// при отсутствии AVIS: active_sensors=0, conc[]=0, chan_thr_bits=0»).
-#if CONFIG_GPS
-extern int32_t g_lat_scaled;	// Gps.c: координата ×1e7 (0 = нет фикса)
-extern int32_t g_lon_scaled;
-#endif
+// sensors_status, GPS (gps_nav.lat_scaled/lon_scaled, ×1e7 - Gps.h включён
+// через Vector_main.h под CONFIG_GPS; отдельных extern больше нет). Чего пока
+// нет (каналы AVIS, СИЗ по BLE, aqi, удар/неактивность в motion) - нули
+// (§9: «SNAPSHOT при отсутствии AVIS: active_sensors=0, conc[]=0, chan_thr_bits=0»).
 
 // Байт MOTION_BITS (§4.1/§4.2): поза - Orientation (биты 0-1), падение -
 // fall_detected (бит2). Удар (бит3)/неактивность (бит4) - источника пока нет.
@@ -441,8 +438,8 @@ static void log_build(EVENT_LOG *r, TYPE_LOG t, const SNS_CFG *cfg)
 		log_pl_snapshot_t p;
 		memset(&p, 0, sizeof p);
 #if CONFIG_GPS
-		p.lat            = g_lat_scaled;	// ×1e7; (0,0) = нет фикса (§4.1)
-		p.lon            = g_lon_scaled;
+		p.lat            = gps_nav.lat_scaled;	// ×1e7; (0,0) = нет фикса (§4.1)
+		p.lon            = gps_nav.lon_scaled;
 #endif
 		p.battery_pct    = (uint8_t)sensors_status.battery_charge_percent;
 		p.active_sensors = 0u;				// AVIS в комплекте нет (§9)

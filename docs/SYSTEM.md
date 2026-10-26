@@ -60,10 +60,12 @@ Inc/Config_save_read.h       с адресом области (sfmap.h), save_ev
                            SaveConfig/SaveConfigDefault/ReadConfigDefault/SaveEvent/TypeLogEvent,
                            Init_Build_Type/current_build_type (бренд)
 Src/Gps.c                  GPS/GNSS: NMEA GGA/GSV по спеке - ОБЩЕЕ для чипов LOCOSYS
-                           и Allystar (фикс = качество GGA + спутники >= 4,
-                           «нет координат» = ПУСТЫЕ поля, а не нули; координаты
-                           в систему раз в 10 с, сигнал Gps_signal_db_hz - среднее
-                           4 лучших C/No за секунду, 0 без фикса); автоопределение чипа
+                           (1 Гц) и Allystar (период 10 с), GLL - резервный источник
+                           (если в кадре нет GGA); фикс = качество GGA + спутники >= 4,
+                           «нет координат» = ПУСТЫЕ поля, а не нули; все выходы - одна
+                           структура gps_nav (Gps.h): координаты в систему раз в ~10 с,
+                           сигнал signal_db_hz - среднее 4 лучших C/No за кадр, 0 без
+                           фикса; снимок кадра под TX_DISABLE; автоопределение чипа
 Src/Lora_S7678S.c          LoRa S7678S: AT-драйвер, машина состояний, payload uplink/downlink
 Inc/Lora_S7678S.h            ПРОТОКОЛ v4 (docs/Mirax-Lora-protocol-v4.md): контейнерные
                            блоки трекера (Battery/GPS/Environment/Motion/PPE/BLEBeacons/
