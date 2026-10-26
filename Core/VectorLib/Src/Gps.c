@@ -820,7 +820,7 @@ static void Gps_Publish_Coords(void)
 	s_coord_pub_tick = GetTick();
 	s_coord_pub_once = 1u;
 
-#if CONFIG_LORA
+
 	g_lat_scaled = (int32_t)(NmeaToDecimalDegrees(Latitude)  * 10000000.0);
 	g_lon_scaled = (int32_t)(NmeaToDecimalDegrees(Longitude) * 10000000.0);
 #if TEST_GPS
@@ -834,6 +834,7 @@ static void Gps_Publish_Coords(void)
 		test_gps_step = 0;
 	}
 #endif
+#if CONFIG_LORA
 	/* Точка трека - раз в 10 с (внутри Lora_UpdateGPSTrack свой дополнительный
 	   делитель LORA_CFG_GET_GPSFIX) */
 	Lora_UpdateGPSTrack(g_lat_scaled, g_lon_scaled);
@@ -886,7 +887,7 @@ void Gps_Receive(void)
             /* LEGACY Allystar: GLL раз в 10 с (аппаратный ритм чипа), прежняя
                логика - валидность по ненулевым масштабированным координатам. */
             parsing_gll(data_gps);
-#if CONFIG_LORA
+
             g_lat_scaled = NmeaToDecimalDegrees(Latitude) * 10000000.0;
             g_lon_scaled = NmeaToDecimalDegrees(Longitude) * 10000000.0;
 #if TEST_GPS
@@ -898,7 +899,6 @@ void Gps_Receive(void)
             if (test_gps_step >= 5) {
                 test_gps_step = 0;
             }
-#endif
 #endif
             if ((g_lat_scaled != 0) && (g_lon_scaled != 0)) {
                 Gps_flag_navigation = 1;
