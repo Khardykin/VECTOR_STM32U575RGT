@@ -126,8 +126,8 @@ typedef enum{
 typedef struct
 {
     uint8_t  receive[768];      /* накопитель принятых байтов: секундный
-                                   всплеск LOCOSYS (GGA + GSV нескольких
-                                   созвездий) длиннее прежних 256          */
+                                   всплеск (GGA + GSV нескольких созвездий)
+                                   длиннее прежних 256                     */
     uint8_t  transmit[400];     /* буфер передачи (команды модулю)          */
     uint16_t count_byter_r;     /* сколько байт в receive (буфер > 255)     */
     uint8_t  TimeRX;            /* таймаут межбайтового интервала (1 мс тики)*/
@@ -149,7 +149,8 @@ extern int32_t   g_lat_scaled;
 extern int32_t   g_lon_scaled;
 extern uint32_t  Gps_type_nav_pre;      /* маска навигационных систем        */
 
-/* --- результаты разбора NMEA LOCOSYS (спека: GGA + GSV каждую секунду) ------
+/* --- результаты разбора NMEA (спека: GGA + GSV каждую секунду; общая для
+ * чипов LOCOSYS и Allystar) --------------------------------------------------
  * Gps_satellites_used - число спутников из GGA (поле 7); 0 при отсутствии.
  * Gps_signal_db_hz    - сигнал, дБ-Гц: среднее арифметическое четырёх лучших
  *                       C/No из GSV за текущую секунду («золотая четвёрка»,
@@ -169,10 +170,10 @@ void    Uart_Gps_Set_Baudrate(uint32_t baud);
 
 /* --- обмен ---------------------------------------------------------------- */
 void    Gps_Transmit(uint8_t command, uint16_t param1, uint16_t param2);
-void    Gps_Receive(void);              /* разбор принятого кадра: LOCOSYS -
-                                           GGA/GSV по спеке (координаты в систему
-                                           раз в 10 с, сигнал каждую секунду),
-                                           Allystar - legacy GLL              */
+void    Gps_Receive(void);              /* разбор принятого кадра: NMEA GGA/GSV
+                                           по спеке - общая для LOCOSYS и Allystar
+                                           (координаты в систему раз в 10 с,
+                                           сигнал каждую секунду)             */
 
 /* --- приём байтов из ISR и таймаут кадра ---------------------------------- */
 void    Gps_Data_Verification(uint8_t data);   /* звать из ISR приёма UART   */

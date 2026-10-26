@@ -8,7 +8,7 @@
 #include "Gps.h"
 #if CONFIG_GPS
 
-#include <string.h>   /* strstr/memset/strlen */
+#include <string.h>   /* memset/strncmp ( strstr/strlen - legacy parsing_*) */
 #include <stdio.h>    /* sprintf (ветка TEST_GPS) */
 
 static uint16_t Gps_Crc(uint8_t *data, uint16_t count);
@@ -85,7 +85,7 @@ uint8_t Gps_Receive_flag_navigation(void)
 //===========================================================================================================================
 /* Приём байта из ISR: кадр копится от '$' до тишины TIME_OUT_GPS (50 мс -
    Uart_Gps_Receive_Timer_Inc взведёт TimeFlagRX). В рабочем режиме в буфер
-   попадают ТОЛЬКО предложения GGA/GSV (спека LOCOSYS) и GLL (legacy-чип
+   попадают ТОЛЬКО предложения GGA/GSV (спека - общая для LOCOSYS и
    Allystar): тип предложения решается по его 6-му байту (символы 3..5 после
    '$'), остальные предложения ОТКАТЫВАЮТСЯ - не занимают место в буфере.
    В режиме верификации (Gps_Auto_Detect_Chip) поток пишется СЫРЬЁМ - детект
@@ -128,13 +128,13 @@ void Gps_Data_Verification(uint8_t data)
 			}
 
 			/* Вердикт предложению - на его 6-м байте: символы 3..5 от '$'
-			   ("GGA"/"GSV"/"GLL"). Чужое предложение - откат записи.        */
+			   ("GGA"/"GSV" - спека, общая для LOCOSYS и Allystar). Чужое
+			   предложение - откат записи.                                 */
 			if((Gps_Verification_Mode == 0) && (sent_keep == 2u) &&
 			   ((uint16_t)(idx + 1u - sent_start) >= 6u) &&
 			   (buffer_uart_gps.count_byter_r >= (uint16_t)(sent_start + 6u))){
 				const char *t = (const char *)&buffer_uart_gps.receive[sent_start + 3u];
-				if((strncmp(t, "GGA", 3) == 0) || (strncmp(t, "GSV", 3) == 0) ||
-				   (strncmp(t, "GLL", 3) == 0)){
+				if((strncmp(t, "GGA", 3) == 0) || (strncmp(t, "GSV", 3) == 0)){
 					sent_keep = 1u;
 				}
 				else{
@@ -258,7 +258,6 @@ uint8_t Gps_Auto_Detect_Chip(void)
 //===========================================================================================================================
 uint8_t Gps_Init(SNS_CFG *Cfg_struct)
 {
-	uint8_t message_rate = 10;
 	uint32_t Gps_type_nav = Cfg_struct->Config_common.Gps_type_nav & 0x7FFFF;
 	uint32_t Gps_type_start = (Cfg_struct->Config_common.Gps_type_nav >> 24) & 0x03;
 
@@ -308,12 +307,17 @@ uint8_t Gps_Init(SNS_CFG *Cfg_struct)
 	}
 	else
 	{
-		// Инициализируем бинарный протокол Allystar на скорости 9600
-		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GGA, 0);
-		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GLL, message_rate);
+		// Инициализируем бинарный протокол Allystar на скорости 9600.
+		// Та же спека, что у LOCOSYS: GGA + GSV КАЖДУЮ СЕКУНДУ (param2 у
+		// Allystar - период в секундах, 0 = выкл), GLL выключен - навигация
+		// берётся из GGA, ритм 10 с для координат держит программный гейт
+		// Gps_Publish_Coords. Бюджет канала: GGA+GSV на 1 Гц - до ~650 Б/с,
+		// 9600 бод (~960 Б/с) вмещают.
+		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GGA, 1);
+		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GLL, 0);
 		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GSA, 0);
 		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GRS, 0);
-		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GSV, 0);
+		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_GSV, 1);
 		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_RMC, 0);
 		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_VTG, 0);
 		Gps_Transmit(CMD_EN_DIS_MSG, TYPE_MSG_ZDA, 0);
@@ -622,14 +626,16 @@ static double_t NmeaToDecimalDegrees(double_t nmea_coord)
 }
 
 /* ===========================================================================
- * NMEA-разбор LOCOSYS по спеке (GGA + GSV, аппаратный ритм 1 Гц):
+ * NMEA-разбор по спеке (GGA + GSV, аппаратный ритм 1 Гц - ОБЩЕЕ для чипов
+ * LOCOSYS и Allystar, оба настраиваются в Gps_Init):
  *   - «отсутствие» параметра определяется ПУСТЫМ полем (следующие друг за
  *     другом ','), а не нулевым значением координаты (прежняя проверка
  *     g_lat_scaled != 0 путала «нет фикса» и «координата ровно 0»);
  *   - координаты В СИСТЕМУ (g_lat_scaled/g_lon_scaled + трек LoRa) публикуются
  *     СТРОГО раз в GPS_COORD_PUBLISH_MS (10 с) - программный гейт вместо
  *     прежнего счётчика кадров; сами GGA/GSV обрабатываются КАЖДУЮ секунду,
- *     чтобы усреднение сигнала не искажалось;
+ *     чтобы усреднение сигнала не искажалось (у Allystar то же самое,
+ *     период у сообщения задаётся в Gps_Init, а не «железом» модуля);
  *   - нет фикса: широта/долгота строго 0.0, Gps_signal_db_hz строго 0.
  * КОНТЕКСТ: поток receiver_task (вызывается из Gps_Receive).
  * ======================================================================== */
@@ -856,63 +862,32 @@ void Gps_Receive(void)
     if (buffer_uart_gps.TimeFlagRX) {
         buffer_uart_gps.TimeFlagRX = 0;
 
-        if (Gps_Chip_Type == CHIP_LOCOSYS_AIROHA_NEW) {
-            /* === СПЕКА LOCOSYS: из потока обрабатываются только строки GGA и
-               GSV, остальные пропускаются (их и в буфере нет - фильтр ISR).
-               Обход кадра по '$': тип предложения - символы 3..5. Кадр = одна
-               секунда NMEA (модуль шлёт 1 Гц). === */
-            const char *p = (const char *)data_gps;
+        /* === СПЕКА NMEA (ОБЩАЯ для LOCOSYS и Allystar - оба чипа настроены
+           в Gps_Init на GGA + GSV каждую секунду): из потока обрабатываются
+           только строки GGA и GSV, остальные пропускаются (их и в буфере
+           нет - фильтр ISR Gps_Data_Verification). Обход кадра по '$': тип
+           предложения - символы 3..5. Кадр = одна секунда NMEA. === */
+        const char *p = (const char *)data_gps;
 
-            s_snr_cnt = 0;                  /* сигнал считаем заново каждую секунду */
+        s_snr_cnt = 0;                      /* сигнал считаем заново каждую секунду */
 
-            while (*p != '\0') {
-                if (*p == '$') {
-                    if (Nmea_IsType(p, "GGA") != 0u) {
-                        Gps_ParseGga(p);    /* фикс/спутники/координаты - каждую секунду */
-                    }
-                    else if (Nmea_IsType(p, "GSV") != 0u) {
-                        Gps_CollectGsv(p);  /* накопление C/No текущей секунды */
-                    }
+        while (*p != '\0') {
+            if (*p == '$') {
+                if (Nmea_IsType(p, "GGA") != 0u) {
+                    Gps_ParseGga(p);        /* фикс/спутники/координаты - каждую секунду */
                 }
-                p++;
+                else if (Nmea_IsType(p, "GSV") != 0u) {
+                    Gps_CollectGsv(p);      /* накопление C/No текущей секунды */
+                }
             }
-
-            Gps_UpdateSignal();             /* «золотая четвёрка»; нет фикса -> 0 */
-            Gps_Publish_Coords();           /* в систему - строго раз в 10 с */
-
-            buffer_uart_gps.TimerReceive = GetTick();
-            Gps_flag_err = 0;
+            p++;
         }
-        else if (strstr((char*)data_gps, "GLL") != NULL) {
-            /* LEGACY Allystar: GLL раз в 10 с (аппаратный ритм чипа), прежняя
-               логика - валидность по ненулевым масштабированным координатам. */
-            parsing_gll(data_gps);
 
-            g_lat_scaled = NmeaToDecimalDegrees(Latitude) * 10000000.0;
-            g_lon_scaled = NmeaToDecimalDegrees(Longitude) * 10000000.0;
-#if TEST_GPS
-            /* ПРЯМАЯ ПОДМЕНА масштабированных координат для теста */
-            g_lat_scaled = (int32_t)(test_lats[test_gps_step] * 10000000.0);
-            g_lon_scaled = (int32_t)(test_lons[test_gps_step] * 10000000.0);
+        Gps_UpdateSignal();                 /* «золотая четвёрка»; нет фикса -> 0 */
+        Gps_Publish_Coords();               /* в систему - строго раз в 10 с */
 
-            test_gps_step++;
-            if (test_gps_step >= 5) {
-                test_gps_step = 0;
-            }
-#endif
-            if ((g_lat_scaled != 0) && (g_lon_scaled != 0)) {
-                Gps_flag_navigation = 1;
-            }
-            else {
-                Gps_flag_navigation = 0;
-            }
-#if CONFIG_LORA
-            // Вызов обновления GPS History с уже готовыми int32_t значениями
-            Lora_UpdateGPSTrack(g_lat_scaled, g_lon_scaled);
-#endif
-            buffer_uart_gps.TimerReceive = GetTick();
-            Gps_flag_err = 0;
-        }
+        buffer_uart_gps.TimerReceive = GetTick();
+        Gps_flag_err = 0;
 
         buffer_uart_gps.count_byter_r = 0;
         /* чистим ВЕСЬ накопитель (а не len байт): гарантия инварианта «за
