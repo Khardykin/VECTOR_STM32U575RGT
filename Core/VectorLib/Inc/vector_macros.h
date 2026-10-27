@@ -102,6 +102,15 @@ uint32_t Sai_GetErrorCode(void);    /* ErrorCode SAI - диагностика   
 uint32_t Sai_GetMckdiv(void);       /* Init.Mckdiv (0 трактуется как 1)       */
 int      Sai_DmaIsCircular(void);   /* 1 = DMA circular (linked-list, U5)     */
 
+/* --- VIBRO: вибромотор (платформенный слой секвенсора Notify_vector) -------
+ * Железо пока не разведено: weak-заглушки в vector_macros.c ничего не делают,
+ * фазы вибро в сценариях оповещений просто молчат. Когда мотор будет разведён -
+ * заменить тело (пример Avis: ШИМ TMR4 CH1, tmr_channel_enable(TMR4,
+ * TMR_SELECT_CHANNEL_1, TRUE/FALSE); на STM32 - HAL_TIM_PWM_Start/Stop).
+ * КОНТЕКСТ: поток LVGL Task (Notify_Tick).                                   */
+void Vibro_On(void);
+void Vibro_Off(void);
+
 /* --- ЧАСЫ прибора: календарный RTC <-> Unix-секунды (подход автора) ----
  * Замена AT32 rtc_counter_get/set из Avis: на U5 RTC - календарь (LSE,
  * backup-домен, идёт от VBAT при снятом VDD). RTC_ReadTime() преобразует

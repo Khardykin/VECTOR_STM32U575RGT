@@ -30,6 +30,7 @@
 #include "main.h"
 #include "Vector_main.h"      /* timer, device_turn, tasks_status (v27) */
 #include "Menu_vector.h"      /* Vector_Run_Indication() (v27) */
+#include "Notify_vector.h"    /* Notify_Tick(): фазы свет/звук/вибро ~10 мс (v12) */
 #if (CONFIG_TYPE_LCD_TFT && VECTOR_LCD_USE_LVGL)
 #include "TFT.h"              /* TFT_Initialized */
 #include "lvgl.h"
@@ -95,6 +96,11 @@ void lvgl_thread_entry(ULONG thread_input)
         Vector_Run_Indication();
 #endif
       }
+      /* Секвенсор оповещений (Notify_vector): тик движка ~каждые 10 мс.
+         Вне гейта flag_100ms и вне CONFIG_DISPLAY: работает и при выключенном
+         приборе - сценарий включения (Button_Run_Start -> NotifySeq_PowerOn)
+         стартует как раз в состоянии OFF. */
+      Notify_Tick();
 #if (CONFIG_TYPE_LCD_TFT && VECTOR_LCD_USE_LVGL)
       if (TFT_Initialized == 1u)
       {

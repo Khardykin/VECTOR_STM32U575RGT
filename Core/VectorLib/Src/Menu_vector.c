@@ -39,6 +39,9 @@
 #include "vector_tick.h"     /* GetTick через vector_macros.h */
 #include "vector_macros.h"
 #include "vector_log.h"
+#include "TFT.h"             /* LCD_Init() -> TFT_Init() (Button_Run_Start) */
+#include "LCD_platform.h"    /* backlight_set() (Button_Run_Backlight)      */
+#include "Notify_vector.h"   /* оповещение включения: NotifySeq_PowerOn     */
 
 #if CONFIG_DISPLAY
 
@@ -332,6 +335,8 @@ void Menu_Init(void)
 {
   uint8_t i;
 
+  Notify_Init();   /* секвенсор оповещений (Notify_vector): до первого Tick */
+
   menu_status.screen          = (uint8_t)SCREEN_START;
   menu_status.screen_prev     = (uint8_t)SCREEN_START;
   menu_status.state_menu      = 0u;
@@ -391,15 +396,18 @@ void Menu_Run(void)
 // Для регуляции подстветки, запуск таймера
 void Button_Run_Backlight(void)
 {
-#if((CONFIG_TYPE_LCD == 0))
+#if (CONFIG_TYPE_LCD_TFT == 0)   /* было CONFIG_TYPE_LCD: такого макроса нет,
+                                    препроцессор считал его 0 и ветка выбиралась
+                                    всегда. Верное имя - CONFIG_TYPE_LCD_TFT
+                                    (config_device.h).                        */
 	  if(TEST_TIMER_RTC(TIMER_RTC_LIGHT_RESET)){
 		RESET_TIMER_RTC(TIMER_RTC_LIGHT_RESET);
 		button1.button_pressed = 0;
 	  }
 #else
 //    backlight_set(Sns_Cfg_struct.Config_common.SoundPWM);
-    if((button.button_pressed) || (button2.button_pressed) || (button3.button_pressed)){
-    	button.button_pressed = 0;
+    if((button1.button_pressed) || (button2.button_pressed) || (button3.button_pressed)){
+    	button1.button_pressed = 0;
     	button2.button_pressed = 0;
     	button3.button_pressed = 0;
     	backlight_set(40);
@@ -436,28 +444,14 @@ void Button_Run_Start(void)
     Gps_DeInit(0);
 #endif
 		//------------------------------------------------------------------------
-		// Индикация надо сделать todo ниже пример как у avis, но у нас звук по другому, тут надо вызывать писк который у нас в памяти мк
-//	    VIBRO_ON();
-//	    Delay(500);
-//	    VIBRO_OFF();
-//
-//	    Delay(200); // Пауза перед звуком
-//
-//	    // 2. Короткий сигнал (200 мс)
-//	    SOUND_ON();
-//	    SET_ON(ALARM_LED_1);    // Зажигаем только первый светодиод
-//	    Delay(200);
-//	    SOUND_OFF();
-//	    SET_OFF(ALARM_LED_1);
-//
-//	    Delay(200); // Пауза между пиками
-//
-//	    // 3. Длинный сигнал (800 мс)
-//	    SOUND_ON();
-//	    SET_ON(ALARM_LED_2);    // Зажигаем только второй светодиод
-//	    Delay(800);
-//	    SOUND_OFF();
-//	    SET_OFF(ALARM_LED_2);
+		// Индикация (замечание автора): НЕБЛОКИРУЮЩЕ - через секвенсор
+		// Notify_vector: 3 писка ИЗ ПАМЯТИ МК (audio_beep - клип 240 мс во
+		// внутренней flash, не зависит от внешней SPI-flash), пауза 300 мс.
+		// Delay() здесь нельзя: фазы ведёт Notify_Tick() (~10 мс) из потока
+		// LVGL Task. Будущие тревоги - так же: const-таблица фаз "свет ->
+		// звук -> вибро" в любом порядке (примеры в комментариях Notify_vector.c),
+		// голосовое сообщение - одна фаза NOTIFY_CH_SOUND с SND_* из образа.
+		Notify_Start(&NotifySeq_PowerOn);
 	    //------------------------------------------------------------------------
 		button1.button_count = 1;
 		button1.button_flag = 0;
