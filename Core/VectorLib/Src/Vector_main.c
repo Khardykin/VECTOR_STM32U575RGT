@@ -756,11 +756,11 @@ void Vector_Run_Pre_Init(void)
      очередь В КОНЦЕ Pre_Init (датчики инициализированы - power-payload
      TURN_ON несёт настоящие battery_pct/mv). Во flash перенесёт штатный
      писатель Vector_RunFlashMemory() в первый же проход (~50 мс).        */
-  (void)log_post(TYPE_TURN_ON);
+//  log_post(TYPE_TURN_ON);
 
   /* Прибор ВКЛЮЧЁН: потоки (receiver; будущий LVGL Task) допускаются в
      рабочие циклы. Порядок важен: сначала журнал/часы, потом состояние.  */
-  device_turn = DEVICE_TURNED_ON;
+//  device_turn = DEVICE_TURNED_ON;
 }
 
 /* Периодика прибора (1 с): измерения, затем модули обмена.

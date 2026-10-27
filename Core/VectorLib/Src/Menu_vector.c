@@ -394,7 +394,7 @@ void Button_Run_Backlight(void)
 #if((CONFIG_TYPE_LCD == 0))
 	  if(TEST_TIMER_RTC(TIMER_RTC_LIGHT_RESET)){
 		RESET_TIMER_RTC(TIMER_RTC_LIGHT_RESET);
-	    button.button_pressed = 0;
+		button1.button_pressed = 0;
 	  }
 #else
 //    backlight_set(Sns_Cfg_struct.Config_common.SoundPWM);
@@ -419,12 +419,12 @@ void Button_Run_Backlight(void)
 void Button_Run_Start(void)
 {
 	Button_Run_Backlight();
-	if(button.button_count >= BUTTON_PRESS_LONG){
+	if(button1.button_count >= BUTTON_PRESS_LONG){
 		//------------------------------------------------------------------------
 //		SET_ON(POWER_ON_MCU);
 		//------------------------------------------------------------------------
 		// Инициализация LCD
-	    LCD_Init();
+//	    LCD_Init();
 		//------------------------------------------------------------------------
 #if CONFIG_LORA
     Lora_DeInit(0);
@@ -459,8 +459,8 @@ void Button_Run_Start(void)
 //	    SOUND_OFF();
 //	    SET_OFF(ALARM_LED_2);
 	    //------------------------------------------------------------------------
-	    button.button_count = 1;
-	    button.button_flag = 0;
+		button1.button_count = 1;
+		button1.button_flag = 0;
 
 	    device_turn = DEVICE_TURNED_ON_1;
 	    //вход в обычный режим работы!!!!!!!!!!!
@@ -468,12 +468,11 @@ void Button_Run_Start(void)
 	    CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_OFF)
 	    //------------------------------------------------------------------------
 #if CONFIG_SAVE_PARAM_LOG
-		TypeLogEventType_2 = TYPE_TURN_ON;
-		SaveEventType_2 = 1;
+	    log_post(TYPE_TURN_ON);
 #endif
 	}
-	else if(button.button_flag == 0){
-		button.button_count = 0;
+	else if(button1.button_flag == 0){
+		button1.button_count = 0;
 	}
 }
 
