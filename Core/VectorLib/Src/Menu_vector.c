@@ -424,7 +424,7 @@ void Button_Run_Start(void)
 //		SET_ON(POWER_ON_MCU);
 		//------------------------------------------------------------------------
 		// Инициализация LCD
-//	    LCD_Init();
+	    LCD_Init();
 		//------------------------------------------------------------------------
 #if CONFIG_LORA
     Lora_DeInit(0);
@@ -495,7 +495,7 @@ void Vector_Run_Indication(void)
     case DEVICE_TURNED_OFF:
       /* TODO(автор): индикация заряда при выключенном приборе (Avis:
          DisplayChargeIndicationTurnOff) и обработка кнопки включения.   */
-
+    	Button_Run_Start();
       break;
     case DEVICE_TURNED_OFF_PRE_INIT:
       /* старт: потоки ещё не допущены в рабочий режим (PLAN п.60) - сюда
