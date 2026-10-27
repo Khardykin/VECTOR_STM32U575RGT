@@ -111,42 +111,42 @@ enum ST_GA_ERR
 //Для общего статусного байта ошибок, биты статуса ошибок
 enum ST_COMMON_ERR
 {
-ST_COMMON_BIT_ERR_CALIB_INTERVAL = 0,                            // бит 0 - Время калибровки(err) +
-  ST_COMMON_BIT_ERR_BUMP_INTERVAL,                                   // бит 1 - Время BUMP TEST(err) +
-  ST_COMMON_BIT_CRITICAL_LOW_BATTERY,                                  // бит 2 - Критично низкий заряд аккумулятора(err) +
-  ST_COMMON_BIT_ERR_NOP_1,                                  // бит 3 -
-  ST_COMMON_BIT_ERR_STS4,                                    // бит 4 - Ошибка микросхемы температуры
-  ST_COMMON_BIT_ERR_BLE,                                     	// бит 5 - Ошибка микросхемы BLE
-  ST_COMMON_BIT_ERR_GPS,                                                      	// бит 6 - Ошибка микросхемы GPS
-  ST_COMMON_BIT_ERR_GSM,                                      	// бит 7 - Ошибка микросхемы GSM
-  ST_COMMON_BIT_ERR_LORA,                                                      	// бит 8 - Ошибка микросхемы LORA
-  ST_COMMON_BIT_ERR_LCD, 										// бит 9 - Ошибкак LCD
-  ST_COMMON_BIT_CRITICAL_BATTERY,									// бит 10 - Критическое состояние батареи +
-  ST_COMMON_BIT_DEPAS,												// бит 11 - Статус депасивации
-  ST_COMMON_BIT_ERR_NOP_2,		           					// бит 12 -
+ST_COMMON_BIT_ERR_CALIB_INTERVAL = 0,               // бит 0 - Время калибровки(err) +
+  ST_COMMON_BIT_ERR_BUMP_INTERVAL,                  // бит 1 - Время BUMP TEST(err) +
+  ST_COMMON_BIT_CRITICAL_LOW_BATTERY,               // бит 2 - Критично низкий заряд аккумулятора(err) +
+  ST_COMMON_BIT_ERR_NOP_1,                          // бит 3 -
+  ST_COMMON_BIT_ERR_STS4,                           // бит 4 - Ошибка микросхемы температуры
+  ST_COMMON_BIT_ERR_BLE,                            // бит 5 - Ошибка микросхемы BLE
+  ST_COMMON_BIT_ERR_GPS,                            // бит 6 - Ошибка микросхемы GPS
+  ST_COMMON_BIT_ERR_GSM,                            // бит 7 - Ошибка микросхемы GSM
+  ST_COMMON_BIT_ERR_LORA,                           // бит 8 - Ошибка микросхемы LORA
+  ST_COMMON_BIT_ERR_LCD, 							// бит 9 - Ошибкак LCD
+  ST_COMMON_BIT_CRITICAL_BATTERY,					// бит 10 - Критическое состояние батареи +
+  ST_COMMON_BIT_DEPAS,								// бит 11 - Статус депасивации
+  ST_COMMON_BIT_ERR_NOP_2,		           			// бит 12 -
 };
 //--------------------------------------------------------------------------------------------------------------
 enum ST_COMMON
 {
-  ST_COMMON_BIT_BLOCK_SOUND = 0,                           // бит 0  - Блокировка звука +
-  ST_COMMON_BIT_BLOCK_SOUND_LIMIT_CALIB,                      // бит 1  - Блокировка звука до следующего включения прибора/перезагрузки
-  ST_COMMON_BIT_BLOCK_TURN_OFF,                                    // бит 2  - Блокировка выключения прибора вне док станции +
-  ST_COMMON_BIT_BLOCK_CALIB,                                  // бит 3  - Блокировка калибровки через меню +
-  ST_COMMON_BIT_NOP_1,                                      		// бит 4  -
-  ST_COMMON_BIT_DATA_EXCHANGE,                                // бит 5  - Режим обмена данными +
-  ST_COMMON_BIT_BAT_CHARGE,                                         // бит 6  - Режим зарядки устройства +
-  ST_COMMON_BIT_NOP_2,                                        // бит 7  -
-  ST_COMMON_BIT_NOP_3,                                                  	// бит 8  -
-  ST_COMMON_BIT_TURN_LCD_UNIT,                                 // бит 9  - Отображение единицы измерения
-  ST_COMMON_BIT_TURN_ON_BLE,                                                    // бит 10 - Включение BLE
-  ST_COMMON_BIT_TURN_STATE_RUN_LED,                                             // бит 11 - Включение green run led
-  ST_COMMON_BIT_TURN_TEST_SOUND, 												// бит 12 - Тест звука
-  ST_COMMON_BIT_TURN_ON_GPS,                           // бит 13 - Включение GPS
-  ST_COMMON_BIT_TURN_ON_GSM,                                                    // бит 14 - Включение GSM
-  ST_COMMON_BIT_TURN_ON_LORA,                                                   // бит 15 - Включение LORA
-  ST_COMMON_BIT_SOS,                                                            // бит 16 - SOS (зеркало ST_LORA_BIT_SOS из ControlLora - «выходной мост» LoRa, п.65)
-  ST_COMMON_BIT_EVACUATION,                                                     // бит 17 - Эвакуация (зеркало ST_LORA_BIT_EVACUATION)
-  ST_COMMON_BIT_TURN_OFF = 31,                                                  // бит 31 - Прибор выключен(Не ведутся логи в режиме выключения)+
+  ST_COMMON_BIT_BLOCK_SOUND = 0,                    // бит 0  - Блокировка звука +
+  ST_COMMON_BIT_BLOCK_SOUND_LIMIT_CALIB,            // бит 1  - Блокировка звука до следующего включения прибора/перезагрузки
+  ST_COMMON_BIT_BLOCK_TURN_OFF,                     // бит 2  - Блокировка выключения прибора вне док станции +
+  ST_COMMON_BIT_BLOCK_CALIB,                        // бит 3  - Блокировка калибровки через меню +
+  ST_COMMON_BIT_NOP_1,                              // бит 4  -
+  ST_COMMON_BIT_DATA_EXCHANGE,                      // бит 5  - Режим обмена данными +
+  ST_COMMON_BIT_BAT_CHARGE,                         // бит 6  - Режим зарядки устройства +
+  ST_COMMON_BIT_NOP_2,                              // бит 7  -
+  ST_COMMON_BIT_NOP_3,                              // бит 8  -
+  ST_COMMON_BIT_TURN_LCD_UNIT,                      // бит 9  - Отображение единицы измерения
+  ST_COMMON_BIT_TURN_ON_BLE,                        // бит 10 - Включение BLE
+  ST_COMMON_BIT_TURN_STATE_RUN_LED,                 // бит 11 - Включение green run led
+  ST_COMMON_BIT_TURN_TEST_SOUND, 					// бит 12 - Тест звука
+  ST_COMMON_BIT_TURN_ON_GPS,                        // бит 13 - Включение GPS
+  ST_COMMON_BIT_TURN_ON_GSM,                        // бит 14 - Включение GSM
+  ST_COMMON_BIT_TURN_ON_LORA,                       // бит 15 - Включение LORA
+  ST_COMMON_BIT_SOS,                                // бит 16 - SOS (зеркало ST_LORA_BIT_SOS из ControlLora - «выходной мост» LoRa, п.65)
+  ST_COMMON_BIT_EVACUATION,                         // бит 17 - Эвакуация (зеркало ST_LORA_BIT_EVACUATION)
+  ST_COMMON_BIT_TURN_OFF = 31,                      // бит 31 - Прибор выключен(Не ведутся логи в режиме выключения)+
 };
 
 //===========================================================================================================================

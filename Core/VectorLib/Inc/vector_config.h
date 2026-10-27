@@ -18,7 +18,7 @@
  * Ловится ОБА фронта, уровень пина читается в обработчике (антидребезг
  * по вашей схеме), см. audio_demo.c.                                        */
 #ifndef VECTOR_AUDIO_DEMO_KEYS
-#define VECTOR_AUDIO_DEMO_KEYS      1
+#define VECTOR_AUDIO_DEMO_KEYS      0
 #endif
 
 /* --- Сколько раз ПОВТОРЯТЬ сбойное ЧТЕНИЕ внешней flash --------------------

@@ -386,6 +386,97 @@ void Menu_Run(void)
   Menu_Draw();
 }
 
+
+//===========================================================================================================================
+// Для регуляции подстветки, запуск таймера
+void Button_Run_Backlight(void)
+{
+#if((CONFIG_TYPE_LCD == 0))
+	  if(TEST_TIMER_RTC(TIMER_RTC_LIGHT_RESET)){
+		RESET_TIMER_RTC(TIMER_RTC_LIGHT_RESET);
+	    button.button_pressed = 0;
+	  }
+#else
+//    backlight_set(Sns_Cfg_struct.Config_common.SoundPWM);
+    if((button.button_pressed) || (button2.button_pressed) || (button3.button_pressed)){
+    	button.button_pressed = 0;
+    	button2.button_pressed = 0;
+    	button3.button_pressed = 0;
+    	backlight_set(40);
+    	START_TIMER_RTC(TIMER_RTC_LIGHT_RESET, TIME_RTC_LIGHT_RESET*12);
+    }
+    if(TEST_TIMER_RTC(TIMER_RTC_LIGHT_RESET)){
+    	RESET_TIMER_RTC(TIMER_RTC_LIGHT_RESET);
+    	backlight_set(5);
+    }
+#endif
+}
+//===========================================================================================================================
+//Обработка нажатия кнопки, при включение
+//#define VIBRO_OFF() tmr_channel_enable(TMR4, TMR_SELECT_CHANNEL_1, FALSE);
+//#define VIBRO_ON()  tmr_channel_enable(TMR4, TMR_SELECT_CHANNEL_1, TRUE);
+//#define VIBRO_ST()	(TMR4->cctrl_bit.c1en)
+void Button_Run_Start(void)
+{
+	Button_Run_Backlight();
+	if(button.button_count >= BUTTON_PRESS_LONG){
+		//------------------------------------------------------------------------
+//		SET_ON(POWER_ON_MCU);
+		//------------------------------------------------------------------------
+		// Инициализация LCD
+	    LCD_Init();
+		//------------------------------------------------------------------------
+#if CONFIG_LORA
+    Lora_DeInit(0);
+#endif
+#if CONFIG_LORA_G
+    Lora_g_DeInit(0);
+#endif
+#if CONFIG_GPS
+    Gps_DeInit(0);
+#endif
+		//------------------------------------------------------------------------
+		// Индикация надо сделать todo ниже пример как у avis, но у нас звук по другому, тут надо вызывать писк который у нас в памяти мк
+//	    VIBRO_ON();
+//	    Delay(500);
+//	    VIBRO_OFF();
+//
+//	    Delay(200); // Пауза перед звуком
+//
+//	    // 2. Короткий сигнал (200 мс)
+//	    SOUND_ON();
+//	    SET_ON(ALARM_LED_1);    // Зажигаем только первый светодиод
+//	    Delay(200);
+//	    SOUND_OFF();
+//	    SET_OFF(ALARM_LED_1);
+//
+//	    Delay(200); // Пауза между пиками
+//
+//	    // 3. Длинный сигнал (800 мс)
+//	    SOUND_ON();
+//	    SET_ON(ALARM_LED_2);    // Зажигаем только второй светодиод
+//	    Delay(800);
+//	    SOUND_OFF();
+//	    SET_OFF(ALARM_LED_2);
+	    //------------------------------------------------------------------------
+	    button.button_count = 1;
+	    button.button_flag = 0;
+
+	    device_turn = DEVICE_TURNED_ON_1;
+	    //вход в обычный режим работы!!!!!!!!!!!
+	    START_TIMER_RTC(TIMER_RTC_LIGHT_RESET, TIME_RTC_LIGHT_RESET*12);
+	    CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_OFF)
+	    //------------------------------------------------------------------------
+#if CONFIG_SAVE_PARAM_LOG
+		TypeLogEventType_2 = TYPE_TURN_ON;
+		SaveEventType_2 = 1;
+#endif
+	}
+	else if(button.button_flag == 0){
+		button.button_count = 0;
+	}
+}
+
 /* Аналог Avis_Run_Indication (Avis_main.c) - вызывается из потока LVGL Task
    (app_azure_rtos.c) по timer.flag_100ms. КОНТЕКСТ: поток LVGL Task.
    device_turn: ON/ON_1 -> Menu_Run() (кнопки/меню/отрисовка); OFF и
@@ -405,6 +496,7 @@ void Vector_Run_Indication(void)
     case DEVICE_TURNED_OFF:
       /* TODO(автор): индикация заряда при выключенном приборе (Avis:
          DisplayChargeIndicationTurnOff) и обработка кнопки включения.   */
+
       break;
     case DEVICE_TURNED_OFF_PRE_INIT:
       /* старт: потоки ещё не допущены в рабочий режим (PLAN п.60) - сюда

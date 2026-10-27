@@ -1215,6 +1215,8 @@ __attribute__((weak)) void Lte_Run(void)
 __attribute__((weak)) void Gps_Run(void)
 {
 #if CONFIG_GPS
+	// todo для теста SET_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GPS);
+	SET_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GPS);
 	if(VECTOR_DEVICE_IS_ON()){
 		if(TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GPS)){
 			/* Питание/сброс GNSS: пины GNSS_MODE (PB4) и GNSS_RST (PB5) в кубе
