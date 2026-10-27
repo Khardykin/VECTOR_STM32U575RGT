@@ -23,6 +23,10 @@ static uint8_t Nmea_IsType(const char *p, const char *type);
 static uint8_t Nmea_SentenceComplete(const char *p, const char *end);
 static void Gps_ParseGga(const char *s);
 static void Gps_ParseGll(const char *s);
+static void Gps_SetNoFix(void);
+static void Gps_NoData_Service(void);
+static void Gps_Reinit_Request(void);
+static uint32_t gps_fresh_window_ms(void);
 static void Gps_CommitSecond(void);
 static void Gps_CollectGsv(const char *s);
 static void Gps_UpdateSignal(void);
@@ -35,6 +39,11 @@ static uint8_t 			Gps_Verification_Mode = 0;
 static uint8_t 			Gps_flag_err = 0;
 static uint8_t 			Gps_Init_flag = 0;
 static uint8_t			Gps_flag_receive = 0;
+/* Тик последней ВАЛИДНОЙ секунды NMEA (закрытия полной GGA/GLL в Gps_Receive).
+   Свежесть данных и самолечение меряются по нему, а не по TimerReceive:
+   мусорные кадры закрываются, но валидных секунд не содержат. Взводится в
+   Gps_Init (объявлен ЗДЕСЬ, выше Gps_Init - иначе undeclared).              */
+static uint32_t			s_last_data_tick = 0;
 //===========================================================================================================================
 Message_buffer_uart_gps buffer_uart_gps = {0};
 uint32_t Gps_type_nav_pre = 0;
@@ -216,8 +225,17 @@ uint8_t Gps_Auto_Detect_Chip(void)
             // Как только в прерывании накопилось хотя бы 3-5 байт, сразу проверяем первый символ
             if (buffer_uart_gps.count_byter_r >= 3)
             {
-                // Если поток на 115200 bps начался с '$' — это гарантированно LOCOSYS!
-                if (buffer_uart_gps.receive[0] == '$')
+                // Валидный ЗАГОЛОВОК NMEA/проприетарного предложения, а не
+                // просто '$': при несовпадении скоростей часть мусорных байтов
+                // высампливается чисто (без FE) и случайный 0x24 в receive[0]
+                // давал ЛОЖНОЕ «LOCOSYS» — MCU оставался на 115200, поток
+                // 9600-бочного модуля превращался в сплошной framing error,
+                // кадры не собирались вовсе -> Gps_flag_err = 1 навсегда
+                // (детект повторно не запускался). Talk id: 'G' (GP/GN/GL/
+                // GA/GB...), "LS" - проприетарные LOCOSYS ($LSSCFGPTVER-ответ).
+                if ((buffer_uart_gps.receive[0] == '$') &&
+                    ((buffer_uart_gps.receive[1] == 'G') ||
+                     ((buffer_uart_gps.receive[1] == 'L') && (buffer_uart_gps.receive[2] == 'S'))))
                 {
                     Gps_Chip_Type = CHIP_LOCOSYS_AIROHA_NEW;
                     Gps_Detect_State = DETECT_STATE_START_115200; // Сброс автомата на будущее
@@ -232,9 +250,13 @@ uint8_t Gps_Auto_Detect_Chip(void)
                 Gps_Receive_flag_set(0);
             }
 
-            // ТАЙМАУТ: Если за 5 секунд на скорости 115200 символ '$' так и не появился в начале буфера,
-            // значит LOCOSYS на плате нет — это старая микросхема Allystar!
-            if ((GetTick() - Gps_Detect_Timeout_Timer) > 5000)
+            // ТАЙМАУТ: если за 11 секунд на 115200 валидный заголовок так и не
+            // появился — LOCOSYS на плате нет, это старая Allystar (9600).
+            // Окно намеренно длиннее 10 с: в flash модуля могла остаться
+            // конфигурация прежней прошивки (GLL раз в 10 с), и если ответ на
+            // $LSSCFGPTVER не приходит, 5-секундное окно пропускало редкий
+            // поток -> ложное Allystar -> неверная скорость -> Gps_flag_err.
+            if ((GetTick() - Gps_Detect_Timeout_Timer) > 11000)
             {
                 // Жестко переключаемся на старый чип и скорость 9600 bps
                 Gps_Chip_Type = CHIP_ALLYSTAR_OLD;
@@ -336,6 +358,12 @@ uint8_t Gps_Init(SNS_CFG *Cfg_struct)
 
 	Gps_Init_flag = 1;
 	Gps_flag_err = 0;
+	/* Отсчёты «нет кадров > 20 с» (Gps_flag_err) и «нет ВАЛИДНЫХ данных»
+	   (s_last_data_tick) ведём от инициализации - иначе первый же проход
+	   Gps_Receive взвёл бы ошибку/самолечение по устаревшим меткам, не дав
+	   модулю ни одного кадра.                                             */
+	buffer_uart_gps.TimerReceive = GetTick();
+	s_last_data_tick = GetTick();
 
 	return 1;
 }
@@ -645,7 +673,9 @@ static double_t NmeaToDecimalDegrees(double_t nmea_coord)
  *     потере - обнулённые координаты и navigation=0 (валидность несёт флаг,
  *     а не проверка «координаты != 0»); сами GGA/GSV - КАЖДЫЙ кадр;
  *   - нет фикса: gps_nav.latitude/longitude/lat_scaled/lon_scaled строго 0,
- *     gps_nav.signal_db_hz строго 0;
+ *     gps_nav.signal_db_hz строго 0; то же - при МОЛЧАНИИ модуля > 20 с и
+ *     когда модуль выключен/не инициализирован (ветка в конце Gps_Receive:
+ *     LoRa обязательно получает (0,0,0), флаг не «застывает» единицей);
  *   - кадр ПРИЁМНОГО БУФЕРА - не обязательно одна секунда: при задержке
  *     receiver'а в нём копится несколько секунд подряд, а при переполнении
  *     буфера хвост обрезан. Поэтому разбор ПОПРЕДЛОЖЕНЧЕСКИЙ с проверкой
@@ -667,6 +697,18 @@ static double_t NmeaToDecimalDegrees(double_t nmea_coord)
    первом кадре после ~9.5 с; при 1 Гц (LOCOSYS) ритм не меняется - публикация
    всё равно на 10-й секунде.                                                */
 #define GPS_COORD_PUBLISH_TOL_MS (500u)
+/* ОКНО СВЕЖЕСТИ данных: сколько ждём кадров, прежде чем считать, что модуль
+   замолчал (выходы обнуляются, LoRa получает (0,0,0) общим ритмом). LOCOSYS:
+   кадры 1 Гц - 3.5 с = три пропущенных кадра; Allystar: период 10 с - 20 с =
+   два кадра (совпадает с порогом Gps_flag_err). Статусная ошибка ERR_GPS
+   (Gps_flag_err) остаётся на консервативных 20 с - это разные пороги:
+   свежесть для потребителей данных, err для диагностики модуля.            */
+#define GPS_FRESH_MS_LOCOSYS   (3500u)
+#define GPS_FRESH_MS_ALLYSTAR  (20000u)
+/* САМОЛЕЧЕНИЕ: столько без единой валидной секунды NMEA (полной GGA/GLL) -
+   и модуль отправляется на повторный детект + конфигурацию (неверная
+   скорость/зависание/сплошной мусор в линии лечатся без перезагрузки MCU). */
+#define GPS_REINIT_MS          (40000u)
 #define GPS_SNR_MAX            (48u)     /* C/No за кадр: до 12 GSV x 4 спутника */
 
 static uint8_t  s_snr[GPS_SNR_MAX];      /* уровни C/No текущей секунды       */
@@ -853,6 +895,28 @@ static void Gps_ParseGll(const char *s)
 	}
 }
 
+/* Окно свежести текущего чипа, мс (см. GPS_FRESH_MS_*). */
+static uint32_t gps_fresh_window_ms(void)
+{
+	return (Gps_Chip_Type == CHIP_LOCOSYS_AIROHA_NEW) ? GPS_FRESH_MS_LOCOSYS
+												  : GPS_FRESH_MS_ALLYSTAR;
+}
+
+/* Строгое обнуление навигационных выходов - инвариант «данных нет» (спутники
+   НЕ трогает: у них своя логика - GGA при потере фикса даёт честное число,
+   а при молчании модуля их обнуляет вызывающий). Зовётся из Gps_CommitSecond
+   (секунда без фикса) и из Gps_NoData_Service (модуль молчит > 20 с либо
+   выключен/не инициализирован). КОНТЕКСТ: receiver_task.                   */
+static void Gps_SetNoFix(void)
+{
+	gps_nav.navigation   = 0u;
+	gps_nav.latitude     = 0;
+	gps_nav.longitude    = 0;
+	gps_nav.lat_scaled   = 0;
+	gps_nav.lon_scaled   = 0;
+	gps_nav.signal_db_hz = 0.0f;
+}
+
 /* Коммит тени ПОСЛЕДНЕЙ секунды кадра в глобальные переменные - строго один
    раз на кадр (зовётся на выходе Gps_Receive). ИНВАРИАНТ потери фикса (п.4
    требования автора): nav == 0 -> gps_nav.navigation = 0, latitude/longitude/
@@ -874,11 +938,8 @@ static void Gps_CommitSecond(void)
 	}
 
 	if (s_sec.nav == 0u) {
-		gps_nav.latitude     = 0;
-		gps_nav.longitude    = 0;
-		gps_nav.lat_scaled   = 0;
-		gps_nav.lon_scaled   = 0;
-		gps_nav.signal_db_hz = 0.0f;  /* подтвердится и в Gps_UpdateSignal    */
+		Gps_SetNoFix();               /* координаты/сигнал строго 0 (спутники -
+		                                 см. выше: GGA дала честное число)    */
 		return;
 	}
 
@@ -959,14 +1020,11 @@ static void Gps_UpdateSignal(void)
    ВАЛИДНУЮ точку. КОНТЕКСТ: receiver_task (каждый кадр, решение - по тику). */
 static void Gps_Publish_Coords(void)
 {
-	if (gps_nav.navigation == 0u) {
-		/* Нет фикса: данные НЕВАЛИДНЫ - координаты строго обнуляем
-		   (подтверждаем инвариант Gps_CommitSecond) и ИЗ ФУНКЦИИ НЕ
-		   ВЫХОДИМ: нули с флагом 0 уйдут в LoRa/журнал тем же общим
-		   10-секундным ритмом.                                          */
-		gps_nav.latitude  = 0;
-		gps_nav.longitude = 0;
-	}
+	/* Обнуления координат здесь НЕ нужно (замечание автора): инвариант «нет
+	   данных -> всё строго 0» держат Gps_CommitSecond (секунда без фикса) и
+	   ветка «модуль молчит/выключен» в Gps_Receive (Gps_SetNoFix). Publish
+	   только считает lat/lon_scaled из текущих latitude/longitude - при
+	   потере они уже нули, в LoRa уйдёт (0, 0, 0).                          */
 
 	/* Гейт ~10 с. s_coord_pub_once - «первая публикация уже была»: самый
 	   первый кадр после старта проходит сразу (иначе пришлось бы ждать,
@@ -999,6 +1057,42 @@ static void Gps_Publish_Coords(void)
 	Lora_UpdateGPSTrack(gps_nav.lat_scaled, gps_nav.lon_scaled, gps_nav.navigation);
 #endif
 }
+/* ЕДИНОЕ обслуживание «данных от модуля нет» (замечание автора: флаг не
+   должен «застывать» единицей, когда кадры перестали приходить). Строго
+   обнуляет выходы (спутников тоже нет - данных нет вовсе) и сообщает LoRa
+   (0, 0, 0) ОБЩИМ ~10-секундным ритмом: Gps_Publish_Coords зовётся каждый
+   проход receiver'а (10 мс), а гейт внутри неё держит ритм. Вызывается из
+   двух случаев Gps_Receive:
+     - модуль не инициализирован/выключен (Gps_DeInit, старт системы);
+     - нет кадров дольше окна свежести gps_fresh_window_ms() (антенна/
+       питание/UART; LOCOSYS 3.5 с, Allystar 20 с).
+   КОНТЕКСТ: receiver_task - gps_nav и LoRa по-прежнему пишет ОДИН поток.  */
+static void Gps_NoData_Service(void)
+{
+	Gps_SetNoFix();
+	gps_nav.satellites_used = 0;
+	Gps_Publish_Coords();
+}
+
+/* Запрос САМОЛЕЧЕНИЯ: валидных данных нет дольше GPS_REINIT_MS - скорее
+   всего MCU на неверной скорости (ошибка детекта) или модуль завис. Снимаем
+   флаг инициализации и сбрасываем детект: Gps_Run (поток measure) увидит
+   get_state_init_flag_gps()==0 и заново запустит Gps_Auto_Detect_Chip +
+   Gps_Init по своему 2-с таймеру - без перезагрузки MCU сходится к верной
+   скорости. Байтовые флаги пишутся из receiver, читаются из measure -
+   одиночный байт на Cortex-M33 атомарен. Мусор из накопителя сливаем,
+   чтобы детект стартовал с чистого буфера. КОНТЕКСТ: receiver_task.      */
+static void Gps_Reinit_Request(void)
+{
+	Gps_Init_flag         = 0;
+	Gps_flag_err          = 0;
+	Gps_Verification_Mode = 0;
+	Gps_Detect_State      = DETECT_STATE_START_115200;
+	Gps_Receive_flag_set(0);
+	buffer_uart_gps.TimeFlagRX    = 0;
+	buffer_uart_gps.count_byter_r = 0;
+}
+
 void Gps_Receive(void)
 {
     /* СНИМОК кадра: +1 байт под гарантированный концевой '\0'. static -
@@ -1008,6 +1102,7 @@ void Gps_Receive(void)
     TX_INTERRUPT_SAVE_AREA;
 
     if (get_state_init_flag_gps() == 0) {
+        Gps_NoData_Service();   /* модуль выключен/не инициализирован */
         return;
     }
 
@@ -1094,6 +1189,7 @@ void Gps_Receive(void)
            секунде; 10-секундный гейт публикации от этого не «тикает» лишнего.
            Кадр без единой полной GGA/GLL (обрезки) globals НЕ трогает.     */
         if (s_sec.valid != 0u) {
+            s_last_data_tick = GetTick();   /* есть ВАЛИДНАЯ секунда - данные свежи */
             Gps_CommitSecond();             /* тень -> gps_nav (инвариант обнуления) */
             Gps_UpdateSignal();             /* «золотая четвёрка»; нет фикса -> 0 */
             Gps_Publish_Coords();           /* в систему - раз в ~10 с (гейт по тику) */
@@ -1104,7 +1200,26 @@ void Gps_Receive(void)
     }
     uint32_t TimerErrRreceive = GetTick() - buffer_uart_gps.TimerReceive;
     if(TimerErrRreceive > 20000){
-    	Gps_flag_err = 1;
+        Gps_flag_err = 1;         /* статус ERR_GPS - консервативные 20 с     */
+    }
+
+    /* СВЕЖЕСТЬ данных меряем по последней ВАЛИДНОЙ секунде (s_last_data_tick,
+       закрытие полной GGA/GLL), а не по TimerReceive: мусорные кадры (неверная
+       скорость, чужие предложения) закрываются и обновляют TimerReceive, но
+       валидных секунд не содержат - gps_nav при этом «застывает» с фиксом.
+       Нет свежих данных (окно чипа: LOCOSYS 3.5 с, Allystar 20 с) - выходы
+       СТРОГО ноль и (0, 0, 0) в LoRa общим ~10-с ритмом (гейт внутри
+       Gps_Publish_Coords ограничивает частоту при вызове каждый проход).   */
+    uint32_t data_age = GetTick() - s_last_data_tick;
+    if (data_age > gps_fresh_window_ms()) {
+        Gps_NoData_Service();
+    }
+
+    /* САМОЛЕЧЕНИЕ: GPS_REINIT_MS (40 с) без единой валидной секунды - модуль
+       на неверной скорости/завис/в линии сплошной мусор: запрос повторной
+       инициализации (детект чипа + конфиг заново), без перезагрузки MCU.   */
+    if (data_age > GPS_REINIT_MS) {
+        Gps_Reinit_Request();
     }
 }
 
