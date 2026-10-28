@@ -55,10 +55,23 @@ extern "C" {
 typedef enum
 {
   SCREEN_START = 0,        /* ui_ScreenStart        - заставка при включении  */
-  SCREEN_MAIN,             /* ui_ScreenHeadMain     - главный (Avis: MEASURE) */
-  SCREEN_MEASUREMENTS,     /* ui_ScreenMeasurements - измерения               */
+  //------------------------------------------------------------------------------
+  SCREEN_MEASURE_0,     	/* ui_ScreenMeasurements - измерения               */
+  SCREEN_MEASURE_1,
+  SCREEN_MEASURE_2,
+  SCREEN_MEASURE_3,
+  SCREEN_MEASURE_4,
+  SCREEN_MEASURE_5,
+  //------------------------------------------------------------------------------
   SCREEN_MENU,             /* ui_ScreenMenu         - меню (скролл пунктов)   */
-  SCREEN_TEST_SOUND,       /* ui_ScreenTestSound    - тест звука              */
+  //------------------------------------------------------------------------------
+  SCREEN_SETTING,
+  SCREEN_INFO_DEVICE,
+  SCREEN_CONNECT_DEVICE,
+  //------------------------------------------------------------------------------
+  SCREEN_VOICE_MESSAGE,
+  SCREEN_TEXT_MESSAGE,
+  //------------------------------------------------------------------------------
   SCREEN_COUNT
 } screen_t;
 

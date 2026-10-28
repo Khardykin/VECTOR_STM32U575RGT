@@ -396,10 +396,7 @@ void Menu_Run(void)
 // Для регуляции подстветки, запуск таймера
 void Button_Run_Backlight(void)
 {
-#if (CONFIG_TYPE_LCD_TFT == 0)   /* было CONFIG_TYPE_LCD: такого макроса нет,
-                                    препроцессор считал его 0 и ветка выбиралась
-                                    всегда. Верное имя - CONFIG_TYPE_LCD_TFT
-                                    (config_device.h).                        */
+#if (CONFIG_TYPE_LCD_TFT == 0)
 	  if(TEST_TIMER_RTC(TIMER_RTC_LIGHT_RESET)){
 		RESET_TIMER_RTC(TIMER_RTC_LIGHT_RESET);
 		button1.button_pressed = 0;
