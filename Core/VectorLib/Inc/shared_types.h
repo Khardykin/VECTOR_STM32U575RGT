@@ -187,6 +187,12 @@ typedef struct
 extern volatile Timer_variables 	timer;
 extern volatile DOWN_TIMER 			countdown_time;		 /* миллисекундные (TIM3 1 кГц)     */
 extern volatile DOWN_TIMER_RTC 		countdown_time_rtc;	 /* секундные (RTC wakeup 1 с)      */
+/* Текущий экран для слоя индикации: макросы IS_STATE_SCREEN()/
+   TO_GO_STATE_SCREEN() (shared_macros.h). Зеркало menu_status.screen: пишет
+   меню (Menu_Init/Menu_GoTo), читает LCD_Fill_Template (выбор экрана по
+   таблице scr_map). Экземпляр - Vector_main.c (рядом с countdown_time, чтобы
+   ссылка линковалась и при CONFIG_DISPLAY=0).                                */
+extern volatile uint8_t state_screen;
 //--------------------------------------------------------------------------------------------------------------
 /* Длительности секундных таймеров, с: START_TIMER_RTC(TIMER_RTC_x, TIME_RTC_x).
    Значения стартовые - подберите под свои модули.                                  */
@@ -201,6 +207,7 @@ extern volatile DOWN_TIMER_RTC 		countdown_time_rtc;	 /* секундные (RTC
 #define TIME_RTC_LORA_DATA_SLEEP_AFTER_DL	(10u)
 #define TIME_RTC_LED_STATE_RUN_PULSE	(1u)	// пульс зеленого светодиода, с
 #define TIME_RTC_LED_STATE_RUN_PERIOD	(5u)	// период зеленого светодиода, с
+#define TIME_RTC_DISP_FLASHING_CHARGE	(1u)	// период мигания зарядки/ошибок на экране, с (Avis: TIME_RTC_DISP_FLASHING_ERR)
 //--------------------------------------------------------------------------------------------------------------
 /* Пороги сигнализации батареи, мВ (Li-ion) - заводские значения DefaultConfig(). */
 #define BAT_MAX_DEF				(4200u)

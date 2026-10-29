@@ -13,15 +13,12 @@
  * (бренд прибора, последняя страница внутренней flash - как в Avis;
  * закрывает висячую ссылку TFT_indicator.c и нужна имени BLE-модуля).
  */
-#include "Vector_main.h"          /* HAL, SNS_CFG, макросы статусов/таймеров, лог */
-#include "tx_api.h"               /* TX_DISABLE/TX_RESTORE: критические секции очереди */
-#include "extstore.h"             /* cfg_save/cfg_load + ext_read/ext_write/ext_erase_sector */
-#include "sfmap.h"                /* SF_CONFIG_BASE / SF_CONFIG_DEFAULT - области */
-#include "spiflash.h"             /* SF_SECTOR_SIZE / SF_TOTAL_SIZE: геометрия кольца журнала */
-#include "vector_log.h"           /* LOG_E/LOG_I */
-#include "Config_save_read.h"
-#include <string.h>
-#include <stddef.h>   /* offsetof: ключ времени в слоте журнала */
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): HAL/SNS_CFG/
+   макросы статусов и таймеров, tx_api.h (TX_DISABLE/TX_RESTORE очереди),
+   extstore.h (cfg_save/cfg_load), sfmap.h (SF_CONFIG_BASE/DEFAULT),
+   spiflash.h (геометрия кольца журнала), vector_log.h, Config_save_read.h,
+   string, stddef (offsetof: ключ времени в слоте журнала).                  */
+#include "Vector_main.h"
 
 #define CALC_CRC_CONFIG(CFG, _CRC_)						\
         {									\

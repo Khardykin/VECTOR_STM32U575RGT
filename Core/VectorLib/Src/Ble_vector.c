@@ -72,17 +72,14 @@
  * (п.65); мосты Ble_UpdateInputData/Ble_Control_States_Update, приём в
  * промежуточный ble_stg, ERR_BLE под Sys_Cfg_Lock (п.66).
  */
-#include "config_device.h"   /* CONFIG_BLE до #if - см. Ble_vector.h  */
-#include "Ble_vector.h"
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): config_device.h
+   (CONFIG_BLE определён ДО Ble_vector.h - порядок в агрегаторе соблюдён),
+   buffer.h (InputBuffer/check_buffer/receive_buffer), GetTick/Delay, лог,
+   tx_api.h (TX_DISABLE: целые снимки Connected_device/Ble_telemetry, п.65),
+   stdio/string.                                                            */
+#include "Vector_main.h"
 
 #if CONFIG_BLE
-
-#include "Vector_main.h"     /* buffer.h: InputBuffer/check_buffer/receive_buffer */
-#include "vector_macros.h"   /* GetTick/Delay */
-#include "vector_log.h"      /* LOG_W/LOG_I + VLOG_M_COM */
-#include "tx_api.h"          /* TX_DISABLE: целые снимки Connected_device/Ble_telemetry (п.65) */
-#include <stdio.h>
-#include <string.h>
 
 /* --- Прототипы внутренних (static) функций --------------------------------
  * Ble_ApplyConnectedDevice: пакет GAS -> отметка в ble_stg (публикует

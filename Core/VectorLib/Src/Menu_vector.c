@@ -14,12 +14,14 @@
   *               Button2 вниз/инкремент, Button3 вверх/декремент; состав
   *               экранов и пунктов определит автор - пока каркас на имеющихся
   *               экранах SquareLine (см. menu_screens[]);
-  *            4) Menu_Draw() - WEAK аналог DisplayIndication/LCD_Fill_Template:
-  *               LVGL-порт подставит обновление виджетов; сам каркас графики
-  *               не требует. Хука «входа на экран» НЕТ (замечание автора
-  *               п.1): в Avis LCD_Fill_Template перерисовывает шаблон КАЖДЫЙ
-  *               цикл, поэтому screen load/тексты порт сделает внутри
-  *               Menu_Draw() при смене menu_status.screen.
+  *            4) Menu_Draw() - аналог DisplayIndication из Avis (не WEAK с
+  *               коммита автора «up menu tft»): ЦЕЛИКОМ перерисовывает экран
+  *               каждый проход - время, LCD_Fill_Template (поворот/язык/смена
+  *               экрана), верхняя панель (LCD_Battery с фазой мигания),
+  *               покранный switch (LCD_Menu/LCD_SubMenuInfo/LCD_SubMenuSetting),
+  *               ui_apply_visibility. Хука «входа на экран» НЕ нужна
+  *               (замечание автора п.1) - шаблон грузится внутри
+  *               LCD_Fill_Template при смене menu_status.screen.
   *
   *          КОНТЕКСТ (замечание автора п.5 - по образцу
   *          indication_task_function из Avis_main.c): Menu_Init() - Measure
@@ -33,21 +35,22 @@
   *          DOUBLE), единая цепочка else-if на экран начинается с g1.
   ******************************************************************************
   */
-#include "Vector_main.h"     /* агрегатор: таймеры прибора, SaveConfig, лог */
-#include "stm32u5xx_it.h"    /* button1/button2/button3 (Button_variables) */
-#include "Menu_vector.h"
-#include "vector_tick.h"     /* GetTick через vector_macros.h */
-#include "vector_macros.h"
-#include "vector_log.h"
-#include "TFT.h"             /* LCD_Init() -> TFT_Init() (Button_Run_Start) */
-#include "LCD_platform.h"    /* backlight_set() (Button_Run_Backlight)      */
-#include "Notify_vector.h"   /* оповещение включения: NotifySeq_PowerOn     */
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (Vector_main.h): кнопки button1..3
+   (stm32u5xx_it.h), время VTICK_ и GetTick (vector_tick.h/vector_macros.h),
+   лог, Notify_vector.h (NotifySeq_PowerOn), экран LCD_Init/backlight_set/
+   LCD_* (TFT.h/LCD_platform.h/TFT_indicator.h при CONFIG_TYPE_LCD_TFT).   */
+#include "Vector_main.h"
 
 #if CONFIG_DISPLAY
 
 time_t  tmp_current = 0; // Время текущее
 
 volatile menu_status_t menu_status = {0};
+
+/* Фаза мигания индикации (Avis state_flashing_system): Menu_Draw инвертирует
+   её раз в секунду по TIMER_RTC_DISP_FLASHING_CHARGE. Сейчас фазу ест
+   LCD_Battery («зарядка»), дальше - ротация ошибок LCD_UpdateErrorDisplay. */
+static uint8_t state_flashing_system = 0;
 
 /* Тайминги кнопок (мс; button_count считает TIM3 1 кГц = мс). */
 #define BUTTON_PRESS_SHORT  ((uint32_t)VECTOR_MENU_PRESS_SHORT_MS)
@@ -58,6 +61,17 @@ volatile menu_status_t menu_status = {0};
    определит состав меню - заменить длину на фактическую для каждого экрана
    (в Avis: scroll_down(state_menu, 4) / (state_submenu, info_total_pages)). */
 #define MENU_ITEMS_COUNT    ((uint8_t)VECTOR_MENU_ITEMS)
+
+/* Число страниц/строк подэкранов меню определяет слой индикации
+   (TFT_indicator): info_total_pages считает LCD_SubMenuInfo по числу строк,
+   строки настроек - Panel1..3 (LCD_SubMenuSetting). Без экрана листать нечего. */
+#if (CONFIG_TYPE_LCD_TFT != 0)
+#define MENU_INFO_PAGES     (info_total_pages)
+#define MENU_SETTING_ROWS   (3u)
+#else
+#define MENU_INFO_PAGES     (1u)
+#define MENU_SETTING_ROWS   (1u)
+#endif
 
 /* Последний момент короткого нажатия по каждой кнопке (для DOUBLE/SHORT_LONG).
    В Avis это button.last_short_click_time - поле структуры кнопки; у нас
@@ -81,17 +95,59 @@ static uint8_t scroll_up(uint8_t current, uint8_t max)
   return (uint8_t)((current == 0u) ? (max - 1u) : (current - 1u));
 }
 
-/* WEAK-хуки: каркас работает и без них (пустые), LVGL-порт/слой индикации
-   замещают их своей реализацией без правки этого файла.                     */
+/* Аналог DisplayIndication из Avis: ЦЕЛИКОМ обновляет экран каждый проход.
+   КОНТЕКСТ: поток LVGL Task (Menu_Run зовёт каждые 100 мс, Menu_GoTo - сразу
+   при переходе) - все вызовы LVGL из одного потока. Шаги как в Avis:
+   время -> шаблон (поворот/язык/смена экрана) -> верхняя панель (батарея с
+   фазой мигания) -> текущий экран (меню/инфо/настройки) -> видимость иконок.
+   Дальше сюда встанут: LCD_UpdateErrorDisplay (строка ошибок), иконки
+   статусов (SET_GPS/BLE/LORA... по ST_COMMON_BIT_TURN_ON_*), экраны
+   измерений/сообщений (автор).                                             */
 void Menu_Draw(void)
 {
-  /* TODO(LVGL-порт, этап 2c): аналог DisplayIndication - обновить виджеты
-     текущего экрана: значения из sensors_status (T/H/P, батарея, ориентация),
-     иконки статусов (SET_MUTE/BLE/GPS/LORA/LTE/EXCHANGE из ST_COMMON_BIT_*),
-     время (Working_data.working_hours), Connected_device (данные Avis по BLE).
-     Рисовать из LVGL Task или отсюда - решит порт (владелец дисплея один).  */
+  /* Текущее время прибора (автор): секунды RTC + сдвиг часового пояса. */
 	tmp_current = (time_t)(Sns_Cfg_struct.Working_data.working_hours +
 			Sns_Cfg_struct.Working_data.working_hours_offset);
+
+#if (CONFIG_TYPE_LCD_TFT != 0)
+  if (LCD_Get_flag_init() == 0u)
+  {
+    return;    /* панель не инициализирована (прибор выключен) - рисовать не на чем */
+  }
+
+  /* Шаблон экрана: поворот по акселерометру, язык, смена экрана по таблице
+     scr_map (IS_STATE_SCREEN() - зеркало menu_status.screen из Menu_GoTo). */
+  LCD_Fill_Template(&Sns_Cfg_struct);
+
+  /* Фаза мигания: инверсия раз в секунду (RTC-таймер взведён в Menu_Init). */
+  if (TEST_TIMER_RTC(TIMER_RTC_DISP_FLASHING_CHARGE))
+  {
+    RESET_TIMER_RTC(TIMER_RTC_DISP_FLASHING_CHARGE);
+    START_TIMER_RTC(TIMER_RTC_DISP_FLASHING_CHARGE, TIME_RTC_DISP_FLASHING_CHARGE);
+    state_flashing_system = (uint8_t)!state_flashing_system;
+  }
+  /* Верхняя панель (top layer): заряд батареи, % и анимация зарядки. */
+  LCD_Battery(sensors_status.battery_charge_percent, state_flashing_system);
+
+  /* Покранная отрисовка (Avis: switch(IS_STATE_SCREEN()) в DisplayIndication). */
+  switch (IS_STATE_SCREEN())
+  {
+    case SCREEN_MENU:
+      LCD_Menu(menu_status.state_menu);
+      break;
+    case SCREEN_INFO_DEVICE:
+      LCD_SubMenuInfo(&Sns_Cfg_struct, menu_status.state_submenu);
+      break;
+    case SCREEN_SETTING:
+      LCD_SubMenuSetting(&Sns_Cfg_struct, menu_status.state_submenu);
+      break;
+    default:   /* START/MEASURE/CONNECT/MESSAGE - экраны автора (ждут отрисовку) */
+      break;
+  }
+
+  ui_apply_visibility();
+  LCD_UpdateScreen();
+#endif /* CONFIG_TYPE_LCD_TFT */
 }
 
 /* ============================================================================
@@ -117,6 +173,9 @@ void Menu_GoTo(uint8_t screen)
   menu_status.state_submenu   = 0u;
   menu_status.screen_since_ms = VTICK_MS();
   menu_status.cnt_screens++;
+  /* Зеркало для слоя индикации: LCD_Fill_Template выбирает экран по
+     IS_STATE_SCREEN() (Avis: TO_GO_STATE_SCREEN в Button_*_Menu).       */
+  TO_GO_STATE_SCREEN(screen);
 
   LOG_D(VLOG_M_SYS, "menu: screen %u -> %u",
         (uint32_t)menu_status.screen_prev, (uint32_t)screen);
@@ -276,7 +335,25 @@ static void menu_navigate(void)
       break;
 
     case SCREEN_MENU:
-      if (g2 == (uint8_t)GEST_SHORT)
+      /* Button1 SHORT - вход в пункт (приоритет Button1, как в Avis
+         Button_1_Menu): пункт списка -> экран. Пункт 3 «Журнал событий» -
+         экран ещё не создан (автор), пока остаёмся на месте.            */
+      if (g1 == (uint8_t)GEST_SHORT)
+      {
+        static const uint8_t item_screens[] = {
+            (uint8_t)SCREEN_INFO_DEVICE,     /* 0 - Информация (Panel0) */
+            (uint8_t)SCREEN_SETTING,         /* 1 - Настройки  (Panel1) */
+            (uint8_t)SCREEN_CONNECT_DEVICE,  /* 2 - Контроль оборудования (Panel2) */
+            (uint8_t)SCREEN_MENU,            /* 3 - Журнал событий (Panel3, экран - TODO) */
+        };
+        uint8_t item = menu_status.state_menu;
+        if (item >= (uint8_t)(sizeof(item_screens) / sizeof(item_screens[0])))
+        {
+          item = 0u;
+        }
+        Menu_GoTo(item_screens[item]);
+      }
+      else if (g2 == (uint8_t)GEST_SHORT)
       {
         menu_status.state_menu = scroll_down(menu_status.state_menu, MENU_ITEMS_COUNT);
       }
@@ -286,6 +363,41 @@ static void menu_navigate(void)
       }
       else if (g2 == (uint8_t)GEST_LONG){
     	  Menu_GoTo((uint8_t)SCREEN_MEASURE);
+      }
+      break;
+
+    /* Информация о приборе: Button2/3 SHORT - листать страницы
+       (info_total_pages считает LCD_SubMenuInfo), Button2 LONG - назад в
+       меню (жест-паттерн автора: LONG Button2 = «назад»).               */
+    case SCREEN_INFO_DEVICE:
+      if (g2 == (uint8_t)GEST_LONG)
+      {
+        Menu_GoTo((uint8_t)SCREEN_MENU);
+      }
+      else if (g2 == (uint8_t)GEST_SHORT)
+      {
+        menu_status.state_submenu = scroll_down(menu_status.state_submenu, MENU_INFO_PAGES);
+      }
+      else if (g3 == (uint8_t)GEST_SHORT)
+      {
+        menu_status.state_submenu = scroll_up(menu_status.state_submenu, MENU_INFO_PAGES);
+      }
+      break;
+
+    /* Настройки: строки Panel1..3 (LCD_SubMenuSetting), Button2 LONG - назад.
+       Вход в строку (Button1 SHORT) - когда автор определит состав настроек. */
+    case SCREEN_SETTING:
+      if (g2 == (uint8_t)GEST_LONG)
+      {
+        Menu_GoTo((uint8_t)SCREEN_MENU);
+      }
+      else if (g2 == (uint8_t)GEST_SHORT)
+      {
+        menu_status.state_submenu = scroll_down(menu_status.state_submenu, MENU_SETTING_ROWS);
+      }
+      else if (g3 == (uint8_t)GEST_SHORT)
+      {
+        menu_status.state_submenu = scroll_up(menu_status.state_submenu, MENU_SETTING_ROWS);
       }
       break;
 
@@ -311,6 +423,7 @@ void Menu_Init(void)
 
   menu_status.screen          = (uint8_t)SCREEN_START;
   menu_status.screen_prev     = (uint8_t)SCREEN_START;
+  TO_GO_STATE_SCREEN((uint8_t)SCREEN_START);   /* зеркало для LCD_Fill_Template */
   menu_status.state_menu      = 0u;
   menu_status.state_submenu   = 0u;
   menu_status.dirty_data      = 0u;
@@ -324,6 +437,10 @@ void Menu_Init(void)
 
   /* Авто-возврат на главный экран: как в Avis (TIMER_RTC_MAIN_RESET). */
   START_TIMER_RTC(TIMER_RTC_MAIN_RESET, VECTOR_MENU_AUTO_RETURN_S);
+
+  /* Мигание зарядки/ошибок на экране (Avis: TIMER_RTC_DISP_FLASHING_SYSTEM). */
+  state_flashing_system = 0u;
+  START_TIMER_RTC(TIMER_RTC_DISP_FLASHING_CHARGE, TIME_RTC_DISP_FLASHING_CHARGE);
 
   LOG_I(VLOG_M_SYS, "menu: init (screen START, auto-return %u s)",
         (uint32_t)VECTOR_MENU_AUTO_RETURN_S);
@@ -400,8 +517,19 @@ void Button_Run_Start(void)
 		//------------------------------------------------------------------------
 //		SET_ON(POWER_ON_MCU);
 		//------------------------------------------------------------------------
-		// Инициализация LCD
-	    LCD_Init();
+		// Инициализация LCD: панель + LVGL/SquareLine UI. Один раз: TFT_Init
+		// само-guard'ится флагом TFT_Initialized, а ui_lv_init повторно звать
+		// нельзя (lv_init/ui_init пересоздадут объекты). КОНТЕКСТ: поток LVGL
+		// Task - тот же поток позже крутит lv_timer_handler (LVGL однопоточен).
+#if (CONFIG_TYPE_LCD_TFT != 0)
+		if (LCD_Get_flag_init() == 0u)
+		{
+			LCD_Init();
+#if VECTOR_LCD_USE_LVGL
+			ui_lv_init();
+#endif
+		}
+#endif
 		//------------------------------------------------------------------------
 #if CONFIG_LORA
     Lora_DeInit(0);

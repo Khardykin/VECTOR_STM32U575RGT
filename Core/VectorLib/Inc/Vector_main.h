@@ -9,22 +9,46 @@
 #define VECTORLIB_INC_VECTOR_MAIN_H_
 
 //===========================================================================================================================
+/* ВСЕ ИНКЛУДЫ ПРОЕКТА - В ОДНОМ МЕСТЕ (решение автора): любой .c файл проекта
+   (Menu_vector.c, Vector_main.c, Gps.c, TFT_indicator.c, ...) включает ТОЛЬКО
+   "Vector_main.h" и получает всё перечисленное ниже. Исключение - vendor-
+   заголовки драйверов (BME280/bme280.h и т.п.): они нужны одному .c и живут
+   рядом с ним. Порядок блоков: CubeMX/HAL -> конфигурация -> стандарт ->
+   ядро (типы/макросы/время/лог/RTOS) -> модули -> память/журнал -> звук ->
+   потоки -> экран (LVGL). Новый заголовок проекта добавлять СЮДА.          */
+//--------------------------------------------------------------------------------------------------------------
+/* 1. CubeMX/HAL + прерывания (кнопки button1/2/3 - Button_variables) */
+#include "main.h"
 #include "i2c.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 #include "rtc.h"
-//===========================================================================================================================
+#include "stm32u5xx_it.h"
+//--------------------------------------------------------------------------------------------------------------
+/* 2. Конфигурация прибора (CONFIG_* и VECTOR_*) */
 #include "config_device.h"
 #include "vector_config.h"
-
+//--------------------------------------------------------------------------------------------------------------
+/* 3. Стандартная библиотека */
 #include <stdint.h>
+#include <stdbool.h>
 #include <stdio.h>
-
+#include <stdlib.h>
+#include <string.h>
+#include <stddef.h>
+#include <math.h>
+#include <time.h>           /* time_t: tmp_current (Menu_vector.h), gmtime (индикация) */
+//--------------------------------------------------------------------------------------------------------------
+/* 4. Ядро проекта: общие типы/макросы, время (тик RTOS), лог, ThreadX */
 #include "shared_types.h"
 #include "shared_macros.h"
 #include "vector_macros.h"
-
+#include "vector_tick.h"    /* VTICK_MS/VTICK_ELAPSED_MS: время ТОЛЬКО тик RTOS */
+#include "vector_log.h"     /* LOG_E/W/I/D + маски VLOG_M_* */
+#include "tx_api.h"         /* ThreadX: TX_DISABLE/TX_RESTORE, tx_time_get */
+//--------------------------------------------------------------------------------------------------------------
+/* 5. Модули прибора (каждый под своим CONFIG_*) */
 #if CONFIG_LORA
 	#include "Lora_S7678S.h"
 #endif
@@ -46,15 +70,35 @@
 #endif
 
 #include "buffer.h"
-
+#include "Ble_vector.h"     /* BLE-модуль MK01: мастерская сторона, порт Ble_mk01 (CONFIG_BLE) */
+#include "Notify_vector.h"  /* секвенсор оповещений: фазы свет/звук/вибро (Notify_Tick ~10 мс) */
+#include "Menu_vector.h"    /* основа слоя меню: экраны + жесты кнопок (CONFIG_DISPLAY) */
+//--------------------------------------------------------------------------------------------------------------
+/* 6. Внешняя SPI-flash и конфигурация/журнал */
+#include "spiflash.h"       /* sf_probe/sf_read/sf_write: NOR W25Q (HAL) */
+#include "sfmap.h"          /* SF_CONFIG_BASE / SF_CONFIG_DEFAULT / SF_LOG_BASE */
+#include "extstore.h"       /* cfg_save/cfg_load + ext_read/ext_write/ext_erase_sector */
 #include "Config_save_read.h"
-
+//--------------------------------------------------------------------------------------------------------------
+/* 7. Звук (плеер + образы клипов во внешней flash) */
 #include "audio_demo.h"
 #include "snd_log_test.h"  /* [ВРЕМЕННЫЙ ТЕСТ] звук+журнал - удалить после проверки */
 #include "audio_player.h"
+#include "audio_ids.h"
+//--------------------------------------------------------------------------------------------------------------
+/* 8. Потоки RTOS */
 #include "vector_tasks.h"
-#include "Ble_vector.h"     /* BLE-модуль MK01: мастерская сторона, порт Ble_mk01 (CONFIG_BLE) */
-#include "Menu_vector.h"    /* основа слоя меню: экраны + жесты кнопок (CONFIG_DISPLAY) */
+//--------------------------------------------------------------------------------------------------------------
+/* 9. Экран: драйвер панели + слой индикации (LVGL/SquareLine).
+   ВНИМАНИЕ: TFT.h при VECTOR_LCD_USE_LVGL тянет lvgl.h/ui.h в каждый .c -
+   осознанная плата за «инклуды в одном месте»; порядок строгий: сначала
+   драйвер (TFT_WIDTH для BUF_SIZE), затем слой индикации.                 */
+#if (CONFIG_TYPE_LCD_TFT != 0)
+#include "TFT.h"            /* LCD_Init()/TFT_Rotation + ui.h (LVGL/SquareLine) */
+#include "LCD_platform.h"   /* backlight_set(), низкий уровень SPI панели */
+#include "TFT_indicator.h"  /* слой индикации: LCD_* API (экраны/меню/виджеты) */
+#endif
+//===========================================================================================================================
 
 
 /* Карта ВНУТРЕННЕЙ flash. Заводские данные - последняя страница банка 2

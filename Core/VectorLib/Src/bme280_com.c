@@ -13,13 +13,13 @@
   *          (weak-заглушка). Живость чипа - бит SENSORS_OK_BME.
   ******************************************************************************
   */
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): bme280_com.h
+   (при CONFIG_BME), string (memcpy). Vendor-заголовок драйвера Bosch остаётся
+   локальным - он нужен только этому модулю.                                 */
 #include "Vector_main.h"
-#include "bme280_com.h"
 #include "BME280/bme280.h"
 
 #if (CONFIG_BME)
-
-#include <string.h>   /* memcpy */
 
 
 static BME280_INTF_RET_TYPE bme280_i2c_read(uint8_t reg_addr, uint8_t *data, uint32_t len, void *intf_ptr);

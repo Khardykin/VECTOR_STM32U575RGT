@@ -22,19 +22,12 @@
 #include "app_azure_rtos.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "audio_player.h"
-#include "vector_tasks.h"
-#include "extstore.h"
-#include "vector_config.h"
-#include "vector_log.h"
-#include "main.h"
-#include "Vector_main.h"      /* timer, device_turn, tasks_status (v27) */
-#include "Menu_vector.h"      /* Vector_Run_Indication() (v27) */
-#include "Notify_vector.h"    /* Notify_Tick(): фазы свет/звук/вибро ~10 мс (v12) */
-#if (CONFIG_TYPE_LCD_TFT && VECTOR_LCD_USE_LVGL)
-#include "TFT.h"              /* TFT_Initialized */
-#include "lvgl.h"
-#endif
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): audio_player,
+   vector_tasks, extstore, vector_config/log, main.h, Menu_vector.h
+   (Vector_Run_Indication), Notify_vector.h (Notify_Tick: фазы свет/звук/
+   вибро ~10 мс), TFT.h/lvgl.h (TFT_Initialized, lv_timer_handler - при
+   CONFIG_TYPE_LCD_TFT && VECTOR_LCD_USE_LVGL).                              */
+#include "Vector_main.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/

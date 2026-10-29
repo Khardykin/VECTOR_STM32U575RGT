@@ -4,13 +4,11 @@
  *  Created on: 2024 Sep 2
  *      Author: Dmitriy
  */
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): Gps.h (при
+   CONFIG_GPS), string/stdio, tx_api.h (TX_DISABLE: снимок кадра в Gps_Receive
+   без гонки с ISR), stdlib/math, vector_tick/vector_log.                    */
 #include "Vector_main.h"
-#include "Gps.h"
 #if CONFIG_GPS
-
-#include <string.h>   /* memset/strncmp/memcpy                              */
-#include <stdio.h>    /* sprintf (Gps_Transmit, ветка TEST_GPS)             */
-#include "tx_api.h"   /* TX_DISABLE: снимок кадра в Gps_Receive без гонки с ISR */
 
 static uint16_t Gps_Crc(uint8_t *data, uint16_t count);
 static double_t NmeaToDecimalDegrees(double_t nmea_coord);
@@ -637,8 +635,8 @@ static const double test_lons[] = {
 static uint8_t test_gps_step = 0;
 #endif
 
-#include <stdlib.h>
-#include <math.h>
+/* <stdlib.h>/<math.h> были включены прямо здесь (середина файла) - переехали
+   в агрегатор Vector_main.h (инклуды в одном месте).                        */
 
 //===========================================================================================================================
 // Преобразование строки NMEA (DDMM.MMMMM или DDDMM.MMMMM) в int32_t (градусы × 10 000 000)

@@ -735,6 +735,79 @@ Task, до первого тика).
 
 **Память:** статика ~40 байт; таблицы сценариев — const во flash.
 
+## 11. Инклуды в одном месте и экранный цикл (v13)
+
+**Агрегатор инклудов (решение автора).** Все заголовки проекта собраны В ОДНОМ
+МЕСТЕ — `Core/VectorLib/Inc/Vector_main.h` (блоки 1..9: CubeMX/HAL +
+`stm32u5xx_it.h` → конфигурация → стандарт (включая `<time.h>` — без него
+`time_t tmp_current` в `Menu_vector.h` не объявлялся) → ядро
+(`shared_*`/`vector_*`/`tx_api.h`) → модули под `CONFIG_*` → память/журнал →
+звук → потоки → экран (`TFT.h`/`LCD_platform.h`/`TFT_indicator.h` при
+`CONFIG_TYPE_LCD_TFT != 0`)). Любой `.c` проекта включает ТОЛЬКО
+`Vector_main.h` (+ vendor-заголовок драйвера, если он нужен одному модулю:
+`BME280/bme280.h`). Новый заголовок добавлять в агрегатор, не в `.c`. Плата за
+удобство: `TFT.h` при `VECTOR_LCD_USE_LVGL=1` тянет `lvgl.h`/`ui.h` в каждый
+`.c` — время сборки растёт; если станет критично, блок 9 можно вынести в
+отдельный «экранный» агрегатор (например, включать его только из
+`Menu_vector.c`, `TFT*.c`, `Vector_main.c`, `app_azure_rtos.c`).
+
+**Экранный цикл (аналог Avis `DisplayIndication`).** `Menu_Draw()`
+(`Menu_vector.c`, НЕ weak) вызывается из потока LVGL Task: каждые 100 мс из
+`Menu_Run()` и сразу при переходе из `Menu_GoTo()`. Шаги: `tmp_current`
+(часы = `working_hours + offset`) → `LCD_Fill_Template()` (поворот по
+LIS3DH, язык `lv_i18n`, смена экрана по таблице `scr_map`) → фаза мигания
+`state_flashing_system` (инверсия раз в 1 с по `TIMER_RTC_DISP_FLASHING_CHARGE`)
+→ `LCD_Battery(sensors_status.battery_charge_percent, фаза)` → покранный
+switch (`SCREEN_MENU` → `LCD_Menu(state_menu)`, `SCREEN_INFO_DEVICE` →
+`LCD_SubMenuInfo(&Sns_Cfg_struct, state_submenu)`, `SCREEN_SETTING` →
+`LCD_SubMenuSetting`) → `ui_apply_visibility()`. Все вызовы LVGL — из одного
+потока (LVGL Task), `lv_timer_handler()` крутится там же.
+
+**`state_screen`** (экземпляр в `Vector_main.c`, extern в `shared_types.h`,
+макросы `IS_STATE_SCREEN()`/`TO_GO_STATE_SCREEN()` в `shared_macros.h`) —
+зеркало `menu_status.screen` для слоя индикации: пишет `Menu_Init`/`Menu_GoTo`,
+читает `LCD_Fill_Template` (выбор экрана) и `Menu_Draw` (switch отрисовки).
+
+**Инициализация UI.** `Button_Run_Start()` (долгое нажатие Button1 в
+состоянии OFF, поток LVGL Task): при `LCD_Get_flag_init() == 0` — `LCD_Init()`
+(панель) и `ui_lv_init()` (lv_init + дисплей + `ui_init()` +
+`ui_ScreenHeadMain_screen_init()`, панели `PanelHead`/`PanelHeadEnter` и
+`ImageMirax` переносятся в `lv_layer_top()` — «шапка» с батареей/иконками
+видна на любом экране). Повторно `ui_lv_init()` не вызывается (флаг
+`TFT_Initialized`); поток LVGL Task до этого гоняет только `Notify_Tick()`.
+
+**`LCD_Battery`** (`TFT_indicator.c`): % → `ui_BarBattery`, текст →
+`ui_LabelPercent`. Зарядка = `ST_COMMON_BIT_BAT_CHARGE` (ставит машина батареи
+`Avis_Battery_System`, пока weak-пустая): сегментная анимация +10 % на каждую
+инверсию фазы; после выдергивания провода анимация держится ещё
+`LCD_BATTERY_CHARGE_HOLD_MS` = 2500 мс (время — тик RTOS `VTICK_MS()`,
+FreeRTOS-`xTaskGetTickCount` из Avis-порта заменён). Не заряжается и
+`% <= BAT_LIM_PERCENT(BAT_LIM_1)` (≈22 % при 3300..4200 мВ, лимите 3500) —
+бар пустой.
+
+**`LCD_SubMenuInfo`**: строки Дата/Время (из `tmp_current`), Зав. номер
+(`SN_Label_Prefix` + `SerialHi:SerialLo`), Версия HW, Имя FW (`Device_Label`),
+Версия FW (`FIRMWARE_VERSION`), системные ошибки (`StateErr & ERROR_MASK_ST_2`
+списком F-битов) и T/P/H из `sensors_status` с переводом единиц: T = °C×100 →
+°C, H = %×1024 → %, P = гПа×10 → мм рт. ст. (×0.0750062). Страницы по
+`LINES_PER_PAGE` = 5, число страниц — `info_total_pages` (его же читает меню:
+листание `state_submenu` в `SCREEN_INFO_DEVICE`). Видимость/геометрия: в
+дизайне SquareLine панели и правые лейблы созданы скрытыми — код показывает
+`Panel0` (заголовок, `LCD_SubMenu_Single`) и `Panel1`, гасит `Panel2/3`,
+высота `Panel1` = строк × `INFO_LINE_HEIGHT` (25 px), `LabelLeft1` —
+TOP_LEFT, `LabelRight1` — TOP_RIGHT (две колонки; в TODO автора «align left
+top» — если нужно именно оба влево, поменять один вызов).
+
+**Навигация меню (дополнение v13).** `SCREEN_MENU`: Button1 SHORT — вход в
+пункт (0 «Информация» → `SCREEN_INFO_DEVICE`, 1 «Настройки» →
+`SCREEN_SETTING`, 2 «Контроль оборудования» → `SCREEN_CONNECT_DEVICE`,
+3 «Журнал событий» — экран не создан, остаёмся в меню); Button2/3 SHORT —
+скролл 4 пунктов (`VECTOR_MENU_ITEMS`); Button2 LONG — назад на
+`SCREEN_MEASURE` (паттерн автора). `SCREEN_INFO_DEVICE`/`SCREEN_SETTING`:
+Button2/3 SHORT — страницы/строки, Button2 LONG — назад в меню. В
+`LCD_Menu`/`LCD_SubMenuSetting` панели строк показываются (дизайн создаёт их
+скрытыми), правые лейблы-плейсхолдеры гасятся.
+
 ## Проверено и трогать не нужно
 
 * GPDMA1: ch9 = SPI1_TX, ch10 = SPI1_RX, ch11 = SAI1_A (circular), все три

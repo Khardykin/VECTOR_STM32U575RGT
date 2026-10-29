@@ -1,10 +1,8 @@
-#include "main.h"
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): main.h, tx_api.h
+   (TX_DISABLE: снимки Connected_device/Ble_telemetry в мосту, п.65), stdio
+   (AT-команды), string (memcpy), math (cosf/lround: GPS-дельты в метры),
+   Lora_S7678S.h (при CONFIG_LORA).                                          */
 #include "Vector_main.h"
-#include "tx_api.h"     /* TX_DISABLE: снимки Connected_device/Ble_telemetry в мосту (п.65) */
-#include <stdio.h>      /* sprintf: сборка AT-команд (Lora_TransmitReceive)   */
-#include <stdbool.h>    /* bool/true/false                                    */
-#include <string.h>     /* memcpy                                             */
-#include <math.h>       /* cosf/lround: пересчёт GPS-дельт в метры            */
 
 #if CONFIG_LORA
 

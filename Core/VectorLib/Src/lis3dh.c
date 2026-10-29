@@ -15,10 +15,10 @@
   *          sensors_read в Vector_main.c, 1 с).
   ******************************************************************************
   */
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): lis3dh.h (при
+   CONFIG_LIS3DH), math (sinf: порог 6D-ориентации), i2c.h, лог, тик.        */
 #include "Vector_main.h"
 #if (CONFIG_LIS3DH)
-#include "lis3dh.h"
-#include <math.h>      /* sinf: порог 6D-ориентации */
 
 // Внутренний контекст драйвера
 static stmdev_ctx_t dev_ctx;

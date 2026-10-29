@@ -25,9 +25,10 @@
                                     #if (CONFIG_TYPE_LCD_TFT), т.е. при 2 они
                                     тоже собираются - для чистой сборки режима 2
                                     их guard'ы надо сузить до == 1 */
-#include "TFT.h"
-#include "TFT_indicator.h"
-#include "LCD_platform.h"
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): TFT.h (TFT_*,
+   LCD_Init + ui.h LVGL/SquareLine), LCD_platform.h (backlight_set),
+   TFT_indicator.h (API этого слоя), shared_types/shared_macros, vector_tick
+   (VTICK_MS), sensors_status, Sns_Cfg_struct.                              */
 //------------------------------------------------------------------------------
 static uint16_t  buf_lcd[BUF_SIZE] __attribute__((aligned(4)));
 static uint16_t  buf_lcd2[BUF_SIZE] __attribute__((aligned(4)));
@@ -42,6 +43,9 @@ uint8_t len_str = 0;
 uint32_t color_Chan[5] = {0xFFFFFF, 0xFF0000, 0xF9D547, 0x2ECC71, 0xEFEFF4};//белый красный желтый зеленый фон
 uint32_t color_background[3] = {0x215CA2, 0xFFFFFF};//синий белый
 uint32_t color_text[3] = {0xFFFFFF, 0x000000};//белый черный
+//------------------------------------------------------------------------------
+#define INFO_LINE_HEIGHT            (25)    // Страница «Информация»: высота строки, px (TODO автора "Panel1 height y = 25")
+#define LCD_BATTERY_CHARGE_HOLD_MS  (2500u) // Держать анимацию «зарядка» после выдергивания провода, мс (Avis: pdMS_TO_TICKS(2500))
 //------------------------------------------------------------------------------
 #if ((DEVICE_NUMBER == Dev1))
     const char Device_Label[2][15] = {
@@ -889,7 +893,7 @@ void LCD_Image_SET(uint8_t data)
 	SET_LORA(data);
 	SET_GPS(data);
 	SET_BLE(data);
-	SET_EXCHANGE(data;)
+	SET_EXCHANGE(data);   /* была опечатка SET_EXCHANGE(data;) - лишняя ';' в аргументе */
 	SET_LTE(data);
 	SET_LTE_VEC(data);
 }
@@ -924,6 +928,7 @@ void LCD_Menu(uint8_t num)
 {
     // 1. Формируем список элементов в зависимости от модели
 	lv_obj_t * labelsLeft[] = {ui_LabelLeft0, ui_LabelLeft1, ui_LabelLeft2, ui_LabelLeft3};
+	lv_obj_t * labelsRight[] = {ui_LabelRight0, ui_LabelRight1, ui_LabelRight2, ui_LabelRight3};
 	lv_obj_t * panels[] = {ui_Panel0, ui_Panel1, ui_Panel2, ui_Panel3};
 
     ui_set_obj_align(labelsLeft[0], LV_ALIGN_LEFT_MID);
@@ -933,6 +938,11 @@ void LCD_Menu(uint8_t num)
     for (uint8_t i = 0; i < count; i++) {
     	ui_set_obj_align(labelsLeft[i], LV_ALIGN_LEFT_MID);
         ui_menu_item_set_focus(labelsLeft[i], panels[i], (num == i), false);
+        /* В дизайне SquareLine панели созданы СКРЫТЫМИ (LV_OBJ_FLAG_HIDDEN):
+           показываем строки списка; правые лейблы в меню не используются -
+           гасим (в дизайне там плейсхолдер "21.01.2014").                  */
+        ui_set_obj_hidden(panels[i], false);
+        ui_set_obj_hidden(labelsRight[i], true);
     }
 }
 
@@ -947,6 +957,9 @@ void LCD_SubMenu_Single(uint8_t num, uint16_t roller)
     // Текст на основной панели
     ui_set_obj_align(ui_LabelLeft0, LV_ALIGN_CENTER);
     ui_set_label_text(ui_LabelLeft0, _(text_labels[roller])); // или ваш источник текста
+    /* Панель заголовка в дизайне скрыта - показываем (общий вход для
+       Info/Setting: у них Panel0 = строка-заголовок подраздела).          */
+    ui_set_obj_hidden(ui_Panel0, false);
 	//-------------------------------
 }
 
@@ -1042,18 +1055,22 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
     }
 
     // --- 5.1. Температура, давление и влажность ---
+    /* Единицы sensors_status (BME280 int32-драйвер, см. Vector_main.h):
+       Temperature = °C×100, Humidity = %×1024, Pressure = гПа×10.
+       На экран - целые: °C, % и мм рт.ст. (гПа×10 × 0.0750062 = mmHg,
+       10132 -> 760). Раньше значения печатались сырыми (×100/×1024).     */
     snprintf(env_temp_str, sizeof(env_temp_str), "%d °С",
-             (int)sensors_status.Temperature);
+             (int)(sensors_status.Temperature / 100.0f));
     labels[total_count] = env_labels[APPLANG][0]; values[total_count++] = env_temp_str;
 
 
     snprintf(env_press_str, sizeof(env_press_str), "%d mmHg",
-             (int)sensors_status.Pressure);
+             (int)(sensors_status.Pressure * 0.0750062f + 0.5f));
     labels[total_count] = env_labels[APPLANG][1]; values[total_count++] = env_press_str;
 
 
     snprintf(env_hum_str, sizeof(env_hum_str), "%d %%",
-             (int)sensors_status.Humidity);
+             (int)(sensors_status.Humidity / 1024.0f));
     labels[total_count] = env_labels[APPLANG][2]; values[total_count++] = env_hum_str;
 
     // --- 6. Расчет страниц ---
@@ -1081,8 +1098,21 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
     }
 
     // --- 7. Отрисовка ---
-    // TODO тут панель сделать Panel1 сделать heigh y = 25,
-    // У LabelLeft1 и ui_LabelRight1 align left top
+    /* TODO автора ("Panel1 сделать height y = 25, у LabelLeft1 и LabelRight1
+       align left top") выполнен в коде: высота строки INFO_LINE_HEIGHT = 25 px,
+       высота Panel1 = число строк страницы × 25; лейблы прижаты к ВЕРХНЕМУ
+       краю (имена - слева, значения - справа: оба TOP_LEFT наложились бы
+       друг на друга - две колонки). Видимость: в дизайне SquareLine Panel1 и
+       LabelRight1 созданы скрытыми - показываем; неиспользуемые на этой
+       странице строки меню Panel2/Panel3 гасим (заголовок Panel0 показывает
+       LCD_SubMenu_Single, лейблы - LCD_Fill_Info_Page).                    */
+    ui_set_obj_hidden(ui_Panel1, false);
+    ui_set_obj_hidden(ui_Panel2, true);
+    ui_set_obj_hidden(ui_Panel3, true);
+    ui_set_obj_align(ui_LabelLeft1, LV_ALIGN_TOP_LEFT);
+    ui_set_obj_align(ui_LabelRight1, LV_ALIGN_TOP_RIGHT);
+    lv_obj_set_height(ui_Panel1, (int32_t)count_on_page * INFO_LINE_HEIGHT);
+
     LCD_Fill_Info_Page(ui_LabelLeft1, ui_LabelRight1, labels, values, start_idx, count_on_page);
 }
 
@@ -1099,26 +1129,38 @@ void LCD_SubMenuSetting(SNS_CFG *pSnsCfg, uint8_t num)
 
     for(int i = 0; i < count_panels; i++) {
     	ui_menu_item_set_focus(labelsLeft[i], panels[i], (num == i), 0);
+		/* Панели строк в дизайне скрыты - показываем (как в LCD_Menu). */
+		ui_set_obj_hidden(panels[i], false);
     }
 }
 
 //===========================================================================================================================
+/* Индикация батареи верхней панели (top layer: ui_BarBattery + ui_LabelPercent,
+   Avis DisplayChargeIndication).
+   precent        - заряд % из sensors_status.battery_charge_percent (MAX17048);
+   state_flashing - фаза, инвертируемая раз в секунду (Menu_Draw,
+                    TIMER_RTC_DISP_FLASHING_CHARGE): на каждой инверсии
+                    «зарядка» добавляет сегмент +10% и гонит его до 100.
+   Зарядка = ST_COMMON_BIT_BAT_CHARGE (ставит машина батареи Avis_Battery_System);
+   после выдергивания провода анимация держится ещё LCD_BATTERY_CHARGE_HOLD_MS.
+   ВРЕМЯ: тик RTOS проекта VTICK_MS() (vector_tick.h, ThreadX 10 мс) - портовские
+   TickType_t/xTaskGetTickCount()/pdMS_TO_TICKS() из Avis здесь не существуют. */
 void LCD_Battery(uint16_t precent, uint16_t state_flashing)
 {
 	uint16_t precent_disp = precent;
-    static TickType_t charge_end_ticks = 0;
+    static uint32_t charge_end_ms = 0;   // до какой метки (мс) держать «зарядку»
     uint8_t is_charging_active = 0;
-    TickType_t current_ticks = xTaskGetTickCount();
+    uint32_t current_ms = VTICK_MS();
 
     if (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_BAT_CHARGE)) {
-        // Провод подключен: рассчитываем точку окончания (сейчас + задержка в тиках)
-        charge_end_ticks = current_ticks + pdMS_TO_TICKS(2500);
+        // Провод подключен: рассчитываем точку окончания (сейчас + задержка удержания)
+        charge_end_ms = current_ms + LCD_BATTERY_CHARGE_HOLD_MS;
         is_charging_active = 1;
     }
     else {
         // Провода нет: проверяем, не ушло ли текущее время за точку окончания.
-        // Защита от переполнения счетчика тиков RTOS через явное вычитание знаковых типов:
-        if ((BaseType_t)(charge_end_ticks - current_ticks) > 0) {
+        // Знаковая разница беззнаковых меток корректна и при переполнении счётчика мс:
+        if ((int32_t)(charge_end_ms - current_ms) > 0) {
             is_charging_active = 1; // Время удержания еще НЕ истекло
         }
     }
@@ -1148,17 +1190,20 @@ void LCD_Battery(uint16_t precent, uint16_t state_flashing)
 	}
 
 	ui_set_bar_value(ui_BarBattery, precent_disp, LV_ANIM_OFF);
+	/* Текст % (str_lcd - uint8_t[], поэтому (char*)-каст; snprintf с размером -
+	   без переполнения; лишний аргумент precent из форматной строки " " убран -
+	   GCC ругался -Wformat-extra-args).                                      */
 #if (CONFIG_BATTERY == 1)
 	if(is_charging_active){
-		sprintf(str_lcd, " ", precent);
+		snprintf((char*)str_lcd, sizeof(str_lcd), " ");
 	}
 	else{
-		sprintf(str_lcd, "%d%%", precent);
+		snprintf((char*)str_lcd, sizeof(str_lcd), "%d%%", (int)precent);
 	}
 #else
-	sprintf(str_lcd, "%d%%", precent);
+	snprintf((char*)str_lcd, sizeof(str_lcd), "%d%%", (int)precent);
 #endif
-	ui_set_label_text(ui_LabelPercent, str_lcd);
+	ui_set_label_text(ui_LabelPercent, (char*)str_lcd);
 }
 
 //===========================================================================================================================

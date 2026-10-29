@@ -50,22 +50,13 @@
   *          блокироваться (мьютексы, сон, лог). Из ISR сюда не заходить.
   ******************************************************************************
   */
-#include "Vector_main.h"      /* агрегатор: config_device.h, vector_config.h,
-                                   buffer.h, Lora_S7678S.h (при CONFIG_LORA)  */
-#include "vector_tasks.h"
-
-#include "tx_api.h"
-#include "vector_log.h"
-#include "vector_tick.h"
-#include "vector_macros.h"
-#include "stm32u5xx_it.h"   /* button1/button2/button3, timer_end_data_exchange */
-#include "spiflash.h"       /* sf_probe()/sf_jedec: борд-инит */
-#include "sfmap.h"          /* SF_CONFIG_BASE / SF_CONFIG_DEFAULT: области конфига */
-#include <stdlib.h>         /* rand(): джиттер периода передачи LoRa */
-
-#if (CONFIG_TYPE_LCD_TFT && VECTOR_SCREEN_ROTATION)
-#include "TFT.h"            /* TFT_Rotation(): поворот экрана по акселерометру */
-#endif
+/* Инклуды проекта - В ОДНОМ МЕСТЕ: Vector_main.h (агрегатор) содержит всё -
+   CubeMX/HAL, конфигурацию, стандарт, ядро (shared_ и vector_ заголовки,
+   tx_api), модули, память/журнал, звук, потоки и экран (TFT.h и
+   TFT_indicator.h при CONFIG_TYPE_LCD_TFT). Здесь использовались: rand()
+   (stdlib), sf_probe/SF_CONFIG_BASE (spiflash/sfmap), TFT_Rotation (TFT.h),
+   button1..3 (stm32u5xx_it.h), TX_DISABLE (tx_api) - всё из агрегатора.   */
+#include "Vector_main.h"
 
 /* ============================================================================
  *  ТАКТЫ ПРИБОРА И БОРД-ИНИЦИАЛИЗАЦИЯ
@@ -84,6 +75,11 @@
 volatile Timer_variables timer = {0};
 volatile DOWN_TIMER      countdown_time = {0};
 volatile DOWN_TIMER_RTC  countdown_time_rtc = {0};
+/* Текущий экран (IS_STATE_SCREEN/TO_GO_STATE_SCREEN - shared_macros.h):
+   зеркало menu_status.screen для слоя индикации (LCD_Fill_Template). Пишет
+   меню (Menu_Init/Menu_GoTo в Menu_vector.c); экземпляр здесь, чтобы символ
+   линковался при любой конфигурации.                                        */
+volatile uint8_t state_screen = 0;
 
 /* Декремент миллисекундных таймеров. КОНТЕКСТ: прерывание TIM3. */
 static void Countdown_Timer(void)

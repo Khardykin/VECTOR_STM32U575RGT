@@ -13,9 +13,10 @@
   *          байты RGB565 меняются местами (VECTOR_LCD_SWAP_RGB565).
   ******************************************************************************
   */
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): при
+   CONFIG_TYPE_LCD_TFT != 0 он несёт TFT.h, LCD_platform.h и TFT_indicator.h
+   (экраны/движок панели + lvgl при VECTOR_LCD_USE_LVGL).                    */
 #include "Vector_main.h"
-#include "TFT.h"
-#include "LCD_platform.h"
 
 #if (CONFIG_TYPE_LCD_TFT)
 

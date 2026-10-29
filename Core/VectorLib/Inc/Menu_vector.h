@@ -120,13 +120,16 @@ void Menu_GoTo(uint8_t screen);
    КОНТЕКСТ: поток.                                                          */
 uint8_t Menu_Gesture(uint8_t button);
 
-/* WEAK-хуки (заменит LVGL-порт / слой индикации):
-   Menu_Draw()        - аналог DisplayIndication/LCD_Fill_Template: обновить
-                        виджеты текущего экрана ЦЕЛИКОМ каждый цикл (при смене
-                        screen порт делает lv_screen_load внутри Menu_Draw).
+/* Точки отрисовки/цикла (Menu_Draw с коммита автора «up menu tft» - НЕ weak):
+   Menu_Draw()        - аналог DisplayIndication из Avis: ЦЕЛИКОМ обновляет
+                        экран каждый проход (время, LCD_Fill_Template - смена
+                        экрана/поворот/язык, LCD_Battery с фазой мигания,
+                        покранный switch LCD_Menu/LCD_SubMenuInfo/
+                        LCD_SubMenuSetting, ui_apply_visibility).
    Vector_Run_Indication() - аналог Avis_Run_Indication: switch(device_turn),
-                        ON/ON_1 -> Menu_Run(); вызывается из LVGL Task по
-                        timer.flag_100ms (100 мс).                          */
+                        ON/ON_1 -> Menu_Run(); OFF -> Button_Run_Start()
+                        (включение долгим нажатием + ui_lv_init); вызывается
+                        из LVGL Task по timer.flag_100ms (100 мс).          */
 void Menu_Draw(void);
 void Vector_Run_Indication(void);
 

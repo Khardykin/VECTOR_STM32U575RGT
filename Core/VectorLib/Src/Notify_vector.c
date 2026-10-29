@@ -14,13 +14,11 @@
   *          активный канал (светодиод не залипнет, вибро не зависнет).
   ******************************************************************************
   */
-#include "Notify_vector.h"
-#include "main.h"            /* SET_ON/SET_OFF(ALARM_LED_1/2)                 */
-#include "vector_tick.h"     /* GetTick/VTICK_MS/VTICK_ELAPSED (тик RTOS)     */
-#include "vector_macros.h"   /* Vibro_On/Vibro_Off (weak-хуки платформы)      */
-#include "vector_log.h"      /* LOG_W/I: отказы по приоритету, старт seq      */
-#include "audio_player.h"    /* audio_beep/audio_play_now/audio_stop/is_busy  */
-#include "audio_ids.h"       /* SND_* (примеры сценариев в комментариях)      */
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): Notify_vector.h,
+   main.h (SET_ON/SET_OFF(ALARM_LED_1/2)), vector_tick.h (тик RTOS),
+   vector_macros.h (Vibro_On/Off), vector_log.h, audio_player.h (audio_beep/
+   audio_play_now/audio_stop/is_busy), audio_ids.h (SND_*).                  */
+#include "Vector_main.h"
 
 /* Защитная выдержка фазы NOTIFY_WAIT_END: очередь плеера может стартовать не
    мгновенно (audio_is_busy()==0 ещё до начала) - раньше неё конец не решать. */
