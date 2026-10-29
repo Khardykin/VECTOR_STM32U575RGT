@@ -92,7 +92,14 @@
 #define LCD_Init() 			TFT_Init()
 #define LCD_DeInit()		TFT_DeInit()
 #define LCD_Get_flag_init() (TFT_Initialized)
-#define LCD_UpdateScreen()	(1)//TFT_UpdateScreen()
+/* Обновление экрана. В Avis здесь был TFT_UpdateScreen() - выгрузка кадрового
+   буфера в панель. В этом проекте экран redraw'ит LVGL: lv_timer_handler()
+   (поток LVGL Task, app_azure_rtos.c) сам вызывает my_flush_cb ->
+   TFT_FlushBuffer, отдельного «апдейта» после отрисовки не нужно. Макрос
+   оставлен пустышкой, чтобы вызовы из Avis (Menu_Draw) не править.
+   ((void)0), а не (1): на «выражение без эффекта» GCC c -Wall ругался
+   -Wunused-value.                                                        */
+#define LCD_UpdateScreen()	((void)0)//TFT_UpdateScreen() - не нужен: redraw делает lv_timer_handler()
 #define LCD_SetAllRam(x)	TFT_Fill_All(x)
 
 void TFT_Init(void);

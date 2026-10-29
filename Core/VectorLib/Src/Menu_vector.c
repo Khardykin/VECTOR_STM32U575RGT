@@ -146,6 +146,10 @@ void Menu_Draw(void)
   }
 
   ui_apply_visibility();
+  /* Вызов сохранён как в Avis (DisplayIndication), но LCD_UpdateScreen() в этом
+     проекте - пустышка ((void)0, см. TFT.h): кадр уезжает на панель из
+     lv_timer_handler() потока LVGL Task (my_flush_cb -> TFT_FlushBuffer),
+     принудительно «обновлять экран» после отрисовки не нужно.             */
   LCD_UpdateScreen();
 #endif /* CONFIG_TYPE_LCD_TFT */
 }

@@ -186,6 +186,15 @@ ui_visibility_state_t ui_next_state;	// Глобальная или статич
 static uint16_t seg_battery_charge_count = 0;
 static uint16_t seg_battery_charge_flag = 0;
 //------------------------------------------------------------------------------
+/* Прототипы внутренних помощников слоя индикации.
+   ЧАСТЬ ИЗ НИХ ПОКА НЕ ВЫЗЫВАЕТСЯ - заготовка под экраны, которых ещё нет
+   (иконки статусов, шрифт/ширина, режим длинного текста, перекрас картинок
+   меню, кнопки панели ввода): ui_set_img_src, ui_set_obj_font,
+   ui_set_obj_width, ui_set_label_long_mode, ui_menu_item_set_recolor,
+   ui_update_input_panel_head_button. Их определения помечены
+   __attribute__((unused)) - иначе -Wall даёт -Wunused-function. Из сборки они
+   НЕ вырезаются (атрибут только глушит предупреждение): первый же вызов
+   включает помощник в работу, снимать атрибут для этого не нужно.          */
 static void LCD_Refresh_Language(uint8_t new_lang);
 static void ui_set_label_text(lv_obj_t * obj, const char * text);
 static void ui_set_obj_size(lv_obj_t * obj, int32_t w, int32_t h);
@@ -286,7 +295,7 @@ static void ui_menu_item_set_focus(lv_obj_t * obj_text, lv_obj_t * obj_panel, bo
     }
 }
 
-static void ui_menu_item_set_recolor(lv_obj_t * obj_img, bool is_recolor_on)
+static __attribute__((unused)) void ui_menu_item_set_recolor(lv_obj_t * obj_img, bool is_recolor_on)
 {
     if (obj_img == NULL) return;
 
@@ -336,7 +345,7 @@ static void ui_update_input_panel_head_enter(const char * text, int8_t rank, int
     ui_next_state.head_enter = false;
 }
 
-static void ui_update_input_panel_head_button(uint16_t enter)
+static __attribute__((unused)) void ui_update_input_panel_head_button(uint16_t enter)
 {
     // Защита от выхода за пределы массива
     if (enter >= ROLLER_HEAD_END) return;
@@ -740,7 +749,7 @@ static void ui_set_obj_align(lv_obj_t * obj, lv_align_t align)
     }
 }
 
-static void ui_set_img_src(lv_obj_t * obj, const void * src)
+static __attribute__((unused)) void ui_set_img_src(lv_obj_t * obj, const void * src)
 {
     if(obj == NULL) return;
     // Сравниваем указатели на источник (картинку)
@@ -775,7 +784,7 @@ static void ui_set_obj_bg_opa(lv_obj_t * obj, lv_opa_t opa, lv_style_selector_t 
     }
 }
 
-static void ui_set_obj_font(lv_obj_t * obj, const lv_font_t * font, lv_style_selector_t selector)
+static __attribute__((unused)) void ui_set_obj_font(lv_obj_t * obj, const lv_font_t * font, lv_style_selector_t selector)
 {
     if(obj == NULL || font == NULL) return;
     const lv_font_t * current_font = lv_obj_get_style_text_font(obj, selector);
@@ -784,7 +793,7 @@ static void ui_set_obj_font(lv_obj_t * obj, const lv_font_t * font, lv_style_sel
     }
 }
 
-static void ui_set_obj_width(lv_obj_t * obj, int32_t w)
+static __attribute__((unused)) void ui_set_obj_width(lv_obj_t * obj, int32_t w)
 {
     if(obj == NULL) return;
     if(lv_obj_get_width(obj) != w) {
@@ -800,7 +809,7 @@ static void ui_set_bar_value(lv_obj_t * obj, int32_t val, lv_anim_enable_t anim)
     }
 }
 
-static void ui_set_label_long_mode(lv_obj_t * obj, lv_label_long_mode_t mode)
+static __attribute__((unused)) void ui_set_label_long_mode(lv_obj_t * obj, lv_label_long_mode_t mode)
 {
     if(obj == NULL) return;
     if(lv_label_get_long_mode(obj) != mode) {
@@ -833,7 +842,8 @@ uint8_t state_rotation = 0;
 uint8_t state_rotation_old = 0;
 uint16_t LCD_Fill_Template(SNS_CFG *pSnsCfg)
 {
-	static uint16_t last_tid = 255;
+	/* Здесь был static uint16_t last_tid = 255 - не читался ни разу (смену
+	   экрана ниже определяет screen_was_changed), удалён: -Wunused-variable. */
 	uint16_t state_screen_change = 0;
 	bool screen_was_changed = false;
 	uint8_t current_state = IS_STATE_SCREEN();
@@ -972,7 +982,11 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
     struct tm *tm_ptr = gmtime(&tmp_current);
 
     // Буферы для значений
-    static char str_date[12], str_time[12];
+    /* str_date[16], а не [12]: с приведением полей tm к их фактическим
+       диапазонам (uint8_t/uint16_t) худший вывод "%02d.%02d.%04d" =
+       3+1+3+1+5+1 = 14 байт. Без приведения GCC считает аргументы
+       произвольными int (до 11 цифр) и ругается -Wformat-overflow/-truncation. */
+    static char str_date[16], str_time[12];
     static char str_sn_dev[24];
     static char str_hw[12], str_fw[12];
     static char str_sys_err_buf[64];
@@ -986,10 +1000,16 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
     uint8_t total_count = 0;
 
     // --- 1. Дата и Время (всегда отображаются) ---
-    sprintf(str_date, "%02d.%02d.%04d", tm_ptr->tm_mday, tm_ptr->tm_mon + 1, tm_ptr->tm_year + 1900);
+    /* snprintf вместо sprintf (размер буфера известен) + аргументы в их реальных
+       диапазонах: для gmtime() mday 1..31, mon 1..12, year 1970..2038, поэтому
+       вывод всегда "ДД.ММ.ГГГГ" = 10 символов, усечение невозможно. */
+    snprintf(str_date, sizeof(str_date), "%02d.%02d.%04d",
+             (uint8_t)tm_ptr->tm_mday, (uint8_t)(tm_ptr->tm_mon + 1),
+             (uint16_t)(tm_ptr->tm_year + 1900));
     labels[total_count] = _("Дата"); values[total_count++] = str_date;
 
-    sprintf(str_time, "%02d:%02d", tm_ptr->tm_hour, tm_ptr->tm_min);
+    snprintf(str_time, sizeof(str_time), "%02d:%02d",
+             (uint8_t)tm_ptr->tm_hour, (uint8_t)tm_ptr->tm_min);
     labels[total_count] = _("Время"); values[total_count++] = str_time;
 
     // --- 2. Заводской номер прибора (всегда отображается) ---
@@ -1006,10 +1026,14 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
     char sn_buffer[24];
     strcpy(sn_buffer, (char*)SN_Label_Prefix[MIRAX_BACS_BUILD]);
 
+    /* serial - uint32_t, поэтому %u и (unsigned): с %07d/%08d GCC ругался
+       -Wformat, а номер >= 2^31 напечатался бы отрицательным. snprintf с
+       остатком буфера (strlen считаем один раз) - sn_buffer[24] не переполнится. */
+    size_t sn_len = strlen(sn_buffer);
     if (is_7_digits) {
-        sprintf(sn_buffer + strlen(sn_buffer), "%07d", serial);
+        snprintf(sn_buffer + sn_len, sizeof(sn_buffer) - sn_len, "%07u", (unsigned)serial);
     } else {
-        sprintf(sn_buffer + strlen(sn_buffer), "%08d", serial);
+        snprintf(sn_buffer + sn_len, sizeof(sn_buffer) - sn_len, "%08u", (unsigned)serial);
     }
 
     sprintf(str_sn_dev, "%s", sn_buffer);
@@ -1209,13 +1233,17 @@ void LCD_Battery(uint16_t precent, uint16_t state_flashing)
 //===========================================================================================================================
 void LCD_DataTime(struct tm*tm_ptr, uint8_t rank, uint8_t state_flashing)
 {
-	uint8_t rank_f = 0;
-	sprintf(str_lcd, "%.2d.%.2d.%.4d %.2d:%.2d",
-			tm_ptr->tm_mday,
-			tm_ptr->tm_mon + 1,
-			(tm_ptr->tm_year + 1900),
-			tm_ptr->tm_hour,
-			tm_ptr->tm_min);
+	/* str_lcd объявлен как uint8_t[30], отсюда (char*)-каст (как в
+	   LCD_Battery) - иначе -Wpointer-sign; snprintf с sizeof + аргументы в
+	   фактических диапазонах полей tm закрывают -Wformat-overflow и
+	   -Wformat-truncation. Реальный вывод "31.12.2026 23:59" = 16 + '\0';
+	   позиции символов для b_idx (мигание разряда) при этом не меняются. */
+	snprintf((char*)str_lcd, sizeof(str_lcd), "%.2d.%.2d.%.4d %.2d:%.2d",
+			(uint8_t)tm_ptr->tm_mday,
+			(uint8_t)(tm_ptr->tm_mon + 1),
+			(uint16_t)(tm_ptr->tm_year + 1900),
+			(uint8_t)tm_ptr->tm_hour,
+			(uint8_t)tm_ptr->tm_min);
 	//-------------------------------
 	int8_t b_idx = -1; // Индекс мигающего символа
 
@@ -1244,14 +1272,16 @@ void LCD_DataTime(struct tm*tm_ptr, uint8_t rank, uint8_t state_flashing)
 	}
 
 	// Вызываем общую функцию (ОК - rank 12, Back - rank 13)
-	ui_update_input_panel_head_enter(str_lcd, rank, b_idx, 12, 13, ROLLER_DATATIME);
+	ui_update_input_panel_head_enter((const char*)str_lcd, rank, b_idx, 12, 13, ROLLER_DATATIME);
 }
 
 //===========================================================================================================================
 void LCD_Data(struct tm*tm_ptr, uint8_t rank, uint8_t state_flashing)
 {
-	uint8_t rank_f = 0;
-	sprintf(str_lcd, "%.2d.%.2d.%.4d", tm_ptr->tm_mday, tm_ptr->tm_mon + 1, (tm_ptr->tm_year + 1900));
+	/* (char*)-каст и snprintf - см. LCD_DataTime; поля tm в своих диапазонах. */
+	snprintf((char*)str_lcd, sizeof(str_lcd), "%.2d.%.2d.%.4d",
+			 (uint8_t)tm_ptr->tm_mday, (uint8_t)(tm_ptr->tm_mon + 1),
+			 (uint16_t)(tm_ptr->tm_year + 1900));
 	//-------------------------------
 	int8_t b_idx = -1;
     if (state_flashing) {
@@ -1267,14 +1297,15 @@ void LCD_Data(struct tm*tm_ptr, uint8_t rank, uint8_t state_flashing)
             default: b_idx = -1; break;
         }
     }
-    ui_update_input_panel_head_enter(str_lcd, rank, b_idx, 9, 8, ROLLER_DATA);
+    ui_update_input_panel_head_enter((const char*)str_lcd, rank, b_idx, 9, 8, ROLLER_DATA);
 }
 
 //===========================================================================================================================
 void LCD_Time(struct tm*tm_ptr, uint8_t rank, uint8_t state_flashing)
 {
-	uint8_t rank_f = 0;
-	sprintf(str_lcd, "%.2d:%.2d", tm_ptr->tm_hour, tm_ptr->tm_min);
+	/* (char*)-каст и snprintf - см. LCD_DataTime; поля tm в своих диапазонах. */
+	snprintf((char*)str_lcd, sizeof(str_lcd), "%.2d:%.2d",
+			 (uint8_t)tm_ptr->tm_hour, (uint8_t)tm_ptr->tm_min);
     //-------------------------------
     int8_t b_idx = -1;
     if (state_flashing) {
@@ -1287,19 +1318,20 @@ void LCD_Time(struct tm*tm_ptr, uint8_t rank, uint8_t state_flashing)
         }
     }
     // Кнопки OK/Back для времени (rank 12 и 13 или ваши значения)
-    ui_update_input_panel_head_enter(str_lcd, rank, b_idx, 13, 12, ROLLER_TIME);
+    ui_update_input_panel_head_enter((const char*)str_lcd, rank, b_idx, 13, 12, ROLLER_TIME);
 }
 
 //===========================================================================================================================
 // Отображение целого числа и мигание разрядом
 void LCD_Digit_int_flashing_password(uint32_t data, uint8_t rank, uint8_t state_flashing)
 {
-	uint8_t rank_f = 0;
-    sprintf(str_lcd, "%03d", data);
+    /* data - uint32_t: %u и (unsigned) (-Wformat), (char*)-каст потому что
+       str_lcd это uint8_t[] (-Wpointer-sign). */
+    snprintf((char*)str_lcd, sizeof(str_lcd), "%03u", (unsigned)data);
     //-------------------------------
 	int8_t b_idx = (state_flashing && rank >= 2 && rank <= 4) ? (rank - 2) : -1;
 
-	ui_update_input_panel_head_enter(str_lcd, rank, b_idx, 5, 6, ROLLER_PASSWORD);
+	ui_update_input_panel_head_enter((const char*)str_lcd, rank, b_idx, 5, 6, ROLLER_PASSWORD);
 }
 
 //===========================================================================================================================
@@ -1315,10 +1347,12 @@ void LCD_TimeHead(struct tm*tm_ptr)
 //===========================================================================================================================
 void LCD_CountdownSetTimer(uint32_t data, uint16_t roller)
 {
-	len_str = sprintf(str_lcd, "%d", data);
+	/* data - uint32_t: %u и (unsigned) (-Wformat); snprintf с sizeof и
+	   (char*)-каст (-Wpointer-sign); snprintf возвращает int, len_str uint8_t. */
+	len_str = (uint8_t)snprintf((char*)str_lcd, sizeof(str_lcd), "%u", (unsigned)data);
 	//-------------------------------
 	ui_set_label_text(ui_LabelSetEnter, _(text_labels[roller]));
-	ui_set_label_text(ui_LabelSetEnter, str_lcd);
+	ui_set_label_text(ui_LabelSetEnter, (const char*)str_lcd);
 	memset(str_lcd, 0, sizeof(str_lcd));
 	//-------------------------------
 	ui_next_state.head_timer = false;

@@ -229,13 +229,18 @@ int log_ptr_save(const SNS_CFG *pSnsCfg)
 }
 
 //===========================================================================================================================
-// Банк и страница
-static uint32_t GetBank(uint32_t addr)
+// Банк и страница ВНУТРЕННЕЙ flash. Сейчас не вызываются: конфигурация и
+// журнал переехали во внешнюю SPI-flash (extstore/sfmap.h), а бренд прибора
+// только читается (Init_Build_Type). Помощники оставлены под будущую запись во
+// внутреннюю flash (Internal_Flash_Write - карта в Vector_main.h, страница
+// FLASH_ADDRESS_BUILD_TYPE), поэтому __attribute__((unused)): иначе -Wall даёт
+// -Wunused-function. Из сборки не вырезаются.
+static __attribute__((unused)) uint32_t GetBank(uint32_t addr)
 {
 	return (addr < 0x08080000u) ? FLASH_BANK_1 : FLASH_BANK_2;
 }
 
-static uint32_t GetPage(uint32_t addr)
+static __attribute__((unused)) uint32_t GetPage(uint32_t addr)
 {
 	uint32_t base = (addr < 0x08080000u) ? 0x08000000u : 0x08080000u;
 	return (addr - base) / FLASH_PAGE_SIZE;

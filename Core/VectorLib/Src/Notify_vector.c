@@ -194,7 +194,12 @@ void Notify_Tick(void)
   /* 2) Запрос старта - применяем с учётом приоритета.                       */
   if (s_req_seq != NULL)
   {
-    const notify_seq_t *ns = s_req_seq;
+    /* s_req_seq объявлен volatile (пишут чужие потоки): читаем ОДИН раз и
+       явным приведением снимаем volatile - дальше указателем владеет движок
+       (s_seq не volatile). Сами сценарии - const-данные во flash, поэтому
+       снятие квалификатора безопасно; без каста GCC ругался
+       -Wdiscarded-qualifiers.                                              */
+    const notify_seq_t *ns = (const notify_seq_t *)s_req_seq;
     s_req_seq = NULL;
     if ((s_seq == NULL) || (ns->prio >= s_seq->prio))
     {
