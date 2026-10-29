@@ -45,6 +45,8 @@
 
 #if CONFIG_DISPLAY
 
+time_t  tmp_current = 0; // Время текущее
+
 volatile menu_status_t menu_status = {0};
 
 /* Тайминги кнопок (мс; button_count считает TIM3 1 кГц = мс). */
@@ -81,13 +83,15 @@ static uint8_t scroll_up(uint8_t current, uint8_t max)
 
 /* WEAK-хуки: каркас работает и без них (пустые), LVGL-порт/слой индикации
    замещают их своей реализацией без правки этого файла.                     */
-__attribute__((weak)) void Menu_Draw(void)
+void Menu_Draw(void)
 {
   /* TODO(LVGL-порт, этап 2c): аналог DisplayIndication - обновить виджеты
      текущего экрана: значения из sensors_status (T/H/P, батарея, ориентация),
      иконки статусов (SET_MUTE/BLE/GPS/LORA/LTE/EXCHANGE из ST_COMMON_BIT_*),
      время (Working_data.working_hours), Connected_device (данные Avis по BLE).
      Рисовать из LVGL Task или отсюда - решит порт (владелец дисплея один).  */
+	tmp_current = (time_t)(Sns_Cfg_struct.Working_data.working_hours +
+			Sns_Cfg_struct.Working_data.working_hours_offset);
 }
 
 /* ============================================================================
@@ -215,6 +219,14 @@ static void menu_navigate(void)
   uint8_t g2 = Menu_Gesture(2u);
   uint8_t g3 = Menu_Gesture(3u);
 
+
+  if (g2 == (uint8_t)GEST_LONG)
+  {
+    /* TODO(автор): отключение прибора (device_turn = DEVICE_TURNED_OFF,
+       событие TYPE_TURN_OFF в журнал, счётчик обратного отсчёта на
+       экране). Здесь намеренно ничего не делаем.                        */
+    LOG_D(VLOG_M_SYS, "menu: MAIN long press (turn-off not implemented)");
+  }
   /* ПРИОРИТЕТ ЖЕСТОВ ПОСТОЯННЫЙ (замечание автора п.3): на каждом
      экране цепочка else-if ВСЕГДА начинается с Button1 (вход/назад - важнее
      скролла), затем Button2 (вниз), затем Button3 (вверх); внутри кнопки
@@ -223,73 +235,48 @@ static void menu_navigate(void)
   {
     /* Заставка: любое короткое нажатие - на главный. */
     case SCREEN_START:
-      if ((g1 == (uint8_t)GEST_SHORT) || (g2 == (uint8_t)GEST_SHORT) ||
-          (g3 == (uint8_t)GEST_SHORT))
-      {
-        Menu_GoTo((uint8_t)SCREEN_MAIN);
-      }
-      break;
 
+      break;
     /* Главный экран (Avis: STATE_SCREEN_MEASURE).
        LONG Button1 в Avis - отключение прибора с обратным отсчётом: у нас
        обработчика выключения ещё нет (PLAN этап 6, TYPE_TURN_OFF) - оставлен
        хук-заглушка, чтобы не потерять жест.                                 */
-    case SCREEN_MAIN:
-      if (g1 == (uint8_t)GEST_LONG)
+    case SCREEN_MEASURE:
+	    const uint8_t setting_screens[] = {
+	    		SCREEN_MEASURE,
+				SCREEN_MENU,
+				SCREEN_VOICE_MESSAGE,
+				SCREEN_TEXT_MESSAGE,
+	    };
+
+	   uint8_t sub = 0;
+      if (g2 == (uint8_t)GEST_SHORT)
       {
-        /* TODO(автор): отключение прибора (device_turn = DEVICE_TURNED_OFF,
-           событие TYPE_TURN_OFF в журнал, счётчик обратного отсчёта на
-           экране). Здесь намеренно ничего не делаем.                        */
-        LOG_D(VLOG_M_SYS, "menu: MAIN long press (turn-off not implemented)");
-      }
-      else if (g1 == (uint8_t)GEST_SHORT)
-      {
-        Menu_GoTo((uint8_t)SCREEN_MEASUREMENTS);
-      }
-      else if (g2 == (uint8_t)GEST_SHORT)
-      {
-        Menu_GoTo((uint8_t)SCREEN_MENU);
+    	  menu_status.state_menu = scroll_down(menu_status.state_menu, 6);
       }
       else if (g3 == (uint8_t)GEST_SHORT)
       {
-        Menu_GoTo((uint8_t)SCREEN_TEST_SOUND);
+    	  menu_status.state_menu = scroll_up(menu_status.state_menu, 6);
       }
+      else if (g3 == (uint8_t)GEST_LONG){
+    	  if(menu_status.state_menu == 5){
+    		  sub = 2;
+    	  }
+    	  else if(menu_status.state_menu == 6){
+    		  sub = 3;
+    	  }
+      }
+      else if (g3 == (uint8_t)GEST_DOUBLE)
+      {
+    	  sub = 1;
+    	  menu_status.state_menu = 0;
+      }
+
+      Menu_GoTo(setting_screens[sub]);
       break;
 
-    /* Измерения: Button1 - назад на главный (приоритет), Button2/Button3 -
-       листать каналы/страницы (когда автор определит состав).               */
-    case SCREEN_MEASUREMENTS:
-      if (g1 == (uint8_t)GEST_SHORT)
-      {
-        Menu_GoTo((uint8_t)SCREEN_MAIN);
-      }
-      else if (g2 == (uint8_t)GEST_SHORT)
-      {
-        menu_status.state_submenu = scroll_down(menu_status.state_submenu, MENU_ITEMS_COUNT);
-      }
-      else if (g3 == (uint8_t)GEST_SHORT)
-      {
-        menu_status.state_submenu = scroll_up(menu_status.state_submenu, MENU_ITEMS_COUNT);
-      }
-      break;
-
-    /* Меню: Button1 SHORT - войти в пункт, Button1 LONG - назад на главный
-       (ВСЕГДА раньше скролла - ); Button2 вниз, Button3 вверх (Avis:
-       scroll_down/scroll_up). Пункты и куда они ведут - таблица автора
-       (пока цикл по экранам).                                               */
     case SCREEN_MENU:
-      if (g1 == (uint8_t)GEST_LONG)
-      {
-        Menu_GoTo((uint8_t)SCREEN_MAIN);
-      }
-      else if (g1 == (uint8_t)GEST_SHORT)
-      {
-        /* TODO(автор): switch (menu_status.state_menu) - переход в конкретный
-           подраздел (инфо/настройки/сервис/калибровка/тест звука). Пока -
-           демо-переход в тест звука как единственный реализованный подраздел. */
-        Menu_GoTo((uint8_t)SCREEN_TEST_SOUND);
-      }
-      else if (g2 == (uint8_t)GEST_SHORT)
+      if (g2 == (uint8_t)GEST_SHORT)
       {
         menu_status.state_menu = scroll_down(menu_status.state_menu, MENU_ITEMS_COUNT);
       }
@@ -297,28 +284,13 @@ static void menu_navigate(void)
       {
         menu_status.state_menu = scroll_up(menu_status.state_menu, MENU_ITEMS_COUNT);
       }
-      break;
-
-    /* Тест звука: Button1 SHORT/LONG - назад (приоритет); Button2/Button3 -
-       выбор звука (скролл). Проигрыватель запускает порт/слой индикации
-       (audio_play_now(SND_*)), каркас звук не трогает.                      */
-    case SCREEN_TEST_SOUND:
-      if ((g1 == (uint8_t)GEST_SHORT) || (g1 == (uint8_t)GEST_LONG))
-      {
-        Menu_GoTo((uint8_t)SCREEN_MENU);
-      }
-      else if (g2 == (uint8_t)GEST_SHORT)
-      {
-        menu_status.state_submenu = scroll_down(menu_status.state_submenu, MENU_ITEMS_COUNT);
-      }
-      else if (g3 == (uint8_t)GEST_SHORT)
-      {
-        menu_status.state_submenu = scroll_up(menu_status.state_submenu, MENU_ITEMS_COUNT);
+      else if (g2 == (uint8_t)GEST_LONG){
+    	  Menu_GoTo((uint8_t)SCREEN_MEASURE);
       }
       break;
 
     default:
-      Menu_GoTo((uint8_t)SCREEN_MAIN);
+      Menu_GoTo((uint8_t)SCREEN_MEASURE);
       break;
   }
 
@@ -372,16 +344,16 @@ void Menu_Run(void)
   if (TEST_TIMER_RTC(TIMER_RTC_MAIN_RESET) != 0)
   {
     RESET_TIMER_RTC(TIMER_RTC_MAIN_RESET);
-    if (menu_status.screen != (uint8_t)SCREEN_MAIN)
+    if (menu_status.screen != (uint8_t)SCREEN_MEASURE)
     {
-      LOG_D(VLOG_M_SYS, "menu: auto-return to MAIN");
-      Menu_GoTo((uint8_t)SCREEN_MAIN);
+      LOG_D(VLOG_M_SYS, "menu: auto-return to SCREEN_MEASURE");
+      Menu_GoTo((uint8_t)SCREEN_MEASURE);
     }
   }
 
   /* Avis Button_Menu(): при возврате на главный экран - сохранить конфиг,
      если в меню что-то меняли.                                              */
-  if ((menu_status.screen == (uint8_t)SCREEN_MAIN) && (menu_status.dirty_data != 0u))
+  if ((menu_status.screen == (uint8_t)SCREEN_MEASURE) && (menu_status.dirty_data != 0u))
   {
     menu_status.dirty_data = 0u;
     SaveConfig = 1u;

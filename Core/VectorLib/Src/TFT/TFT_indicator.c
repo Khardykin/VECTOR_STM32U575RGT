@@ -63,12 +63,7 @@ typedef struct {
 static const screen_map_t scr_map[] = {
 	{SCREEN_START,  		&ui_ScreenStart,	ui_ScreenStart_screen_init},
 
-	{SCREEN_MEASURE_0,	&ui_ScreenMeasurements,      ui_ScreenMeasurements_screen_init},
-	{SCREEN_MEASURE_1,  &ui_ScreenMeasurements,      ui_ScreenMeasurements_screen_init},
-	{SCREEN_MEASURE_2,  &ui_ScreenMeasurements,      ui_ScreenMeasurements_screen_init},
-	{SCREEN_MEASURE_3, 	&ui_ScreenMeasurements,      ui_ScreenMeasurements_screen_init},
-	{SCREEN_MEASURE_4,  &ui_ScreenMeasurements,      ui_ScreenMeasurements_screen_init},
-	{SCREEN_MEASURE_5,  &ui_ScreenMeasurements,      ui_ScreenMeasurements_screen_init},
+	{SCREEN_MEASURE,		&ui_ScreenMeasurements,      ui_ScreenMeasurements_screen_init},
 	// Menu
 	{SCREEN_MENU,			&ui_ScreenMenu,		ui_ScreenMenu_screen_init},
 	// Info
@@ -135,15 +130,15 @@ const char * num_channel[2] = {
 
 //===========================================================================================================================
 // Массивы ключей переводов для ошибок (в Flash-памяти)
-const char* const error_keys_chan[10] = {
-    "Порог 1",            // 0 - ST_BIT_LIMIT1
-    "Порог 2",            // 1 - ST_BIT_LIMIT2
-    "Порог 3",            // 2 - ST_BIT_LIMIT3
-    "Прев. STEL",         // 3 - ST_BIT_LIMIT_STEL
-    "Прев. TWA",          // 4 - ST_BIT_LIMIT_TWA
-    "Прев. диапазона",    // 5 - ST_BIT_EXCEEDED_THE_RANGE
-    "Ошибка сенсора",     // 6 - ST_BIT_SENSOR_FAILED
-};
+//const char* const error_keys_chan[10] = {
+//    "Порог 1",            // 0 - ST_BIT_LIMIT1
+//    "Порог 2",            // 1 - ST_BIT_LIMIT2
+//    "Порог 3",            // 2 - ST_BIT_LIMIT3
+//    "Прев. STEL",         // 3 - ST_BIT_LIMIT_STEL
+//    "Прев. TWA",          // 4 - ST_BIT_LIMIT_TWA
+//    "Прев. диапазона",    // 5 - ST_BIT_EXCEEDED_THE_RANGE
+//    "Ошибка сенсора",     // 6 - ST_BIT_SENSOR_FAILED
+//};
 
 const char* const error_keys_sys[12] = {
     "Низкий заряд АКБ",       // 2 - ST_COMMON_BIT_CRITICAL_LOW_BATTERY
@@ -337,6 +332,29 @@ static void ui_update_input_panel_head_enter(const char * text, int8_t rank, int
     ui_next_state.head_enter = false;
 }
 
+static void ui_update_input_panel_head_button(uint16_t enter)
+{
+    // Защита от выхода за пределы массива
+    if (enter >= ROLLER_HEAD_END) return;
+
+    const ui_button_cfg_t *cfg = &btn_table[enter];
+
+    // 1. Текст с переводом
+    ui_set_label_text(ui_LabelOk, _(cfg->ok_key));
+    ui_set_label_text(ui_LabelBack, _(cfg->back_key));
+
+    // 2. Геометрия
+    ui_set_obj_size(ui_LabelOk, cfg->width, 44);
+    ui_set_obj_size(ui_LabelBack, cfg->width, 44);
+
+    // 3. Выравнивание и позиция
+    ui_set_obj_align(ui_LabelOk, cfg->align_ok);
+    ui_set_obj_align(ui_LabelBack, cfg->align_back);
+
+    ui_set_obj_pos(ui_LabelOk, cfg->ok_x, cfg->ok_y);
+    ui_set_obj_pos(ui_LabelBack, cfg->back_x, cfg->back_y);
+}
+
 //===========================================================================================================================
 // Заполнение двух колонок:
 // left_lbl  -> ВСЕ названия текущей страницы (с start_idx по start_idx + count_on_page)
@@ -406,15 +424,16 @@ static void LCD_FormatErrorText(char *out_buf, uint8_t buf_size,
 {
     out_buf[0] = '\0';
 
-    if (item->category == 0) {
-        // Ошибка канала: "Порог 1, CO2"
-        if ((item->channel < COUNT_CHAN) && (item->error_bit < 10)) {
-            snprintf(out_buf, buf_size, "%s, %s",
-                    _(error_keys_chan[item->error_bit]),
-                    pSnsCfg->Sensor[item->channel].MolecularFormula);
-        }
-    }
-    else if (item->category == 1) {
+//    if (item->category == 0) {
+//        // Ошибка канала: "Порог 1, CO2"
+//        if ((item->channel < COUNT_CHAN) && (item->error_bit < 10)) {
+//            snprintf(out_buf, buf_size, "%s, %s",
+//                    _(error_keys_chan[item->error_bit]),
+//                    pSnsCfg->Sensor[item->channel].MolecularFormula);
+//        }
+//    }
+//    else
+    	if (item->category == 1) {
         // Системная ошибка
         if (item->error_bit < 12) {
             snprintf(out_buf, buf_size, "%s", _(error_keys_sys[item->error_bit]));
@@ -433,22 +452,20 @@ static void LCD_FormatErrorText(char *out_buf, uint8_t buf_size,
 static uint32_t LCD_CalculateErrorHash(SNS_CFG *pSnsCfg)
 {
     // Статические переменные хранят предыдущее состояние между вызовами
-    static uint32_t prev_chan_err[COUNT_CHAN] = {0};
+//    static uint32_t prev_chan_err[COUNT_CHAN] = {0};
     static uint32_t prev_sys_err = 0;
-    static uint8_t prev_lora = 0;
-
     uint8_t changed = 0;
 
     // 1. Проверяем каждый канал отдельно
-    for(uint8_t ch = 0; ch < COUNT_CHAN; ch++) {
-        uint32_t curr = pSnsCfg->Sensor[ch].StateErr & ERROR_MASK_ST_1;
-
-        // Сравниваем с предыдущим значением ЭТОГО канала
-        if(curr != prev_chan_err[ch]) {
-            changed = 1;
-            prev_chan_err[ch] = curr;  // Обновляем сохранённое значение
-        }
-    }
+//    for(uint8_t ch = 0; ch < COUNT_CHAN; ch++) {
+//        uint32_t curr = pSnsCfg->Sensor[ch].StateErr & ERROR_MASK_ST_1;
+//
+//        // Сравниваем с предыдущим значением ЭТОГО канала
+//        if(curr != prev_chan_err[ch]) {
+//            changed = 1;
+//            prev_chan_err[ch] = curr;  // Обновляем сохранённое значение
+//        }
+//    }
 
     // 2. Проверяем системные ошибки
     uint32_t curr_sys = pSnsCfg->Config_common.StateErr & ERROR_MASK_ST_2;
@@ -459,6 +476,7 @@ static uint32_t LCD_CalculateErrorHash(SNS_CFG *pSnsCfg)
 
     // 3. Проверяем LORA
     #if CONFIG_LORA
+    static uint8_t prev_lora = 0;
     uint8_t curr_lora = Lora_GetControlLora() & 0xFF;
     if(curr_lora != prev_lora) {
         changed = 1;
@@ -475,22 +493,22 @@ void LCD_BuildErrorQueue(SNS_CFG *pSnsCfg)
 {
     LCD_ClearErrorQueue();
 
-    // 1. Ошибки каналов
-    for (uint8_t ch = 0; ch < COUNT_CHAN; ch++) {
-        if (TESTBIT(pSnsCfg->Sensor[ch].State, ST_BIT_CHANNEL_TURN_OFF)) continue;
-
-        uint32_t err_mask = pSnsCfg->Sensor[ch].StateErr & ERROR_MASK_ST_1;
-
-        for (uint8_t bit = 0; bit < 10; bit++) {
-            if ((TESTBIT(err_mask, bit)) && (error_queue_count < MAX_ERROR_QUEUE)) {
-                error_queue[error_queue_count].channel = ch;
-                error_queue[error_queue_count].category = 0;
-                error_queue[error_queue_count].error_bit = bit;
-                error_queue[error_queue_count].key = (0 << 8) | (ch << 4) | bit;
-                error_queue_count++;
-            }
-        }
-    }
+    // 1. Ошибки каналов todo по каналам не будет , надо убрать
+//    for (uint8_t ch = 0; ch < COUNT_CHAN; ch++) {
+//        if (TESTBIT(pSnsCfg->Sensor[ch].State, ST_BIT_CHANNEL_TURN_OFF)) continue;
+//
+//        uint32_t err_mask = pSnsCfg->Sensor[ch].StateErr & ERROR_MASK_ST_1;
+//
+//        for (uint8_t bit = 0; bit < 10; bit++) {
+//            if ((TESTBIT(err_mask, bit)) && (error_queue_count < MAX_ERROR_QUEUE)) {
+//                error_queue[error_queue_count].channel = ch;
+//                error_queue[error_queue_count].category = 0;
+//                error_queue[error_queue_count].error_bit = bit;
+//                error_queue[error_queue_count].key = (0 << 8) | (ch << 4) | bit;
+//                error_queue_count++;
+//            }
+//        }
+//    }
 
     // 2. Системные ошибки
     uint32_t sys_err_mask = pSnsCfg->Config_common.StateErr & ERROR_MASK_ST_2;
@@ -571,27 +589,27 @@ void LCD_UpdateErrorDisplay(SNS_CFG *pSnsCfg, uint8_t state_flashing)
                                &error_queue[error_display_index], pSnsCfg);
 
             // 1. Получаем ширину виджета
-            lv_coord_t label_width = lv_obj_get_width(ui_LabelInfoStr);
+//            lv_coord_t label_width = lv_obj_get_width(ui_LabelInfoStr);
 
             // 2. Вычисляем ширину текста в пикселях
-            lv_point_t txt_size;
-            lv_txt_get_size(&txt_size, current_error_text,
-                           lv_obj_get_style_text_font(ui_LabelInfoStr, LV_PART_MAIN),
-                           0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+//            lv_point_t txt_size;
+//            lv_txt_get_size(&txt_size, current_error_text,
+//                           lv_obj_get_style_text_font(ui_LabelInfoStr, LV_PART_MAIN),
+//                           0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
 
             // Выбираем режим в зависимости от длины текста
-            lv_label_long_mode_t needed_mode = (txt_size.x > label_width) ?
-                                               LV_LABEL_LONG_SCROLL : LV_LABEL_LONG_CLIP;
+//            lv_label_long_mode_t needed_mode = (txt_size.x > label_width) ?
+//                                               LV_LABEL_LONG_SCROLL : LV_LABEL_LONG_CLIP;
 
             // Устанавливаем режим ТОЛЬКО если он изменился
-            ui_set_label_long_mode(ui_LabelInfoStr, needed_mode);
+//            ui_set_label_long_mode(ui_LabelInfoStr, needed_mode);
 
-            ui_set_label_text(ui_LabelInfoStr, current_error_text);
+//            ui_set_label_text(ui_LabelInfoStr, current_error_text);
             ui_next_state.info_str = false;
         }
     }
     else {
-    	lv_label_set_long_mode(ui_LabelInfoStr, LV_LABEL_LONG_CLIP);
+//    	lv_label_set_long_mode(ui_LabelInfoStr, LV_LABEL_LONG_CLIP);
         ui_next_state.info_str = true;
     }
 }
@@ -882,7 +900,6 @@ void ui_reset_visibility_flags(void)
     ui_next_state.info_str   	= true;
     ui_next_state.head_enter 	= true;
     ui_next_state.head_out   	= true;
-    ui_next_state.head_menu  	= true;
     ui_next_state.head_timer 	= true;
 }
 
@@ -899,8 +916,7 @@ void ui_apply_visibility(void)
     ui_set_obj_hidden(ui_ImageGPS,       ui_next_state.gps);
     ui_set_obj_hidden(ui_ImageBLE,       ui_next_state.ble);
     ui_set_obj_hidden(ui_ImageExchange,    ui_next_state.exchange);
-    ui_set_obj_hidden(ui_ImageLTE,       ui_next_state.lte);
-    ui_set_obj_hidden(ui_ImageLTEvec,    ui_next_state.lte_vec);
+
 }
 
 //===========================================================================================================================
@@ -929,8 +945,8 @@ void LCD_SubMenu_Single(uint8_t num, uint16_t roller)
     if (roller >= ROLLER_END) return;
 
     // Текст на основной панели
-    ui_set_obj_align(LabelLeft0, LV_ALIGN_CENTER);
-    ui_set_label_text(LabelLeft0, _(text_labels[roller])); // или ваш источник текста
+    ui_set_obj_align(ui_LabelLeft0, LV_ALIGN_CENTER);
+    ui_set_label_text(ui_LabelLeft0, _(text_labels[roller])); // или ваш источник текста
 	//-------------------------------
 }
 
@@ -1042,7 +1058,7 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
 
     // --- 6. Расчет страниц ---
 #if (CONFIG_MODEL_LCD == 0)
-    const uint8_t LINES_PER_PAGE = 2;
+    const uint8_t LINES_PER_PAGE = 5;
 #elif (CONFIG_MODEL_LCD == 1)
     const uint8_t LINES_PER_PAGE = 5;
 #endif
@@ -1065,7 +1081,9 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
     }
 
     // --- 7. Отрисовка ---
-    LCD_Fill_Info_Page(ui_LabelInfoLeft, ui_LabelInfoRight, labels, values, start_idx, count_on_page);
+    // TODO тут панель сделать Panel1 сделать heigh y = 25,
+    // У LabelLeft1 и ui_LabelRight1 align left top
+    LCD_Fill_Info_Page(ui_LabelLeft1, ui_LabelRight1, labels, values, start_idx, count_on_page);
 }
 
 //===========================================================================================================================
@@ -1074,69 +1092,14 @@ void LCD_SubMenuSetting(SNS_CFG *pSnsCfg, uint8_t num)
 	//-------------------------------
 	LCD_SubMenu_Single(0, ROLLER_SETTING);
 	//-------------------------------
-	uint8_t count_panels = 5;
+	uint8_t count_panels = 3;
 	lv_obj_t * labelsLeft[] = {ui_LabelLeft1, ui_LabelLeft2, ui_LabelLeft3};
     lv_obj_t * panels[] = { ui_Panel1, ui_Panel2, ui_Panel3};
 
 
     for(int i = 0; i < count_panels; i++) {
-    	// Если i == 5 (ui_PanelSetting6), включаем прозрачность для невыбранного состояния
-    	bool transparent = (i == 4);
-    	ui_menu_item_set_focus(ui_LabelLeft1[i], panels[i], (num == (i + 1)), transparent);
+    	ui_menu_item_set_focus(labelsLeft[i], panels[i], (num == i), 0);
     }
-}
-
-//===========================================================================================================================
-void LCD_SubMenuService(SNS_CFG *pSnsCfg, uint8_t num)
-{
-	//-------------------------------
-	LCD_SubMenu_Single(num, ROLLER_MENU_SERVICE);
-	//-------------------------------
-#if (CONFIG_MODEL_LCD == 0)
-	uint8_t count_panels = 6;
-#elif (CONFIG_MODEL_LCD == 1)
-	uint8_t count_panels = 3;
-#endif
-    lv_obj_t * labels[] = { ui_LabelServiceMenu1, ui_LabelServiceMenu2, ui_LabelServiceMenu3,
-                           ui_LabelServiceMenu4, ui_LabelServiceMenu5, ui_LabelServiceMenu6 };
-    lv_obj_t * panels[] = { ui_PanelServiceMenu1, ui_PanelServiceMenu2, ui_PanelServiceMenu3,
-                            ui_PanelServiceMenu4, ui_PanelServiceMenu5, ui_PanelServiceMenu6 };
-
-    for(int i = 0; i < count_panels; i++) {
-        // Элементы 4, 5 и 6 (индексы 3, 4, 5) помечаем как прозрачные
-        bool is_trans = (i >= 3);
-        ui_menu_item_set_focus(labels[i], panels[i], (num == (i + 1)), is_trans);
-    }
-
-#if (CONFIG_MODEL_LCD == 0)
-    if(TESTBIT(pSnsCfg->Config_common.State, ST_COMMON_BIT_TURN_ON_BLE)){
-    	ui_set_img_src(ui_ImageServiceMenu4, &ui_img_imagemenu_checked_png);
-	}
-	else{
-		ui_set_img_src(ui_ImageServiceMenu4, &ui_img_imagemenu_unchecked_png);
-	}
-
-	if(TESTBIT(pSnsCfg->Config_common.State, ST_COMMON_BIT_TURN_ON_LORA)){
-		ui_set_img_src(ui_ImageServiceMenu5, &ui_img_imagemenu_checked_png);
-	}
-	else{
-		ui_set_img_src(ui_ImageServiceMenu5, &ui_img_imagemenu_unchecked_png);
-	}
-
-	if(TESTBIT(pSnsCfg->Config_common.State, ST_COMMON_BIT_TURN_ON_GPS)){
-		ui_set_img_src(ui_ImageServiceMenu6, &ui_img_imagemenu_checked_png);
-	}
-	else{
-		ui_set_img_src(ui_ImageServiceMenu6, &ui_img_imagemenu_unchecked_png);
-	}
-	ui_set_obj_hidden(ui_PanelServiceMenu4, false);
-	ui_set_obj_hidden(ui_PanelServiceMenu5, false);
-	ui_set_obj_hidden(ui_PanelServiceMenu6, false);
-#elif (CONFIG_MODEL_LCD == 1)
-	ui_set_obj_hidden(ui_PanelServiceMenu4, true);
-	ui_set_obj_hidden(ui_PanelServiceMenu5, true);
-	ui_set_obj_hidden(ui_PanelServiceMenu6, true);
-#endif
 }
 
 //===========================================================================================================================
@@ -1236,7 +1199,7 @@ void LCD_DataTime(struct tm*tm_ptr, uint8_t rank, uint8_t state_flashing)
 	}
 
 	// Вызываем общую функцию (ОК - rank 12, Back - rank 13)
-	ui_update_input_panel_head_enter(str_lcd, rank, b_idx, 12, 13, ROLLER_ENTER_DATATIME);
+	ui_update_input_panel_head_enter(str_lcd, rank, b_idx, 12, 13, ROLLER_DATATIME);
 }
 
 //===========================================================================================================================
@@ -1259,7 +1222,7 @@ void LCD_Data(struct tm*tm_ptr, uint8_t rank, uint8_t state_flashing)
             default: b_idx = -1; break;
         }
     }
-    ui_update_input_panel_head_enter(str_lcd, rank, b_idx, 9, 8, ROLLER_ENTER_DATA);
+    ui_update_input_panel_head_enter(str_lcd, rank, b_idx, 9, 8, ROLLER_DATA);
 }
 
 //===========================================================================================================================
@@ -1279,7 +1242,7 @@ void LCD_Time(struct tm*tm_ptr, uint8_t rank, uint8_t state_flashing)
         }
     }
     // Кнопки OK/Back для времени (rank 12 и 13 или ваши значения)
-    ui_update_input_panel_head_enter(str_lcd, rank, b_idx, 13, 12, ROLLER_ENTER_TIME);
+    ui_update_input_panel_head_enter(str_lcd, rank, b_idx, 13, 12, ROLLER_TIME);
 }
 
 //===========================================================================================================================
@@ -1291,16 +1254,16 @@ void LCD_Digit_int_flashing_password(uint32_t data, uint8_t rank, uint8_t state_
     //-------------------------------
 	int8_t b_idx = (state_flashing && rank >= 2 && rank <= 4) ? (rank - 2) : -1;
 
-	ui_update_input_panel_head_enter(str_lcd, rank, b_idx, 5, 6, ROLLER_ENTER_PASSWORD);
+	ui_update_input_panel_head_enter(str_lcd, rank, b_idx, 5, 6, ROLLER_PASSWORD);
 }
 
 //===========================================================================================================================
 void LCD_TimeHead(struct tm*tm_ptr)
 {
-	len_str = sprintf(str_lcd, "%.2d:%.2d", tm_ptr->tm_hour, tm_ptr->tm_min);
-	//-------------------------------
-	ui_set_label_text(ui_LabelTime, str_lcd);
-	memset(&str_lcd, 0, sizeof(str_lcd));
+//	len_str = sprintf(str_lcd, "%.2d:%.2d", tm_ptr->tm_hour, tm_ptr->tm_min);
+//	//-------------------------------
+//	ui_set_label_text(ui_LabelTime, str_lcd);
+//	memset(&str_lcd, 0, sizeof(str_lcd));
 	//-------------------------------
 }
 
@@ -1309,8 +1272,8 @@ void LCD_CountdownSetTimer(uint32_t data, uint16_t roller)
 {
 	len_str = sprintf(str_lcd, "%d", data);
 	//-------------------------------
-	ui_set_label_text(ui_LabelSetHeadTimer, _(text_labels[roller]));
-	ui_set_label_text(ui_LabelSetTimer, str_lcd);
+	ui_set_label_text(ui_LabelSetEnter, _(text_labels[roller]));
+	ui_set_label_text(ui_LabelSetEnter, str_lcd);
 	memset(str_lcd, 0, sizeof(str_lcd));
 	//-------------------------------
 	ui_next_state.head_timer = false;
@@ -1351,9 +1314,9 @@ void LCD_ToWarm(SNS_CFG *pSnsCfg, uint16_t num, uint8_t chan)
 //===========================================================================================================================
 void LCD_Firmware(void)
 {
-	sprintf(str_lcd, _("Прошивка"));
-	ui_set_label_text(ui_LabelInfoStr, str_lcd);
-	ui_next_state.info_str = false;
+//	sprintf(str_lcd, _("Прошивка"));
+//	ui_set_label_text(ui_LabelInfoStr, str_lcd);
+//	ui_next_state.info_str = false;
 }
 
 #endif

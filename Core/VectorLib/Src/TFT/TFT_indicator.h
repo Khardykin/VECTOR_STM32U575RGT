@@ -52,33 +52,9 @@ enum{
 	ROLLER_HEAD_SAVE,
 	ROLLER_HEAD_WAIT,
 	ROLLER_HEAD_LANGUAGE,
-	ROLLER_HEAD_COUNT_CALIB,
-	ROLLER_HEAD_CONFIRM,
-	ROLLER_HEAD_RESTART,
 	ROLLER_HEAD_END
 };
 //--------------------------------------------------------------------------------------------------------------
-typedef struct
-{
-	uint8_t type_calib;
-	uint16_t calib_flag_start;
-	uint16_t calib_flag;
-	uint16_t calib_flag_disp;
-	uint16_t calib_flag_state;
-	uint32_t calib_time;
-} CALIB_CFG;
-typedef struct
-{
-	uint8_t state_menu;
-	uint8_t state_submenu;
-	uint8_t state_submenu1;
-	uint8_t state_submenu2;
-	uint8_t state_submenu3;
-	uint8_t state_set_input;
-	uint8_t dirty_data;		// Данные изменены, сохранить
-	CALIB_CFG calib;
-} STATE_MENU;
-
 typedef struct {
     bool mirax;
     bool info_str;
@@ -97,7 +73,7 @@ typedef struct {
     bool lte_vec;
 } ui_visibility_state_t;
 //===========================================================================================================================
-// Структура для очереди ошибок (без текста - экономия RAM)
+// Структура для очереди ошибок (без текста - экономия RAM) todo убрать по кнаалам и оставить системные и статус lora
 typedef struct {
     uint8_t channel;      // 0..7 для каналов, 0xFF для системных, 0xFE для LORA
     uint8_t category;     // 0=канал, 1=системная, 2=LORA

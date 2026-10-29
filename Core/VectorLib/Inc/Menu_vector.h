@@ -56,12 +56,7 @@ typedef enum
 {
   SCREEN_START = 0,        /* ui_ScreenStart        - заставка при включении  */
   //------------------------------------------------------------------------------
-  SCREEN_MEASURE_0,     	/* ui_ScreenMeasurements - измерения               */
-  SCREEN_MEASURE_1,
-  SCREEN_MEASURE_2,
-  SCREEN_MEASURE_3,
-  SCREEN_MEASURE_4,
-  SCREEN_MEASURE_5,
+  SCREEN_MEASURE,     	/* ui_ScreenMeasurements - измерения               */
   //------------------------------------------------------------------------------
   SCREEN_MENU,             /* ui_ScreenMenu         - меню (скролл пунктов)   */
   //------------------------------------------------------------------------------
@@ -105,6 +100,7 @@ typedef struct
 
 extern volatile menu_status_t menu_status;
 
+extern time_t   tmp_current; // Время текущее
 /* Инициализация: SCREEN_START, сброс жестов/таймеров. КОНТЕКСТ: поток
    Measure Task (из Vector_Run_Pre_Init, один раз).                          */
 void Menu_Init(void);

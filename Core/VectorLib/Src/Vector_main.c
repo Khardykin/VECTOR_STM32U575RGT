@@ -678,7 +678,7 @@ void Vector_Run_Pre_Init(void)
        только %s %d %u %x %X %c %% - "%04x" печатался бы как есть, ломая
        строку и порядок аргументов (PLAN.md п.55).                          */
     LOG_I(VLOG_M_SYS, "config: loaded (wh_off=%u s, serial=%x%x)",
-          (uint32_t)Sns_Cfg_struct.Working_data.working_hours_offset,
+          (uint32_t)Sns_Cfg_struct.Working_data.working_hours,
           (uint32_t)Sns_Cfg_struct.Config_common.SerialHi,
           (uint32_t)Sns_Cfg_struct.Config_common.SerialLo);
   }

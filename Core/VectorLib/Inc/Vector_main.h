@@ -19,6 +19,7 @@
 #include "vector_config.h"
 
 #include <stdint.h>
+#include <stdio.h>
 
 #include "shared_types.h"
 #include "shared_macros.h"

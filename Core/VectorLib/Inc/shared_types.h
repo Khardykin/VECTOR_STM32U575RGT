@@ -212,6 +212,8 @@ extern volatile DOWN_TIMER_RTC 		countdown_time_rtc;	 /* секундные (RTC
 #define BAT_LIM_2_DEF			(3400u)
 #define BAT_LIM_1               (Sns_Cfg_struct.Config_common.battery_charge_volt_lim_1)//
 #define BAT_LIM_2               (Sns_Cfg_struct.Config_common.battery_charge_volt_lim_2)//
+#define DEL_BAT_PERCENT         (100.0/(BAT_MAX - BAT_MIN))
+#define BAT_LIM_PERCENT(x)		((uint16_t)(x - BAT_MIN)*DEL_BAT_PERCENT)
 //--------------------------------------------------------------------------------------------------------------
 /* Данные измерительных каналов (добавлено автором) - РЕЗЕРВ под перенос
    модели каналов с другого прибора (Avis/газоанализатор): экземпляр пока не
