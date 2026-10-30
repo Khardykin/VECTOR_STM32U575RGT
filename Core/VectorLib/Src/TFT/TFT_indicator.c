@@ -188,14 +188,14 @@ static uint16_t seg_battery_charge_flag = 0;
 //------------------------------------------------------------------------------
 /* Прототипы внутренних помощников слоя индикации.
    ЧАСТЬ ИЗ НИХ ПОКА НЕ ВЫЗЫВАЕТСЯ - заготовка под экраны, которых ещё нет
-   (ширина метки, перекрас картинок меню, кнопки панели ввода):
-   ui_set_obj_width, ui_menu_item_set_recolor,
+   (ширина метки, кнопки панели ввода): ui_set_obj_width,
    ui_update_input_panel_head_button. Их определения помечены
    __attribute__((unused)) - иначе -Wall даёт -Wunused-function. Из сборки они
    НЕ вырезаются (атрибут только глушит предупреждение): первый же вызов
    включает помощник в работу, снимать атрибут для этого не нужно.
-   ui_set_img_src / ui_set_obj_font / ui_set_label_long_mode из этого списка
-   убраны: их зовёт экран измерений (LCD_Measure), атрибут unused снят.    */
+   ui_set_img_src / ui_set_obj_font / ui_set_label_long_mode /
+   ui_menu_item_set_recolor из этого списка убраны: их зовёт экран измерений
+   (LCD_Measure / подсветка выбора «Сообщения»), атрибут unused снят.     */
 static void LCD_Refresh_Language(uint8_t new_lang);
 static void ui_set_label_text(lv_obj_t * obj, const char * text);
 static void ui_set_obj_size(lv_obj_t * obj, int32_t w, int32_t h);
@@ -297,7 +297,7 @@ static void ui_menu_item_set_focus(lv_obj_t * obj_text, lv_obj_t * obj_panel, bo
     }
 }
 
-static __attribute__((unused)) void ui_menu_item_set_recolor(lv_obj_t * obj_img, bool is_recolor_on)
+static void ui_menu_item_set_recolor(lv_obj_t * obj_img, bool is_recolor_on)
 {
     if (obj_img == NULL) return;
 
@@ -1318,12 +1318,14 @@ static const meas_layout_t meas_layout[MEAS_MODE_END] =
 		.img_src = NULL },
 
 	/* AQI (индекс качества воздуха): LabelMeas(0,30) цветом textcolor2
-	   (зелёный), ImageMeas и LabelMeasUnits скрыты */
+	   (зелёный), ImageMeas и LabelMeasUnits скрыты; подпись - справа сверху,
+	   на месте пары «подпись+иконка» из остальных режимов (в макете «AQI»
+	   стоит у правого края, иконки у режима нет) */
 	[MEAS_AQI] = {
 		.val_visible = 1, .name_visible = 1,
 		.img_align = LV_ALIGN_TOP_MID,
 		.val_x = 0, .val_y = 30, .val_align = LV_ALIGN_CENTER,
-		.name_x = 25, .name_y = 0, .name_align = LV_ALIGN_TOP_MID,
+		.name_x = 45, .name_y = 0, .name_align = LV_ALIGN_TOP_MID,
 		.units_x = 50, .units_y = 25, .units_align = LV_ALIGN_TOP_MID,
 		.name_font = &ui_font_number21, .units_font = &ui_font_number21,
 		.val_color2 = 1, .img_src = NULL },
@@ -1360,8 +1362,8 @@ static const meas_layout_t meas_layout[MEAS_MODE_END] =
 		.name_font = &ui_font_number21, .units_font = &ui_font_number21,
 		.img_src = &ui_img_imagemenu_chat_png },
 
-	/* RSSI: LabelMeasUnits скрыт; LabelMeasName(-40,10) играет роль единиц
-	   («дБ•Гц»), значение - в LabelMeas(0,30) */
+	/* RSSI: LabelMeasUnits скрыт; LabelMeasName(-40,10) = «RSSI:» слева сверху
+	   (макет), значение - в LabelMeas(0,30) */
 	[MEAS_RSSI] = {
 		.img_visible = 1, .val_visible = 1, .name_visible = 1,
 		.img_x = 55, .img_y = -5, .img_align = LV_ALIGN_TOP_MID,
@@ -1371,9 +1373,10 @@ static const meas_layout_t meas_layout[MEAS_MODE_END] =
 		.name_font = &ui_font_number21, .units_font = &ui_font_number21,
 		.img_src = &ui_img_imagemenu_ltebig_png },
 
-	/* Количество спутников: LabelMeasUnits скрыт, число - в LabelMeas(0,30) */
+	/* Количество спутников: в макете только иконка и число - LabelMeasName и
+	   LabelMeasUnits скрыты, число - в LabelMeas(0,30) */
 	[MEAS_SAT] = {
-		.img_visible = 1, .val_visible = 1, .name_visible = 1,
+		.img_visible = 1, .val_visible = 1,
 		.img_x = 55, .img_y = -5, .img_align = LV_ALIGN_TOP_MID,
 		.val_x = 0, .val_y = 30, .val_align = LV_ALIGN_CENTER,
 		.name_x = 25, .name_y = 0, .name_align = LV_ALIGN_TOP_MID,
@@ -1444,21 +1447,24 @@ static void meas_reset_cache(void)
 
 /* Страницы экрана измерений: state_menu (0..VECTOR_MEASURE_PAGES-1) -> режим
    левой и правой панелей; MEAS_NONE = панель скрыта (её место занял режим с
-   full_width). Раскладка согласована с menu_navigate(): LONG Button3 на
-   странице 5 уходит в SCREEN_VOICE_MESSAGE, на странице 6 - в
-   SCREEN_TEXT_MESSAGE (ветка ==6 была недостижима, пока скролл стоял на 6
-   страницах 0..5; теперь предел = VECTOR_MEASURE_PAGES).
+   full_width). Порядок страниц и состав панелей - по макету автора:
+   «Индекс» (AQI|T, H|P), «Координаты», «Спутники и RSSI», «Пульс»,
+   «Сообщения».
+   Страницы 5 и 6 - это ОДНА страница «Сообщения» (голосовые | чат): они
+   отличаются ТОЛЬКО подсветкой панелей (см. LCD_MeasureScreen) - это выбор
+   пункта меню 5/6, куда пойдёт LONG Button3: 5 -> SCREEN_VOICE_MESSAGE,
+   6 -> SCREEN_TEXT_MESSAGE (ветки в menu_navigate, скролл 0..6).
    MEAS_ERR в ротацию НЕ включён: строку ошибок логичнее показывать по событию
    (или подменять ею страницу при error_queue_count != 0) - решение за автором. */
 static const uint8_t meas_pages[VECTOR_MEASURE_PAGES][2] =
 {
-	{ (uint8_t)MEAS_TEMP,  (uint8_t)MEAS_HUM   },   /* 0 температура | влажность */
-	{ (uint8_t)MEAS_PRESS, (uint8_t)MEAS_AQI   },   /* 1 давление    | AQI       */
-	{ (uint8_t)MEAS_COORD, (uint8_t)MEAS_NONE  },   /* 2 координаты (весь экран) */
-	{ (uint8_t)MEAS_SAT,   (uint8_t)MEAS_RSSI  },   /* 3 спутники    | RSSI      */
-	{ (uint8_t)MEAS_HEART, (uint8_t)MEAS_NONE  },   /* 4 пульс (весь экран)      */
-	{ (uint8_t)MEAS_VOICE, (uint8_t)MEAS_NONE  },   /* 5 голосовые -> LONG B3    */
-	{ (uint8_t)MEAS_CHAT,  (uint8_t)MEAS_NONE  },   /* 6 чат       -> LONG B3    */
+	{ (uint8_t)MEAS_AQI,   (uint8_t)MEAS_TEMP  },   /* 0 AQI (зелёный) | температура */
+	{ (uint8_t)MEAS_HUM,   (uint8_t)MEAS_PRESS },   /* 1 влажность     | давление    */
+	{ (uint8_t)MEAS_COORD, (uint8_t)MEAS_NONE  },   /* 2 координаты (весь экран)     */
+	{ (uint8_t)MEAS_RSSI,  (uint8_t)MEAS_SAT   },   /* 3 RSSI          | спутники    */
+	{ (uint8_t)MEAS_HEART, (uint8_t)MEAS_NONE  },   /* 4 пульс (весь экран)          */
+	{ (uint8_t)MEAS_VOICE, (uint8_t)MEAS_CHAT  },   /* 5 сообщения: выбраны голосовые */
+	{ (uint8_t)MEAS_VOICE, (uint8_t)MEAS_CHAT  },   /* 6 сообщения: выбран чат        */
 };
 typedef char meas_pages_assert[(sizeof(meas_pages) / sizeof(meas_pages[0]) == (size_t)VECTOR_MEASURE_PAGES) ? 1 : -1];
 
@@ -1677,7 +1683,8 @@ void LCD_Measure(uint8_t panel, uint8_t mode, const char *value, const char *nam
 //   координаты/спутники/сигнал     - gps_nav (CONFIG_GPS): lat/lon_scaled =
 //       градусы×1e-7, satellites_used, navigation (1 = фикс есть),
 //       signal_db_hz = C/No «золотой четвёрки» (решение автора: уровень
-//       сигнала на экране измерений берём отсюда, единицы дБ-Гц, не дБм);
+//       сигнала на экране измерений берём отсюда; на экране он подписан
+//       «RSSI:» без единиц, дБм появятся с BLE/LoRa-источником);
 //   ошибки                         - current_error_text[40] (заполняет
 //       LCD_UpdateErrorDisplay() этого файла, вызов - в Menu_Draw);
 //       режим MEAS_ERR в ротацию страниц не входит - вызывается напрямую.
@@ -1752,20 +1759,22 @@ static void meas_fill(uint8_t mode, char *value, char *name, char *units)
 		break;
 
 	case MEAS_HEART:
+		/* Подпись - «уд./мин» (макет), стоит под иконкой справа сверху */
 		snprintf(value, MEAS_VALUE_SZ, "%s", MEAS_NO_DATA);   /* пульсометра нет */
-		snprintf(name,  MEAS_NAME_SZ,  "%s", "bpm");
+		snprintf(name,  MEAS_NAME_SZ,  "%s", "уд./мин");
 		break;
 
 	case MEAS_RSSI:
 		/* Уровень сигнала - C/No от GPS (решение автора): gps_nav.signal_db_hz,
 		   среднее четырёх лучших спутников из GSV, один знак после точки;
-		   0 = данных нет (нет фикса/модуль молчит) -> заглушка. Единицы дБ-Гц,
-		   НЕ дБм. В подписи bullet «•» (U+2022) вместо средней точки «·»:
-		   U+00B7 в number21/number36 отсутствует (диапазоны шрифта 0x20-0x7F,
-		   0xB0, 0x2022, 0x410-0x44F, 0x451), а U+2022 - есть. «42.5» в
-		   number85 = 167 px > 152, поэтому значение уедет в number36
-		   (автоподбор); подпись «дБ•Гц» = 56 px при x=-40 -> 8..64, влезает. */
-		snprintf(name, MEAS_NAME_SZ, "%s", "дБ•Гц");
+		   0 = данных нет (нет фикса/модуль молчит) -> заглушка. Обозначение на
+		   экране - «RSSI:» по макету, БЕЗ единиц (число и есть уровень). Если
+		   захочется отдельно подписать именно качество GPS-сигнала, стандартное
+		   обозначение - «C/No» (отношение несущая/шум, те самые дБ-Гц): правка
+		   одной строки ниже. «42.5» в number85 = 167 px > 152, поэтому значение
+		   уедет в number36 (автоподбор); «RSSI:» = 52 px при x=-40 -> 10..62,
+		   влезает. */
+		snprintf(name, MEAS_NAME_SZ, "%s", "RSSI:");
 #if CONFIG_GPS
 		if (gps_nav.signal_db_hz > 0.0f)
 		{
@@ -1777,12 +1786,12 @@ static void meas_fill(uint8_t mode, char *value, char *name, char *units)
 		break;
 
 	case MEAS_SAT:
+		/* Подпись скрыта раскладкой (в макете только иконка и число) */
 #if CONFIG_GPS
 		meas_fmt_int(value, MEAS_VALUE_SZ, (int32_t)gps_nav.satellites_used);
 #else
 		snprintf(value, MEAS_VALUE_SZ, "%s", MEAS_NO_DATA);
 #endif /* CONFIG_GPS */
-		snprintf(name,  MEAS_NAME_SZ,  "%s", "Спутники");
 		break;
 
 	case MEAS_ERR:
@@ -1829,6 +1838,19 @@ void LCD_MeasureScreen(uint8_t num)
 		meas_fill(mode, value[i], name[i], units[i]);
 		LCD_Measure(i, mode, value[i], name[i], units[i]);
 	}
+
+	/* Страницы 5 и 6 - ОДНА страница «Сообщения» (панель голосовых | панель
+	   чата): подсвеченная панель и есть выбранный пункт, LONG Button3 уведёт
+	   на её экран (5 -> SCREEN_VOICE_MESSAGE, 6 -> SCREEN_TEXT_MESSAGE, ветки
+	   в menu_navigate). Подсветка - те же средства, что у пунктов меню: фон
+	   панели красит ui_menu_item_set_focus() (синий градиент / белый), иконку
+	   в белый - ui_menu_item_set_recolor(). Зовём каждый проход: обе функции
+	   сами сравнивают состояние и ничего не трогают, пока выбор не сменился;
+	   при уходе со страницы выбор гаснет (обе панели белые, иконки цветные). */
+	ui_menu_item_set_focus(NULL, ui_PanelMeasure,  (page == 5u), false);
+	ui_menu_item_set_focus(NULL, ui_PanelMeasure1, (page == 6u), false);
+	ui_menu_item_set_recolor(ui_ImageMeas,  (page == 5u));
+	ui_menu_item_set_recolor(ui_ImageMeas1, (page == 6u));
 }
 
 //===========================================================================================================================

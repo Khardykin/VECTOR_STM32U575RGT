@@ -208,6 +208,9 @@ void Menu_GoTo(uint8_t screen)
   menu_status.state_submenu   = 0u;
   menu_status.screen_since_ms = VTICK_MS();
   menu_status.cnt_screens++;
+  if(screen == SCREEN_MEASURE){
+	  menu_status.state_menu = 0;
+  }
   /* Зеркало для слоя индикации: LCD_Fill_Template выбирает экран по
      IS_STATE_SCREEN() (Avis: TO_GO_STATE_SCREEN в Button_*_Menu).       */
   TO_GO_STATE_SCREEN(screen);
@@ -343,95 +346,82 @@ static void menu_navigate(void)
 				SCREEN_TEXT_MESSAGE,
 	    };
 
-	   uint8_t sub = 0;
-      if (g2 == (uint8_t)GEST_SHORT)
-      {
-    	  menu_status.state_menu = scroll_down(menu_status.state_menu, MEASURE_PAGES_COUNT);
-      }
-      else if (g3 == (uint8_t)GEST_SHORT)
-      {
-    	  menu_status.state_menu = scroll_up(menu_status.state_menu, MEASURE_PAGES_COUNT);
-      }
-      else if (g3 == (uint8_t)GEST_LONG){
+	    uint8_t sub = 0;
+	    if (g2 == (uint8_t)GEST_SHORT){
+	    	menu_status.state_menu = scroll_down(menu_status.state_menu, MEASURE_PAGES_COUNT);
+	    }
+	    else if (g3 == (uint8_t)GEST_SHORT){
+	    	menu_status.state_menu = scroll_up(menu_status.state_menu, MEASURE_PAGES_COUNT);
+	    }
+	    else if (g3 == (uint8_t)GEST_LONG){
     	  if(menu_status.state_menu == 5){
     		  sub = 2;
     	  }
     	  else if(menu_status.state_menu == 6){
     		  sub = 3;
     	  }
-      }
-      else if (g3 == (uint8_t)GEST_DOUBLE)
-      {
-    	  sub = 1;
-    	  menu_status.state_menu = 0;
-      }
+		  }
+		  else if (g3 == (uint8_t)GEST_DOUBLE){
+			  sub = 1;
+			  menu_status.state_menu = 0;
+		  }
 
-      Menu_GoTo(setting_screens[sub]);
-      break;
+		  Menu_GoTo(setting_screens[sub]);
+		  break;
 
     case SCREEN_MENU:
       /* Button1 SHORT - вход в пункт (приоритет Button1, как в Avis
          Button_1_Menu): пункт списка -> экран. Пункт 3 «Журнал событий» -
          экран ещё не создан (автор), пока остаёмся на месте.            */
-      if (g1 == (uint8_t)GEST_SHORT)
-      {
-        static const uint8_t item_screens[] = {
-            (uint8_t)SCREEN_INFO_DEVICE,     /* 0 - Информация (Panel0) */
-            (uint8_t)SCREEN_SETTING,         /* 1 - Настройки  (Panel1) */
-            (uint8_t)SCREEN_CONNECT_DEVICE,  /* 2 - Контроль оборудования (Panel2) */
-            (uint8_t)SCREEN_MENU,            /* 3 - Журнал событий (Panel3, экран - TODO) */
-        };
-        uint8_t item = menu_status.state_menu;
-        if (item >= (uint8_t)(sizeof(item_screens) / sizeof(item_screens[0])))
-        {
-          item = 0u;
-        }
-        Menu_GoTo(item_screens[item]);
-      }
-      else if (g2 == (uint8_t)GEST_SHORT)
-      {
-        menu_status.state_menu = scroll_down(menu_status.state_menu, MENU_ITEMS_COUNT);
-      }
-      else if (g3 == (uint8_t)GEST_SHORT)
-      {
-        menu_status.state_menu = scroll_up(menu_status.state_menu, MENU_ITEMS_COUNT);
-      }
-      else if (g2 == (uint8_t)GEST_LONG){
-    	  Menu_GoTo((uint8_t)SCREEN_MEASURE);
-      }
-      break;
+		  if (g1 == (uint8_t)GEST_SHORT){
+			static const uint8_t item_screens[] = {
+				(uint8_t)SCREEN_INFO_DEVICE,     /* 0 - Информация (Panel0) */
+				(uint8_t)SCREEN_SETTING,         /* 1 - Настройки  (Panel1) */
+				(uint8_t)SCREEN_CONNECT_DEVICE,  /* 2 - Контроль оборудования (Panel2) */
+				(uint8_t)SCREEN_MENU,            /* 3 - Журнал событий (Panel3, экран - TODO) */
+			};
+			uint8_t item = menu_status.state_menu;
+			if (item >= (uint8_t)(sizeof(item_screens) / sizeof(item_screens[0]))){
+			  item = 0u;
+			}
+			Menu_GoTo(item_screens[item]);
+		  }
+		  else if (g2 == (uint8_t)GEST_SHORT){
+			menu_status.state_menu = scroll_down(menu_status.state_menu, MENU_ITEMS_COUNT);
+		  }
+		  else if (g3 == (uint8_t)GEST_SHORT){
+			menu_status.state_menu = scroll_up(menu_status.state_menu, MENU_ITEMS_COUNT);
+		  }
+		  else if (g2 == (uint8_t)GEST_LONG){
+			  Menu_GoTo((uint8_t)SCREEN_MEASURE);
+		  }
+		  break;
 
     /* Информация о приборе: Button2/3 SHORT - листать страницы
        (info_total_pages считает LCD_SubMenuInfo), Button2 LONG - назад в
        меню (жест-паттерн автора: LONG Button2 = «назад»).               */
     case SCREEN_INFO_DEVICE:
-      if (g2 == (uint8_t)GEST_LONG)
-      {
-        Menu_GoTo((uint8_t)SCREEN_MENU);
-      }
-      else if (g2 == (uint8_t)GEST_SHORT)
-      {
-        menu_status.state_submenu = scroll_down(menu_status.state_submenu, MENU_INFO_PAGES);
-      }
-      else if (g3 == (uint8_t)GEST_SHORT)
-      {
-        menu_status.state_submenu = scroll_up(menu_status.state_submenu, MENU_INFO_PAGES);
-      }
-      break;
+		  if (g2 == (uint8_t)GEST_LONG){
+			Menu_GoTo((uint8_t)SCREEN_MENU);
+		  }
+		  else if (g2 == (uint8_t)GEST_SHORT){
+			menu_status.state_submenu = scroll_down(menu_status.state_submenu, MENU_INFO_PAGES);
+		  }
+		  else if (g3 == (uint8_t)GEST_SHORT){
+			menu_status.state_submenu = scroll_up(menu_status.state_submenu, MENU_INFO_PAGES);
+		  }
+		  break;
 
     /* Настройки: строки Panel1..3 (LCD_SubMenuSetting), Button2 LONG - назад.
        Вход в строку (Button1 SHORT) - когда автор определит состав настроек. */
     case SCREEN_SETTING:
-      if (g2 == (uint8_t)GEST_LONG)
-      {
+      if (g2 == (uint8_t)GEST_LONG){
         Menu_GoTo((uint8_t)SCREEN_MENU);
       }
-      else if (g2 == (uint8_t)GEST_SHORT)
-      {
+      else if (g2 == (uint8_t)GEST_SHORT){
         menu_status.state_submenu = scroll_down(menu_status.state_submenu, MENU_SETTING_ROWS);
       }
-      else if (g3 == (uint8_t)GEST_SHORT)
-      {
+      else if (g3 == (uint8_t)GEST_SHORT){
         menu_status.state_submenu = scroll_up(menu_status.state_submenu, MENU_SETTING_ROWS);
       }
       break;
@@ -464,8 +454,7 @@ void Menu_Init(void)
   menu_status.dirty_data      = 0u;
   menu_status.last_gesture_ms = 0u;
   menu_status.screen_since_ms = VTICK_MS();
-  for (i = 0; i < 3u; i++)
-  {
+  for (i = 0; i < 3u; i++){
     menu_status.gestures[i]     = (uint8_t)GEST_NONE;
     last_short_click_ms[i]      = 0u;
   }
@@ -493,11 +482,9 @@ void Menu_Run(void)
   menu_navigate();
 
   /* Авто-возврат на главный экран по истечении TIMER_RTC_MAIN_RESET. */
-  if (TEST_TIMER_RTC(TIMER_RTC_MAIN_RESET) != 0)
-  {
+  if (TEST_TIMER_RTC(TIMER_RTC_MAIN_RESET) != 0){
     RESET_TIMER_RTC(TIMER_RTC_MAIN_RESET);
-    if (menu_status.screen != (uint8_t)SCREEN_MEASURE)
-    {
+    if (menu_status.screen != (uint8_t)SCREEN_MEASURE){
       LOG_D(VLOG_M_SYS, "menu: auto-return to SCREEN_MEASURE");
       Menu_GoTo((uint8_t)SCREEN_MEASURE);
     }
@@ -505,8 +492,7 @@ void Menu_Run(void)
 
   /* Avis Button_Menu(): при возврате на главный экран - сохранить конфиг,
      если в меню что-то меняли.                                              */
-  if ((menu_status.screen == (uint8_t)SCREEN_MEASURE) && (menu_status.dirty_data != 0u))
-  {
+  if ((menu_status.screen == (uint8_t)SCREEN_MEASURE) && (menu_status.dirty_data != 0u)){
     menu_status.dirty_data = 0u;
     SaveConfig = 1u;
     LOG_I(VLOG_M_SYS, "menu: dirty data -> SaveConfig");
@@ -557,8 +543,7 @@ void Button_Run_Start(void)
 		// нельзя (lv_init/ui_init пересоздадут объекты). КОНТЕКСТ: поток LVGL
 		// Task - тот же поток позже крутит lv_timer_handler (LVGL однопоточен).
 #if (CONFIG_TYPE_LCD_TFT != 0)
-		if (LCD_Get_flag_init() == 0u)
-		{
+		if (LCD_Get_flag_init() == 0u){
 			LCD_Init();
 #if VECTOR_LCD_USE_LVGL
 			ui_lv_init();
