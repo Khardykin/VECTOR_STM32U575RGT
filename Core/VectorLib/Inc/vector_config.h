@@ -378,6 +378,11 @@
  *   DOUBLE - два SHORT с интервалом < VECTOR_MENU_DOUBLE_MS;
  *   SHORT_LONG - SHORT, затем LONG быстрее DOUBLE-окна;
  *   FAKE   - слишком короткое (дребезг).
+ * SOS - ОТДЕЛЬНЫЙ счётчик button_sos (в stm32u5xx_it.c он зеркалит Button1:
+ * те же EXTI-флаги, свой button_count), порог VECTOR_MENU_PRESS_SOS_MS
+ * длиннее обычного LONG: удержание Button1 3 с (Avis Button_Sos с
+ * BUTTON_PRESS_LONG_SOS). Обратный отсчёт до подачи SOS - задел автора
+ * (экран/роллер ROLLER_SOS и LCD_CountdownToSOS уже есть).
  * Авто-возврат на главный экран: любой жест перезапускает TIMER_RTC_MAIN_RESET
  * (секундный таймер прибора), по его expiry Menu_Run() возвращает SCREEN_MAIN.
  * приоритет жестов ПОСТОЯННЫЙ - Button1 > Button2 > Button3 (автор, п.3);
@@ -392,6 +397,9 @@
 #endif
 #ifndef VECTOR_MENU_PRESS_LONG_MS
 #define VECTOR_MENU_PRESS_LONG_MS   1500u
+#endif
+#ifndef VECTOR_MENU_PRESS_SOS_MS
+#define VECTOR_MENU_PRESS_SOS_MS    3000u  /* удержание Button1 (button_sos) до SOS */
 #endif
 #ifndef VECTOR_MENU_DOUBLE_MS
 #define VECTOR_MENU_DOUBLE_MS       400u

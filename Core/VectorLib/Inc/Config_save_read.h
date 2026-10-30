@@ -9,9 +9,11 @@
  * игнорируются -> cur/beg = 0; нечистые сектора кольца стираются лениво,
  * blank-пробой на границе сектора).
  *
- * Геометрия и очередь - static inline ЗДЕСЬ (чистая арифметика, без HAL/
- * ThreadX): прошивочный писатель и хост-тест tools/test_logq/ исполняют
- * ОДИН И ТОТ ЖЕ код.
+ * Геометрия и очередь - ОПРЕДЕЛЕНИЯ в log_queue.c (чистая арифметика, без
+ * HAL/ThreadX), здесь только прототипы: замечание автора «не надо держать
+ * функции в .h, это не красиво». Общий код сохранён - прошивочный писатель и
+ * хост-тест tools/test_logq/ исполняют ОДИН И ТОТ ЖЕ log_queue.c (Makefile
+ * теста собирает его рядом с test_logq.c).
  */
 #ifndef CONFIG_SAVE_READ_H
 #define CONFIG_SAVE_READ_H
@@ -176,7 +178,8 @@ typedef char log_pl_beacons_assert[(sizeof(log_pl_beacons_t) == LOG_PAYLOAD_MAX)
 typedef char log_pl_param_assert[(sizeof(log_pl_param_t) == LOG_PAYLOAD_MAX) ? 1 : -1];
 
 //===========================================================================================================================
-// ГЕОМЕТРИЯ КОЛЬЦА v2 (LOG_FORMAT.md §2) - чистая арифметика, static inline:
+// ГЕОМЕТРИЯ КОЛЬЦА v2 (LOG_FORMAT.md §2) - чистая арифметика (определения -
+// log_queue.c):
 // слот 40 Б; в секторе 4 КБ - 102 слота (4080 Б, хвост 16 Б не используется);
 // 512 секторов = 2 МБ = 52224 записи; phys = ptr mod 52224. Указатели
 // CurrentAddrFile/BegginAddrFile монотонные u32 (естественный заворот;
@@ -194,63 +197,30 @@ typedef char log_time_offset_assert[(offsetof(EVENT_LOG, H) + offsetof(log_hdr_t
 
 // Физический адрес слота по номеру указателя (§2). КОНТЕКСТ: любой, чистая
 // арифметика (хост-тестируемо).
-static inline uint32_t log_slot_addr_v2(uint32_t log_base, uint32_t ptr)
-{
-	uint32_t phys = ptr % LOG_RING_SLOTS;
-	return log_base
-	     + (phys / LOG_SLOTS_PER_SECTOR) * LOG_SECTOR_SIZE
-	     + (phys % LOG_SLOTS_PER_SECTOR) * LOG_SLOT_SIZE;
-}
+extern uint32_t log_slot_addr_v2(uint32_t log_base, uint32_t ptr);
 
 // Решение о стирании перед записью на границу сектора (§2 «Переполнение»):
 // 0 = писать без стирания, 1 = стереть сектор (слот не пуст), 2 = стереть и
 // сдвинуть BegginAddrFile на LOG_SLOTS_PER_SECTOR (кольцо полное).
 // blank - результат blank-пробы первого слота сектора (1 = все 0xFF);
 // при full не используется. КОНТЕКСТ: любой, чистая арифметика.
-static inline int log_erase_decision(uint32_t cur, uint32_t beg, int blank)
-{
-	uint32_t phys = cur % LOG_RING_SLOTS;
-	if ((phys % LOG_SLOTS_PER_SECTOR) != 0u)
-	{
-		return 0;						// не на границе сектора
-	}
-	if ((uint32_t)(cur - beg) >= LOG_USABLE_SLOTS)
-	{
-		return 2;						// кольцо полное: стирание + сдвиг начала
-	}
-	return (blank != 0) ? 0 : 1;		// мусор старого формата/прошлых кругов
-}
+extern int log_erase_decision(uint32_t cur, uint32_t beg, int blank);
 
 // Archiveinterval ((мин<<8)|сек, §5) -> период архивного тика в секундах
 // (uint16: максимум ~18 ч; countdown_time_rtc хранит uint16).
-static inline uint16_t log_archive_period_s(uint16_t archive_interval)
-{
-	return (uint16_t)(((uint32_t)(archive_interval >> 8) * 60u)
-	                + ((uint32_t)archive_interval & 0xFFu));
-}
+extern uint16_t log_archive_period_s(uint16_t archive_interval);
 
 // Валидность записи v2 (§7.1): Fmt_ver, известный Type_log, Payload_len <= 28.
-static inline int log_rec_valid(const EVENT_LOG *r)
-{
-	switch (r->H.Type_log)
-	{
-	case TYPE_TURN_ON:  case TYPE_TURN_OFF: case TYPE_FW_UPDATE:
-	case TYPE_READINGS: case TYPE_PARAM:    case TYPE_GAS:
-	case TYPE_BEACONS:  case TYPE_PPE:      case TYPE_SNAPSHOT:
-		break;
-	default:
-		return 0;
-	}
-	return ((r->H.Fmt_ver == LOG_FMT_VER) && (r->H.Payload_len <= LOG_PAYLOAD_MAX)) ? 1 : 0;
-}
+extern int log_rec_valid(const EVENT_LOG *r);
 
 //===========================================================================================================================
 // RAM-ОЧЕРЕДЬ ЗАПИСЕЙ (LOG_FORMAT.md §6): кольцо 16 × 40 Б = 640 Б.
 // Снимок (время/состояние/данные) делается В МОМЕНТ СОБЫТИЯ (log_post) -
 // задержка записи во flash время записи НЕ искажает; всплески не теряются
 // (FIFO сохраняет хронологию - бинарный поиск по времени остаётся корректным).
-// Логика - static inline (общая для прошивки и хост-теста); критическая
-// секция (TX_DISABLE) - на стороне .c (log_post/log_flush).
+// Логика - общая для прошивки и хост-теста (определения - log_queue.c);
+// критическая секция (TX_DISABLE) - на стороне Config_save_read.c
+// (log_post/log_flush).
 #ifndef LOGQ_SLOTS
 #define LOGQ_SLOTS	16u
 #endif
@@ -264,59 +234,21 @@ typedef struct
 
 typedef char logq_slots_assert[(LOGQ_SLOTS <= 255u) ? 1 : -1];
 
-static inline void logq_init(logq_ctx_t *q)
-{
-	q->head  = 0u;
-	q->count = 0u;
-}
+extern void logq_init(logq_ctx_t *q);
 
-static inline uint32_t logq_count(const logq_ctx_t *q)
-{
-	return (uint32_t)q->count;
-}
+extern uint32_t logq_count(const logq_ctx_t *q);
 
-static inline int logq_full(const logq_ctx_t *q)
-{
-	return (q->count >= (uint8_t)LOGQ_SLOTS) ? 1 : 0;
-}
+extern int logq_full(const logq_ctx_t *q);
 
 // Постановка в очередь. Возврат: 0 = поставлена, 1 = очередь была полна -
 // СТАРЕЙШАЯ перезаписана (вызывающий считает потерю и печатает LOG_E, §6).
-static inline int logq_push(logq_ctx_t *q, const EVENT_LOG *r)
-{
-	uint8_t tail = (uint8_t)((uint32_t)(q->head + q->count) % LOGQ_SLOTS);
-	int over = 0;
-
-	q->rec[tail] = *r;
-	if (q->count >= (uint8_t)LOGQ_SLOTS)
-	{
-		// полная: tail == head (слот старейшей) - новая запись встаёт на её
-		// место, head сдвигается: FIFO сохраняется, старейшая теряется.
-		q->head = (uint8_t)((q->head + 1u) % LOGQ_SLOTS);
-		over = 1;
-	}
-	else
-	{
-		q->count++;
-	}
-	return over;
-}
+extern int logq_push(logq_ctx_t *q, const EVENT_LOG *r);
 
 // Старейшая запись без извлечения (NULL = очередь пуста).
-static inline const EVENT_LOG *logq_peek(const logq_ctx_t *q)
-{
-	return (q->count != 0u) ? &q->rec[q->head] : (const EVENT_LOG *)0;
-}
+extern const EVENT_LOG *logq_peek(const logq_ctx_t *q);
 
 // Извлечь старейшую (после успешной записи во flash). Пустая - no-op.
-static inline void logq_pop(logq_ctx_t *q)
-{
-	if (q->count != 0u)
-	{
-		q->head = (uint8_t)((q->head + 1u) % LOGQ_SLOTS);
-		q->count--;
-	}
-}
+extern void logq_pop(logq_ctx_t *q);
 
 //===========================================================================================================================
 // API журнала v2

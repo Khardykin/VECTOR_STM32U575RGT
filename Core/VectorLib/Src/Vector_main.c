@@ -160,6 +160,14 @@ void Timer_Tick_1ms(void)
 	if(button3.button_flag){
 		button3.button_count++;
 	}
+	/* SOS: button_sos - зеркала Button1 (EXTI в stm32u5xx_it.c ставит его
+	   button_flag/button_count вместе с button1), но счётчик СВОЙ и растёт
+	   отдельно: порог SOS (VECTOR_MENU_PRESS_SOS_MS, 3 с) длиннее обычного
+	   LONG (1.5 с), а decode_button() в Menu_vector.c обнуляет button1.
+	   Читает счётчик Button_Sos() (Menu_vector.c, по образцу Avis Button_Sos). */
+	if(button_sos.button_flag){
+		button_sos.button_count++;
+	}
 
 	/* таймауты кадров периферийных UART */
 #if CONFIG_UART
@@ -754,9 +762,20 @@ void Vector_Run_Pre_Init(void)
      писатель Vector_RunFlashMemory() в первый же проход (~50 мс).        */
 //  log_post(TYPE_TURN_ON);
 
-  /* Прибор ВКЛЮЧЁН: потоки (receiver; будущий LVGL Task) допускаются в
-     рабочие циклы. Порядок важен: сначала журнал/часы, потом состояние.  */
-//  device_turn = DEVICE_TURNED_ON;
+  /* Конец предварительной инициализации: потоки (receiver; LVGL Task)
+     допускаются в рабочие циклы - гейт DEVICE_TURNED_OFF_PRE_INIT снят.
+     Порядок важен: сначала журнал/часы, потом состояние.
+     Прибор ВЫКЛЮЧЕН (указание автора к SCREEN_START): включение - долгое
+     нажатие Button1, его обрабатывает Button_Run_Start() (Menu_vector.c) из
+     Vector_Run_Indication() при device_turn == DEVICE_TURNED_OFF - там же
+     инициализируются панель и LVGL (LCD_Init/ui_lv_init), звучит
+     NotifySeq_PowerOn и взводится TIMER_RTC_WARM (TIME_RTC_START, 60 с).
+     До конца прогрева device_turn = DEVICE_TURNED_ON_1 и экран SCREEN_START,
+     по истечении Menu_Run() ставит DEVICE_TURNED_ON и SCREEN_MEASURE.
+     Прежнее DEVICE_TURNED_ON здесь означало бы «включён без инициализации
+     экрана»: LCD_Init() кроме Button_Run_Start не зовёт никто, а Menu_Draw()
+     при LCD_Get_flag_init() == 0 выходит сразу - картинки бы не было.     */
+  device_turn = DEVICE_TURNED_OFF;
 }
 
 /* Периодика прибора (1 с): измерения, затем модули обмена.

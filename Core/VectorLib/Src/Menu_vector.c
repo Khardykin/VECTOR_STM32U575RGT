@@ -14,6 +14,12 @@
   *               Button2 вниз/инкремент, Button3 вверх/декремент; состав
   *               экранов и пунктов определит автор - пока каркас на имеющихся
   *               экранах SquareLine (см. menu_screens[]);
+  *            3a) SCREEN_START - заставка/прогрев (указание автора): работает
+  *               ТОЛЬКО выключение (LONG Button2 -> Menu_TurnOff, аналог Avis
+  *               TurnOffSystem) и SOS (удержание Button1 3 с, button_sos ->
+  *               Button_Sos); выход с экрана - по истечении TIMER_RTC_WARM
+  *               (TIME_RTC_START, 60 с): device_turn = DEVICE_TURNED_ON и
+  *               SCREEN_MEASURE. Авто-возврат на этом экране отключён;
   *            4) Menu_Draw() - аналог DisplayIndication из Avis (не WEAK с
   *               коммита автора «up menu tft»): ЦЕЛИКОМ перерисовывает экран
   *               каждый проход - время, LCD_Fill_Template (поворот/язык/смена
@@ -56,6 +62,21 @@ static uint8_t state_flashing_system = 0;
 #define BUTTON_PRESS_SHORT  ((uint32_t)VECTOR_MENU_PRESS_SHORT_MS)
 #define BUTTON_PRESS_LONG   ((uint32_t)VECTOR_MENU_PRESS_LONG_MS)
 #define TIME_DOUBLE_CLICK   ((uint32_t)VECTOR_MENU_DOUBLE_MS)
+/* SOS: удержание button_sos (зеркало Button1 - stm32u5xx_it.c ставит его флаги
+   вместе с button1, счётчик инкрементирует Timer_Tick_1ms) дольше обычного
+   LONG, поэтому SOS не спорит с жестами меню (Avis: BUTTON_PRESS_LONG_SOS). */
+#define BUTTON_PRESS_SOS    ((uint32_t)VECTOR_MENU_PRESS_SOS_MS)
+
+/* ui_lv_init() выполняется ОДИН РАЗ за время работы прошивки (см.
+   Button_Run_Start): lv_init() в LVGL 9 от повтора защищён, а
+   lv_display_create()/ui_init() создали бы второй дисплей и второй комплект
+   экранов. Программное выключение (Menu_TurnOff -> LCD_DeInit) гасит только
+   панель - объекты LVGL живут в RAM, поэтому при следующем включении
+   достаточно TFT_Init + полная перерисовка. Флаг нужен только при живом
+   экране/LVGL - иначе -Wall дал бы «defined but not used».                */
+#if (CONFIG_TYPE_LCD_TFT != 0) && VECTOR_LCD_USE_LVGL
+static uint8_t lvgl_ui_inited = 0u;
+#endif
 
 /* Скролл пунктов меню: заглушка на VECTOR_MENU_ITEMS пунктов. Когда автор
    определит состав меню - заменить длину на фактическую для каждого экрана
@@ -141,6 +162,13 @@ void Menu_Draw(void)
   /* Верхняя панель (top layer): заряд батареи, % и анимация зарядки. */
   LCD_Battery(sensors_status.battery_charge_percent, state_flashing_system);
 
+  /* Иконка радиомодуля (ui_ImageLora): картинка - по конфигурации сборки
+     (CONFIG_LORA / CONFIG_G4 / CONFIG_NBIOT), видимость - по битам
+     ST_COMMON_BIT_TURN_ON_* в Config_common.State. Как в Avis
+     DisplayIndication: статусные иконки выставляются ПОСЛЕ LCD_Fill_Template
+     (его LCD_Image_SET(0) гасит все) и ДО ui_apply_visibility().        */
+  LCD_RadioIcon();
+
   /* Строка ошибок (в Avis - в DisplayIndication, каждый проход): хэш изменился
      -> пересборка очереди, фаза мигания -> ротация текста, результат -
      current_error_text[] (его печатает режим MEAS_ERR экрана измерений).
@@ -155,6 +183,16 @@ void Menu_Draw(void)
   /* Покранная отрисовка (Avis: switch(IS_STATE_SCREEN()) в DisplayIndication). */
   switch (IS_STATE_SCREEN())
   {
+    /* Заставка/прогрев: ui_ScreenStart пустой (только фон темы), картинку
+       делает LCD_ToWarm() - num = 0 показывает логотип (SET_MIRAX), как
+       Warm_Screen_statuses case 0 в Avis. Прочие num (общая информация,
+       автокалибровка, тест) - задел автора: в VECTOR пока нет ни каналов
+       SNS_CFG.Sensor[], ни калибровки. Обратный отсчёт до конца прогрева
+       (LCD_CountdownToWarm) не выводится: на экране Start нет ни лейбла, ни
+       панели - добавить их нужно в SquareLine (автор).                    */
+    case SCREEN_START:
+      LCD_ToWarm(&Sns_Cfg_struct, 0u, 0u);
+      break;
     /* Экран измерений: страница state_menu -> режимы обеих панелей и их данные
        (таблицы meas_pages[]/meas_layout[], форматирование и раскладка - в
        TFT_indicator.c). Геометрию LCD_Measure() ставит только при смене
@@ -306,6 +344,114 @@ static void decode_button(uint8_t idx, volatile Button_variables *pb)
 }
 
 /* ============================================================================
+ *                     ВЫКЛЮЧЕНИЕ ПРИБОРА и SOS
+ * ============================================================================ */
+
+/* Выключение прибора - аналог TurnOffSystem() из Avis
+   (docs/Avis_Menu_Functionality.c.md): индикация гасится, статусы обмена/звука
+   и общие ошибки сбрасываются, ставится бит «прибор выключен», в журнал уходит
+   TYPE_TURN_OFF, модули обмена деинициализируются, device_turn =
+   DEVICE_TURNED_OFF. Дальше Vector_Run_Indication() в состоянии OFF вызывает
+   Button_Run_Start() - включение долгим нажатием Button1 (как в Avis, где
+   DisplayIndication при выключенном приборе крутит Button_Run_Start/TurnOffPower).
+   Жест - LONG Button2 (1.5 с): он и есть подтверждение, поэтому отдельного
+   обратного отсчёта нет.
+   ОТЛИЧИЯ от Avis (чего в проекте пока нет):
+     - CountdownToShutdown()/TIMER_SHUTDOWN + LCD_CountdownToShutdown - обратный
+       отсчёт на экране (автор: «потом сделаем»; задел - ROLLER_TURN_OFF и
+       LCD_CountdownToShutdown() в TFT_indicator.c);
+     - TurnOffPower() (SET_OFF(POWER_ON_*)): пина программной защёлки питания на
+       этой плате нет (в .ioc не заведён, SET_ON(POWER_ON_MCU) в
+       Button_Run_Start закомментирован), поэтому выключение ПРОГРАММНОЕ -
+       экран гаснет (LCD_DeInit: подсветка 0 + RST), потоки видят
+       DEVICE_TURNED_OFF;
+     - очистки ошибок по каналам (Sensor[]/TurnOffPowerSensor): в SNS_CFG
+       каналов нет (SNS_Dev_Type - задел), обнуляется Config_common.StateErr.
+   КОНТЕКСТ: поток LVGL Task (menu_navigate).                                */
+static void Menu_TurnOff(void)
+{
+  if (device_turn == DEVICE_TURNED_OFF){
+    return;
+  }
+
+#if (CONFIG_TYPE_LCD_TFT != 0)
+  ui_reset_visibility_flags();      /* иконки/панели заголовка - в «скрыто» (Avis) */
+#endif
+  CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);      /* Avis: снять блокировку звука    */
+  CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);    /* Avis: выйти из режима обмена    */
+  Sns_Cfg_struct.Config_common.StateErr = 0;               /* Avis: очистка общих ошибок      */
+  SET_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_OFF);           /* «прибор выключен» (логи не ведутся) */
+#if CONFIG_SAVE_PARAM_LOG
+  /* log_post() только СТАВИТ запись в RAM-очередь (во flash пишет Measure Task -
+     Vector_RunFlashMemory, ~50 мс), поэтому из потока LVGL это безопасно.
+     Если появится реальное снятие питания (пин POWER_ON_MCU), заменить на
+     save_event_type_2(&Sns_Cfg_struct, TYPE_TURN_OFF) - он дренирует очередь
+     синхронно до обесточивания.                                           */
+  log_post(TYPE_TURN_OFF);
+#endif
+#if CONFIG_BLE
+  Ble_DeInit(0);
+#endif
+#if CONFIG_LORA
+  Lora_turnoff_system_set();
+#endif
+#if (CONFIG_TYPE_LCD_TFT != 0)
+  /* Панель гасим ПОСЛЕ журнала и модулей: TFT_DeInit() = backlight_set(0) +
+     LCD_RST_Clr() + TFT_Initialized = 0 (Menu_Draw после этого выходит по
+     LCD_Get_flag_init() == 0 - LVGL не рисует в выключенную панель).     */
+  LCD_DeInit();
+#endif
+
+  RESET_TIMER_RTC(TIMER_RTC_WARM);        /* прогрев следующего включения стартует с нуля */
+  device_turn = DEVICE_TURNED_OFF;
+  /* Следующее включение снова начинается с заставки/прогрева: Menu_GoTo дёшево -
+     LCD_DeInit уже выполнен, Menu_Draw() выйдет по флагу инициализации.   */
+  Menu_GoTo((uint8_t)SCREEN_START);
+
+  LOG_I(VLOG_M_SYS, "menu: turn off (TYPE_TURN_OFF queued)");
+}
+
+/* SOS: удержание button_sos >= BUTTON_PRESS_SOS (3 с). button_sos в
+   stm32u5xx_it.c зеркалит Button1 (те же EXTI-флаги, счётчик свой - растёт в
+   Timer_Tick_1ms), поэтому жест не конфликтует с декодером меню: LONG Button1
+   (1.5 с) в навигации не используется, а SOS срабатывает на 3 с.
+   Аналог Avis Button_Sos() (docs/Avis_Menu_Functionality.c.md): там условие
+   CONFIG_LORA + ST_COMMON_BIT_TURN_ON_LORA + get_state_start_flag_lora(), затем
+   START_TIMER(TIMER_PRESS_SOS, TIME_PRESS_SOS) и переход на
+   STATE_SCREEN_COUNTDOWN_SOS - обратный отсчёт с отменой отпусканием.
+   У нас SOS пока БЕЗ действия (автор: «обратный отсчёт будет, потом сделаем»):
+   жест фиксируется, счётчик гасится и пишется лог. Для доделки понадобятся
+   миллисекундный таймер обратного отсчёта (в enum 1 мс свободных слотов нет -
+   добавить свой перед TIMER_END), LCD_CountdownToSOS() + ROLLER_SOS (уже есть)
+   и Lora_SetControlLoraBit(ST_LORA_BIT_SOS, 1) под CONFIG_LORA.
+   Работает на ЛЮБОМ экране (в Avis Button_Sos() вызывается из Button_Run, а не
+   из экранного switch); на SCREEN_START это один из двух рабочих жестов.
+   КОНТЕКСТ: поток LVGL Task (Menu_Run, 100 мс).                             */
+static void Button_Sos(void)
+{
+  if (button_sos.button_flag != 0u)
+  {
+    if (button_sos.button_count >= BUTTON_PRESS_SOS)
+    {
+      /* удержание засчитано: гасим флаг, чтобы SOS не повторился до отпускания
+         кнопки (Avis: button_sos.button_flag = 0)                          */
+      button_sos.button_flag  = 0u;
+      button_sos.button_count = 0u;
+#if CONFIG_LORA
+      /* TODO(автор): Lora_SetControlLoraBit(ST_LORA_BIT_SOS, 1) + обратный
+         отсчёт на экране - см. комментарий выше.                           */
+#endif
+      LOG_I(VLOG_M_SYS, "menu: SOS hold %u ms (countdown and SOS signal - TODO)",
+            (uint32_t)BUTTON_PRESS_SOS);
+    }
+  }
+  else
+  {
+    button_sos.button_count = 0u;   /* кнопка отпущена - счётчик с нуля (Avis) */
+  }
+}
+
+/* ============================================================================
  *                        НАВИГАЦИЯ ПО ЭКРАНАМ
  * Состав пунктов/статусов определит автор - пока каркас: на каждом экране
  * обрабатываются жесты, которых достаточно для обхода имеющихся экранов.
@@ -317,27 +463,36 @@ static void menu_navigate(void)
   uint8_t g3 = Menu_Gesture(3u);
 
 
-  if (g2 == (uint8_t)GEST_LONG)
-  {
-    /* TODO(автор): отключение прибора (device_turn = DEVICE_TURNED_OFF,
-       событие TYPE_TURN_OFF в журнал, счётчик обратного отсчёта на
-       экране). Здесь намеренно ничего не делаем.                        */
-    LOG_D(VLOG_M_SYS, "menu: MAIN long press (turn-off not implemented)");
-  }
+  /* Выключение прибора - ПОЭКРАННО (Menu_TurnOff): LONG Button2 на
+     SCREEN_START уже работает, на SCREEN_MEASURE в Avis это LONG с обратным
+     отсчётом (STATE_SCREEN_MEASURE_TO_COUNTDOWN -> CountdownToShutdown) -
+     задел автора. Общий хук здесь убран: LONG Button2 на SCREEN_INFO_DEVICE и
+     SCREEN_SETTING означает «назад», и глобальная ветка печатала бы
+     «turn-off» одновременно с возвратом в меню.                         */
   /* ПРИОРИТЕТ ЖЕСТОВ ПОСТОЯННЫЙ (замечание автора п.3): на каждом
      экране цепочка else-if ВСЕГДА начинается с Button1 (вход/назад - важнее
      скролла), затем Button2 (вниз), затем Button3 (вверх); внутри кнопки
      LONG важнее SHORT. Так g1 не может «стать последним», как ранее.       */
   switch (menu_status.screen)
   {
-    /* Заставка: любое короткое нажатие - на главный. */
+    /* Заставка/прогрев (SCREEN_START): работают ТОЛЬКО выключение (LONG
+       Button2 -> Menu_TurnOff) и SOS (удержание Button1 3 с - Button_Sos(),
+       вызывается вне switch, в Menu_Run). Остальные жесты гасятся: листать во
+       время прогрева нечего, а выход с экрана происходит сам - по истечении
+       TIMER_RTC_WARM (Menu_Run) или по выключению. Авто-возврат
+       TIMER_RTC_MAIN_RESET на этом экране отключён (Menu_Run): он короче
+       прогрева (30 с против TIME_RTC_START 60 с) и увёл бы на SCREEN_MEASURE
+       раньше времени.                                                   */
     case SCREEN_START:
-
+      if (g2 == (uint8_t)GEST_LONG){
+        Menu_TurnOff();
+      }
       break;
     /* Главный экран (Avis: STATE_SCREEN_MEASURE).
-       LONG Button1 в Avis - отключение прибора с обратным отсчётом: у нас
-       обработчика выключения ещё нет (PLAN этап 6, TYPE_TURN_OFF) - оставлен
-       хук-заглушка, чтобы не потерять жест.                                 */
+       Выключение с этого экрана НЕ сделано: в Avis это LONG с обратным отсчётом
+       (STATE_SCREEN_MEASURE_TO_COUNTDOWN -> CountdownToShutdown -> TurnOffSystem).
+       Menu_TurnOff() готов (см. выше) - автору остался только отсчёт
+       (TIMER_SHUTDOWN + LCD_CountdownToShutdown, ROLLER_TURN_OFF).          */
     case SCREEN_MEASURE:
 	    const uint8_t setting_screens[] = {
 	    		SCREEN_MEASURE,
@@ -462,6 +617,11 @@ void Menu_Init(void)
   /* Авто-возврат на главный экран: как в Avis (TIMER_RTC_MAIN_RESET). */
   START_TIMER_RTC(TIMER_RTC_MAIN_RESET, VECTOR_MENU_AUTO_RETURN_S);
 
+  /* Прогрев (SCREEN_START): таймер взведёт Button_Run_Start() при включении
+     прибора (TIME_RTC_START). Здесь - сброс, чтобы флаг случайным образом не
+     остался от прошлого включения и заставка не пролистнулась мгновенно.  */
+  RESET_TIMER_RTC(TIMER_RTC_WARM);
+
   /* Мигание зарядки/ошибок на экране (Avis: TIMER_RTC_DISP_FLASHING_SYSTEM). */
   state_flashing_system = 0u;
   START_TIMER_RTC(TIMER_RTC_DISP_FLASHING_CHARGE, TIME_RTC_DISP_FLASHING_CHARGE);
@@ -479,12 +639,33 @@ void Menu_Run(void)
   decode_button(1u, &button2);
   decode_button(2u, &button3);
 
+  /* SOS - свой счётчик (button_sos), работает на любом экране: до декодера
+     жестов, чтобы удержание Button1 3 с не «съедалось» экранной навигацией. */
+  Button_Sos();
+
   menu_navigate();
 
-  /* Авто-возврат на главный экран по истечении TIMER_RTC_MAIN_RESET. */
+  /* Заставка/прогрев: TIMER_RTC_WARM взведён при включении прибора
+     (Button_Run_Start, TIME_RTC_START = 60 с). По истечении прибор переходит в
+     рабочий режим - device_turn = DEVICE_TURNED_ON и экран измерений (Avis:
+     Screen_status_flip case 7 - TO_GO_STATE_SCREEN(STATE_SCREEN_MEASURE) +
+     device_turn = DEVICE_TURNED_ON). Всё время прогрева device_turn =
+     DEVICE_TURNED_ON_1 («включён без звука/вибро - используется для прогрева и
+     авто-выключения», shared_types.h): Menu_Run() при этом вызывается, но
+     оповещения не запускаются.                                            */
+  if ((menu_status.screen == (uint8_t)SCREEN_START) && (TEST_TIMER_RTC(TIMER_RTC_WARM) != 0)){
+    RESET_TIMER_RTC(TIMER_RTC_WARM);
+    device_turn = DEVICE_TURNED_ON;
+    LOG_I(VLOG_M_SYS, "menu: warm-up %u s done -> SCREEN_MEASURE", (uint32_t)TIME_RTC_START);
+    Menu_GoTo((uint8_t)SCREEN_MEASURE);
+  }
+
+  /* Авто-возврат на главный экран по истечении TIMER_RTC_MAIN_RESET.
+     На SCREEN_START не действует (прогрев длиннее VECTOR_MENU_AUTO_RETURN_S). */
   if (TEST_TIMER_RTC(TIMER_RTC_MAIN_RESET) != 0){
     RESET_TIMER_RTC(TIMER_RTC_MAIN_RESET);
-    if (menu_status.screen != (uint8_t)SCREEN_MEASURE){
+    if ((menu_status.screen != (uint8_t)SCREEN_MEASURE) &&
+        (menu_status.screen != (uint8_t)SCREEN_START)){
       LOG_D(VLOG_M_SYS, "menu: auto-return to SCREEN_MEASURE");
       Menu_GoTo((uint8_t)SCREEN_MEASURE);
     }
@@ -546,7 +727,21 @@ void Button_Run_Start(void)
 		if (LCD_Get_flag_init() == 0u){
 			LCD_Init();
 #if VECTOR_LCD_USE_LVGL
-			ui_lv_init();
+			/* ui_lv_init() - только ПЕРВЫЙ раз (см. lvgl_ui_inited): повтор
+			   создал бы второй lv_display и второй комплект экранов SquareLine.
+			   После программного выключения (Menu_TurnOff -> LCD_DeInit) панель
+			   поднимается TFT_Init'ом, а LVGL/UI уже живы - содержимое RAM
+			   панели потеряно, поэтому помечаем активный экран и верхний слой
+			   (там PanelHead/ImageMirax) грязными: ближайший lv_timer_handler()
+			   перерисует кадр целиком.                                     */
+			if (lvgl_ui_inited == 0u){
+				ui_lv_init();
+				lvgl_ui_inited = 1u;
+			}
+			else{
+				lv_obj_invalidate(lv_screen_active());
+				lv_obj_invalidate(lv_layer_top());
+			}
 #endif
 		}
 #endif
@@ -572,8 +767,20 @@ void Button_Run_Start(void)
 	    //------------------------------------------------------------------------
 		button1.button_count = 1;
 		button1.button_flag = 0;
+		/* SOS-счётчик гасим вместе с button1: включение - это удержание Button1
+		   1.5 с, и если кнопку держат дальше, button_sos досчитал бы до 3 с и
+		   выдал SOS сразу после включения.                                  */
+		button_sos.button_count = 0;
+		button_sos.button_flag  = 0;
 
+	    /* Прибор включён БЕЗ звука/вибро - состояние прогрева (shared_types.h:
+	       DEVICE_TURNED_ON_1 «используется для прогрева и авт выкл.»). Экран -
+	       SCREEN_START (заставка), рабочий режим включит Menu_Run() по
+	       истечении TIMER_RTC_WARM.                                        */
 	    device_turn = DEVICE_TURNED_ON_1;
+	    Menu_GoTo((uint8_t)SCREEN_START);
+	    menu_status.state_menu = 0;      /* страницы измерений - с первой    */
+	    START_TIMER_RTC(TIMER_RTC_WARM, TIME_RTC_START);
 	    //вход в обычный режим работы!!!!!!!!!!!
 	    START_TIMER_RTC(TIMER_RTC_LIGHT_RESET, TIME_RTC_LIGHT_RESET*12);
 	    CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_OFF)

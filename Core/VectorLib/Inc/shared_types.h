@@ -208,6 +208,17 @@ extern volatile uint8_t state_screen;
 #define TIME_RTC_LED_STATE_RUN_PULSE	(1u)	// пульс зеленого светодиода, с
 #define TIME_RTC_LED_STATE_RUN_PERIOD	(5u)	// период зеленого светодиода, с
 #define TIME_RTC_DISP_FLASHING_CHARGE	(1u)	// период мигания зарядки/ошибок на экране, с (Avis: TIME_RTC_DISP_FLASHING_ERR)
+/* Заставка/прогрев (SCREEN_START): сколько прибор стоит на стартовом экране до
+   перехода в рабочий режим (device_turn = DEVICE_TURNED_ON + SCREEN_MEASURE).
+   Таймер - TIMER_RTC_WARM, взводит Button_Run_Start() при включении прибора
+   (Menu_vector.c), проверяет Menu_Run(). В Avis этой паре соответствовал
+   TIME_RTC_WARM из Screen_status_flip/Warm_Screen_statuses.               */
+#define TIME_RTC_START				(60u)
+/* Чередование страницы измерений со строкой ошибки (режим MEAS_ERR), с: пока
+   error_queue_count != 0, LCD_MeasureScreen() раз в TIME_RTC_DISP_FLASHING_ERR
+   секунд показывает вместо текущей страницы ошибку (и обратно). Таймер -
+   TIMER_RTC_DISP_FLASHING_ERR («Таймер переключения ошибок на экране»).   */
+#define TIME_RTC_DISP_FLASHING_ERR	(3u)
 //--------------------------------------------------------------------------------------------------------------
 /* Пороги сигнализации батареи, мВ (Li-ion) - заводские значения DefaultConfig(). */
 #define BAT_MAX_DEF				(4200u)
@@ -289,27 +300,9 @@ extern SNS_Dev_Type		Connected_device;
 // Avis_Menu_Functionality.c; сигнатура адаптирована: вместо SNS_CFG_Type* -
 // слово Setting канала, вместо num1 - селектор MEASURE_SEL_*). Возврат:
 // 1/10/100/1000; 0 = степень вне диапазона (невалидные биты дискретности).
-// static inline - доступна и прошивке, и хост-тестам.
-static inline uint16_t calculating_the_discreteness(uint16_t device_setting, uint16_t sel)
-{
-	uint16_t degree;
-
-	if (sel == (uint16_t)MEASURE_SEL_BASIC) {
-		degree = (uint16_t)((device_setting & MEASURE_DISK_BASIC) >> (MEASURE_OFFSET_BASIC + OFFSET_DISK));
-	}
-	else if (sel == (uint16_t)MEASURE_SEL_DISP) {
-		degree = (uint16_t)((device_setting & MEASURE_DISK) >> OFFSET_DISK);
-	}
-	else {
-		return 0;
-	}
-
-	if (degree == 0u)  { return 1u; }
-	if (degree == 1u)  { return 10u; }
-	if (degree == 2u)  { return 100u; }
-	if (degree == 3u)  { return 1000u; }
-	return 0u;
-}
+// ОПРЕДЕЛЕНИЕ - shared_types.c (замечание автора: функции в .h не держим -
+// в заголовке остаётся только прототип).
+extern uint16_t calculating_the_discreteness(uint16_t device_setting, uint16_t sel);
 
 //--------------------------------------------------------------------------------------------------------------
 /* ТЕЛЕМЕТРИЯ BLE-ОКРУЖЕНИЯ - хранилище данных, которые BLE-модуль читает
