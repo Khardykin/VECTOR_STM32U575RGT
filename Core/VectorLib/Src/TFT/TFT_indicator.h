@@ -101,6 +101,27 @@ extern void LCD_Image_SET(uint8_t state);
 extern void ui_reset_visibility_flags(void);
 extern void ui_apply_visibility(void);
 //===========================================================================================================================
+/* Режимы панелей экрана измерений (SCREEN_MEASURE -> ui_ScreenMeasurements).
+   Один режим = одна конфигурация панели: какие элементы видны, где стоят, каким
+   шрифтом и цветом (таблица meas_layout[] в TFT_indicator.c) и какие данные туда
+   пишутся (meas_fill()). MEAS_MODE_END - страж размера таблицы, не режим.      */
+enum{
+	MEAS_NONE = 0,		/* панель не участвует в этой странице (скрыта)        */
+	MEAS_DEFAULT,		/* первоначальная настройка (раскладка из дизайна)     */
+	MEAS_TEMP,		/* температура воздуха                                 */
+	MEAS_HUM,		/* влажность                                           */
+	MEAS_PRESS,		/* атмосферное давление                                */
+	MEAS_COORD,		/* координаты: широта + долгота, панель на весь экран  */
+	MEAS_AQI,		/* индекс качества воздуха                             */
+	MEAS_HEART,		/* пульс, панель на весь экран                         */
+	MEAS_VOICE,		/* голосовые сообщения (только иконка)                 */
+	MEAS_CHAT,		/* текстовые сообщения/чат (только иконка)             */
+	MEAS_RSSI,		/* уровень сигнала                                     */
+	MEAS_SAT,		/* количество спутников                                */
+	MEAS_ERR,		/* строка текущей ошибки, панель на весь экран         */
+	MEAS_MODE_END
+};
+//===========================================================================================================================
 extern void LCD_Menu(uint8_t num);
 extern void LCD_SubMenu_Single(uint8_t num, uint16_t roller);
 extern void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num);
@@ -110,6 +131,19 @@ extern void LCD_SubMenuSetting_Panel_Head_Button_1(bool show_roller, int8_t rank
 extern void LCD_SubMenuSetting_Panel_Head_Button_2(bool show_roller, int8_t rank, uint16_t enter);
 extern void LCD_SubMenuSetting_Panel_Head_Button_3(bool show_roller, int8_t rank, uint16_t enter);
 extern void LCD_SubMenuSetting_Panel_Head_Text(bool show_roller, int8_t rank, uint16_t enter);
+//===========================================================================================================================
+/* Экран измерений (SCREEN_MEASURE, дизайн ui_ScreenMeasurements).
+   LCD_Measure()       - режим ОДНОЙ панели: panel 0 = ui_PanelMeasure (левая,
+                         x = -79), 1 = ui_PanelMeasure1 (правая, x = +80);
+                         mode = MEAS_* (enum выше); value/name/units - готовые
+                         строки, NULL = текст этого элемента не менять (геометрия
+                         раскладки применяется в любом случае);
+   LCD_MeasureScreen() - экран ЦЕЛИКОМ: num = menu_status.state_menu (страница
+                         0..VECTOR_MEASURE_PAGES-1, таблица meas_pages[]), строки
+                         берутся из данных прибора. Вызов - из Menu_Draw()
+                         (поток LVGL Task); из ISR и других потоков не звать. */
+extern void LCD_Measure(uint8_t panel, uint8_t mode, const char *value, const char *name, const char *units);
+extern void LCD_MeasureScreen(uint8_t num);
 //===========================================================================================================================
 extern void LCD_Battery(uint16_t precent, uint16_t state_flashing);
 //===========================================================================================================================

@@ -62,6 +62,17 @@ static uint8_t state_flashing_system = 0;
    (в Avis: scroll_down(state_menu, 4) / (state_submenu, info_total_pages)). */
 #define MENU_ITEMS_COUNT    ((uint8_t)VECTOR_MENU_ITEMS)
 
+/* Страницы экрана измерений: сколько их и что на каждой - решает слой индикации
+   (таблица meas_pages[] в TFT_indicator.c, отрисовка LCD_MeasureScreen). Число
+   страниц = VECTOR_MEASURE_PAGES (vector_config.h): оно же - предел скролла
+   state_menu в menu_navigate() и размер meas_pages[] (совпадение проверяет
+   статический ассерт там же). Без экрана листать нечего (как MENU_INFO_PAGES). */
+#if (CONFIG_TYPE_LCD_TFT != 0)
+#define MEASURE_PAGES_COUNT ((uint8_t)VECTOR_MEASURE_PAGES)
+#else
+#define MEASURE_PAGES_COUNT (1u)
+#endif
+
 /* Число страниц/строк подэкранов меню определяет слой индикации
    (TFT_indicator): info_total_pages считает LCD_SubMenuInfo по числу строк,
    строки настроек - Panel1..3 (LCD_SubMenuSetting). Без экрана листать нечего. */
@@ -100,9 +111,10 @@ static uint8_t scroll_up(uint8_t current, uint8_t max)
    при переходе) - все вызовы LVGL из одного потока. Шаги как в Avis:
    время -> шаблон (поворот/язык/смена экрана) -> верхняя панель (батарея с
    фазой мигания) -> текущий экран (меню/инфо/настройки) -> видимость иконок.
-   Дальше сюда встанут: LCD_UpdateErrorDisplay (строка ошибок), иконки
-   статусов (SET_GPS/BLE/LORA... по ST_COMMON_BIT_TURN_ON_*), экраны
-   измерений/сообщений (автор).                                             */
+   Экран измерений (SCREEN_MEASURE) рисует LCD_MeasureScreen() - TFT_indicator.c,
+   строку ошибок ротует LCD_UpdateErrorDisplay() (текст - current_error_text,
+   его же печатает режим MEAS_ERR). Дальше сюда встанут: иконки статусов
+   (SET_GPS/BLE/LORA... по ST_COMMON_BIT_TURN_ON_*) и экраны сообщений (автор). */
 void Menu_Draw(void)
 {
   /* Текущее время прибора (автор): секунды RTC + сдвиг часового пояса. */
@@ -129,9 +141,28 @@ void Menu_Draw(void)
   /* Верхняя панель (top layer): заряд батареи, % и анимация зарядки. */
   LCD_Battery(sensors_status.battery_charge_percent, state_flashing_system);
 
+  /* Строка ошибок (в Avis - в DisplayIndication, каждый проход): хэш изменился
+     -> пересборка очереди, фаза мигания -> ротация текста, результат -
+     current_error_text[] (его печатает режим MEAS_ERR экрана измерений).
+     Дёшево: LCD_CalculateErrorHash() - одно сравнение маски StateErr, очередь
+     пересобирается только когда она реально изменилась. ui_next_state.info_str
+     функция тоже ставит, но сейчас его никто не читает (ui_apply_visibility()
+     работает только с иконками), т.е. на картинку вызов не влияет. Зовём ДО
+     отрисовки экрана, чтобы текст ошибки и страница измерений попали в один
+     кадр.                                                                 */
+  LCD_UpdateErrorDisplay(&Sns_Cfg_struct, state_flashing_system);
+
   /* Покранная отрисовка (Avis: switch(IS_STATE_SCREEN()) в DisplayIndication). */
   switch (IS_STATE_SCREEN())
   {
+    /* Экран измерений: страница state_menu -> режимы обеих панелей и их данные
+       (таблицы meas_pages[]/meas_layout[], форматирование и раскладка - в
+       TFT_indicator.c). Геометрию LCD_Measure() ставит только при смене
+       режима/пересоздании экрана, тексты - через «умные» ui_set_*: кадр не
+       инвалидируется, если значение не изменилось.                         */
+    case SCREEN_MEASURE:
+      LCD_MeasureScreen(menu_status.state_menu);
+      break;
     case SCREEN_MENU:
       LCD_Menu(menu_status.state_menu);
       break;
@@ -141,7 +172,7 @@ void Menu_Draw(void)
     case SCREEN_SETTING:
       LCD_SubMenuSetting(&Sns_Cfg_struct, menu_status.state_submenu);
       break;
-    default:   /* START/MEASURE/CONNECT/MESSAGE - экраны автора (ждут отрисовку) */
+    default:   /* START/CONNECT/MESSAGE - экраны автора (ждут отрисовку) */
       break;
   }
 
@@ -315,11 +346,11 @@ static void menu_navigate(void)
 	   uint8_t sub = 0;
       if (g2 == (uint8_t)GEST_SHORT)
       {
-    	  menu_status.state_menu = scroll_down(menu_status.state_menu, 6);
+    	  menu_status.state_menu = scroll_down(menu_status.state_menu, MEASURE_PAGES_COUNT);
       }
       else if (g3 == (uint8_t)GEST_SHORT)
       {
-    	  menu_status.state_menu = scroll_up(menu_status.state_menu, 6);
+    	  menu_status.state_menu = scroll_up(menu_status.state_menu, MEASURE_PAGES_COUNT);
       }
       else if (g3 == (uint8_t)GEST_LONG){
     	  if(menu_status.state_menu == 5){

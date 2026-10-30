@@ -404,6 +404,30 @@
                                             числу экранов SquareLine после MAIN) */
 #endif
 
+/* --- ЭКРАН ИЗМЕРЕНИЙ (SCREEN_MEASURE, дизайн ui_ScreenMeasurements) --------
+ * Страницы и раскладки панелей - таблицы meas_pages[] / meas_layout[] в
+ * TFT_indicator.c (LCD_Measure/LCD_MeasureScreen).
+ * VECTOR_MEASURE_PAGES       число страниц экрана: ОДНА страница = режимы двух
+ *                           панелей (PanelMeasure слева, PanelMeasure1 справа);
+ *                           в режимах «координаты / пульс / ошибки» одна панель
+ *                           растягивается на весь контейнер, вторая гасится
+ *                           (MEAS_NONE). Макрос задаёт и размер meas_pages[]
+ *                           (совпадение проверяет статический ассерт), и предел
+ *                           скролла в menu_navigate() (case SCREEN_MEASURE).
+ * VECTOR_LCD_MEASURE_AUTOFIT 1 = значение (LabelMeas) печатается шрифтом
+ *                           number85, а если строка шире панели - number36,
+ *                           затем number21 (в ui.h объявлены только эти три:
+ *                           number85/36/21/14/9). Штатное "143" из дизайна -
+ *                           144 px при ширине панели 152 px, поэтому "23.5"
+ *                           (167 px) и "101.3" (215 px) без подбора обрезались
+ *                           бы по границе панели. 0 = всегда number85.        */
+#ifndef VECTOR_MEASURE_PAGES
+#define VECTOR_MEASURE_PAGES        7u
+#endif
+#ifndef VECTOR_LCD_MEASURE_AUTOFIT
+#define VECTOR_LCD_MEASURE_AUTOFIT  1
+#endif
+
 /* --- РАБОЧЕЕ: экран TFT (ST7789P3 172x320, SPI2 + GPDMA1 Channel8) ---------
  * Драйвер - Core/VectorLib/Src/TFT/LCD_platform.c (переведён с AT32 на HAL,
  * названия функций сохранены). Периферию задаёт CubeMX: SPI2 8 бит Simplex TX,
