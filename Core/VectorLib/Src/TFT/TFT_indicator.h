@@ -101,6 +101,14 @@ extern void LCD_Image_SET(uint8_t state);
 extern void ui_reset_visibility_flags(void);
 extern void ui_apply_visibility(void);
 //===========================================================================================================================
+/* Иконка радиомодуля в заголовке (ui_ImageLora): КАРТИНКА - по конфигурации
+   сборки (CONFIG_LORA -> Lora.png, CONFIG_G4 -> 3G.png, CONFIG_NBIOT ->
+   NB-IoT.png), ВИДИМОСТЬ - по битам ST_COMMON_BIT_TURN_ON_LORA /
+   ST_COMMON_BIT_TURN_ON_GSM в Config_common.State (SNS_CFG_Type_common).
+   Вызов - из Menu_Draw() после LCD_Fill_Template() и до ui_apply_visibility()
+   (поток LVGL Task).                                                        */
+extern void LCD_RadioIcon(void);
+//===========================================================================================================================
 /* Режимы панелей экрана измерений (SCREEN_MEASURE -> ui_ScreenMeasurements).
    Один режим = одна конфигурация панели: какие элементы видны, где стоят, каким
    шрифтом и цветом (таблица meas_layout[] в TFT_indicator.c) и какие данные туда
