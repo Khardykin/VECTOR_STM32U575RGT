@@ -111,6 +111,8 @@ void Menu_Init(void);
    проход (50 мс). НЕ блокируется.                                           */
 void Menu_Run(void);
 
+void Button_Run_Backlight(void);
+
 /* Перейти на экран (счётчики + лог; отрисовка - следующий цикл Menu_Draw).
    КОНТЕКСТ: поток LVGL Task (indication).                                   */
 void Menu_GoTo(uint8_t screen);
