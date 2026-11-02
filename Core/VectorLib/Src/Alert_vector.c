@@ -85,7 +85,17 @@ static const alert_desc_t s_desc[ALERT_ID_COUNT] =
   { "",                NOTIFY_PRIO_SERVICE, 0u,               0u,                     0u,                    0u, 0u, ALERT_SND_NONE,       0u,                   ALERT_SEV_INFO,     0u                   },
   /* «ОСТОРОЖНО! ГАЗ!» - пороги своего газоанализатора Avis ИЛИ команда
      сервера; на экране виден ID трекера-источника (требование автора п.4)   */
-  { "ОСТОРОЖНО! ГАЗ!", NOTIFY_PRIO_ALARM,   ALERT_CH_ALARM,   ALERT_PERIOD_GAS_MS,    ALERT_PAUSE_GAS_MS,    0u, 1u, ALERT_SND_GAS,        0u,                   ALERT_SEV_CRITICAL, ALERT_GAS_HOLD_S     },
+  { "ОСТОРОЖНО! ГАЗ!",
+		  NOTIFY_PRIO_ALARM,
+		  ALERT_CH_ALARM,
+		  ALERT_PERIOD_GAS_MS,
+		  ALERT_PAUSE_GAS_MS,
+		  0u,
+		  1u,
+		  ALERT_SND_GAS,
+		  0u,
+		  ALERT_SEV_CRITICAL,
+		  ALERT_GAS_HOLD_S     },
   /* «ВСЕМ НА ВЫХОД» - бит сервера (пока поднят) или трекер-«мастер»         */
   { "ВСЕМ НА ВЫХОД",   NOTIFY_PRIO_ALARM,   ALERT_CH_ALARM,   ALERT_PERIOD_EVAC_MS,   ALERT_PAUSE_EVAC_MS,   1u, 1u, ALERT_SND_EVACUATION, 0u,                   ALERT_SEV_CRITICAL, ALERT_EVAC_HOLD_S    },
   /* Неподвижность: инцидент «Отсутствие активности» (EventLog 0x10).
