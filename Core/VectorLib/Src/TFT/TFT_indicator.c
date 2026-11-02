@@ -1167,265 +1167,15 @@ void LCD_SubMenuSetting(SNS_CFG *pSnsCfg, uint8_t num)
 }
 
 //===========================================================================================================================
-// ЭКРАН ИЗМЕРЕНИЙ (SCREEN_MEASURE -> ui_ScreenMeasurements)
-//
-// Панели в дизайне SquareLine ОДИНАКОВЫЕ: PanelMeasure (x=-79) и PanelMeasure1
-// (x=+80), по 152x144, LV_ALIGN_CENTER в ContainerMeasure (311x144, y=6).
-// Состав панели: ImageMeas (иконка), LabelMeas (значение, шрифт number85),
-// LabelMeasName (подпись, number21), LabelMeasUnits (единицы, number21).
-// В режимах «координаты / пульс / ошибки» ОДНА панель растягивается на весь
-// контейнер (x=0, w=311), вторая гасится (ей передаётся MEAS_NONE).
-//
-// ДВА УРОВНЯ API (по просьбе автора: «чтобы выбиралось, в какую панель писать,
-// какой режим и входные данные»):
-//   LCD_Measure(panel, mode, value, name, units) - применить режим к ОДНОЙ
-//       панели: геометрия/видимость/шрифты/цвет + текст.
-//       panel: 0 = PanelMeasure (левая), 1 = PanelMeasure1 (правая);
-//       mode : MEAS_* (TFT_indicator.h), MEAS_NONE = погасить панель;
-//       строка NULL = текст этого элемента не менять (раскладка применяется в
-//       любом случае - можно перерисовать геометрию, не трогая данные).
-//   LCD_MeasureScreen(num) - экран ЦЕЛИКОМ: страница meas_pages[num] задаёт
-//       режимы обеих панелей, значения берутся из данных прибора. Зовётся из
-//       Menu_Draw() при SCREEN_MEASURE, num = menu_status.state_menu.
-//
-// Раскладка режимов - meas_layout[] («виды конфигурации» автора), соответствие
-// «страница -> режимы панелей» - meas_pages[]: обе таблицы правятся в одном
-// месте. Число страниц = VECTOR_MEASURE_PAGES (vector_config.h) - оно же задаёт
-// предел скролла в menu_navigate() (case SCREEN_MEASURE).
-//
-// ВСЕ сеттеры - «умные» (ui_set_* в начале файла): свойство меняется, только
-// если оно действительно изменилось. Геометрия/стили ставятся ДОПОЛНИТЕЛЬНО
-// только при смене режима или пересоздании экрана (см. layout в LCD_Measure) -
-// иначе lv_obj_set_pos() инвалидировал бы экран каждые 100 мс.
-// КОНТЕКСТ: поток LVGL Task (Menu_Draw); из ISR/других потоков не вызывать.
+// ЭКРАН ИЗМЕРЕНИЙ (SCREEN_MEASURE -> ui_ScreenMeasurements): ФУНКЦИИ
+// Все макросы, структуры и таблицы этого экрана (meas_layout[], meas_panel[],
+// meas_pages[], кэши раскладок, MEAS_*) - В ОДНОМ МЕСТЕ, в блоке данных в
+// начале файла (замечание автора: «структуры и макросы и константы определи в
+// файле где-то в одном месте, по середине файла между функциями не надо»).
+// Здесь только код: meas_reset_cache(), форматирование (meas_f2i/meas_fmt_*),
+// подбор шрифта (meas_set_value), режим одной панели LCD_Measure(), наполнение
+// данными meas_fill() и экран целиком LCD_MeasureScreen().
 //===========================================================================================================================
-/* Геометрия панелей - из ui_ScreenMeasurements.c (экспорт SquareLine). */
-#define MEAS_PANEL_H         (144)
-#define MEAS_PANEL_W_HALF    (152)   /* половина контейнера: две панели рядом  */
-#define MEAS_PANEL_W_FULL    (311)   /* панель на весь контейнер               */
-#define MEAS_PANEL_X_LEFT    (-79)
-#define MEAS_PANEL_X_RIGHT   (80)
-#define MEAS_PANEL_X_FULL    (0)
-
-/* Выравнивание элементов - из дизайна SquareLine (ui_ScreenMeasurements.c):
-   ImageMeas/LabelMeasName/LabelMeasUnits - LV_ALIGN_TOP_MID, LabelMeas -
-   LV_ALIGN_CENTER. Смещения x/y в раскладке ниже задаются ОТНОСИТЕЛЬНО этих
-   точек выравнивания (как в описании автора), поэтому менять align не нужно. */
-
-/* Размеры строк (статические буферы, по одному на панель). */
-#define MEAS_VALUE_SZ        (16u)   /* "101.3", "23.5", "-12", "7"            */
-#define MEAS_NAME_SZ         (48u)   /* "55.678490 N" или текст ошибки (current_error_text[40]) */
-#define MEAS_UNITS_SZ        (24u)   /* "°C", "%", "кПа", вторая координата    */
-
-/* Заглушка для режимов, у которых в проекте пока нет источника данных (решение
-   автора): на экране её видно, и она не путается с настоящим нулём. */
-#define MEAS_NO_DATA         "--"
-
-/* Число шрифтов для автоподбора значения. number85 = 48 px на цифру (adv_w
-   766/16), поэтому в половину панели (152 px минус паддинги темы) влезает
-   только ТРИ знака - ровно как "143" в дизайне. "23.5" (4 знака = 165 px) и
-   "101.3" (5 знаков = 213 px) LVGL обрезал бы по границе панели (дочерние
-   объекты режутся, если не выставлен LV_OBJ_FLAG_OVERFLOW_VISIBLE), поэтому
-   значение, которое не влезает, печатаем шрифтом мельче: number36 (~20 px на
-   цифру), затем number21 (~12 px). Отключается VECTOR_LCD_MEASURE_AUTOFIT 0
-   (vector_config.h) - тогда всегда number85. В ui.h объявлены только
-   number85/36/21/14/9: файлы number11/16/18 в экспорт SquareLine не попали. */
-#define MEAS_VALUE_FONT_N    (3u)
-
-//------------------------------------------------------------------------------
-/* Раскладка ОДНОГО режима (координаты/видимость/шрифты - по описанию автора). */
-typedef struct
-{
-	uint8_t      full_width;    /* 1 = панель на весь контейнер (x=0, w=311)   */
-	uint8_t      img_visible;   /* ImageMeas                                   */
-	uint8_t      val_visible;   /* LabelMeas      (значение)                   */
-	uint8_t      name_visible;  /* LabelMeasName  (подпись)                    */
-	uint8_t      units_visible; /* LabelMeasUnits (единицы)                    */
-	int16_t      img_x,   img_y;    lv_align_t img_align;
-	int16_t      val_x,   val_y;    lv_align_t val_align;
-	int16_t      name_x,  name_y;   lv_align_t name_align;
-	int16_t      units_x, units_y;  lv_align_t units_align;
-	const lv_font_t * name_font;    /* шрифт подписи (number21 / number36)     */
-	const lv_font_t * units_font;   /* шрифт единиц                            */
-	uint8_t      val_color2;    /* 1 = цвет значения textcolor2 (зелёный),
-	                               0 = textcolor (чёрный)                      */
-	uint8_t      name_line;     /* 1 = подпись во всю ширину панели, текст
-	                               влево, длинная строка прокручивается
-	                               (режим «Ошибки»); 0 = ширина по содержимому */
-	const void  *img_src;       /* иконка режима; NULL = текущую не менять     */
-} meas_layout_t;
-
-/* Виды конфигурации автора. Порядок полей - см. meas_layout_t; незаполненные
-   поля = 0/NULL (C99 designated initializers). */
-static const meas_layout_t meas_layout[MEAS_MODE_END] =
-{
-	/* ничего не показывать: панель гасится целиком (вторая заняла весь экран) */
-	[MEAS_NONE] = {
-		.name_font = &ui_font_number21, .units_font = &ui_font_number21 },
-
-	/* Первоначальная настройка (база для остальных режимов):
-	   LabelMeas(0,30) ImageMeas(55,-5) LabelMeasName(25,0) LabelMeasUnits(50,25) */
-	[MEAS_DEFAULT] = {
-		.img_visible = 1, .val_visible = 1, .name_visible = 1, .units_visible = 1,
-		.img_x = 55, .img_y = -5, .img_align = LV_ALIGN_TOP_MID,
-		.val_x = 0, .val_y = 30, .val_align = LV_ALIGN_CENTER,
-		.name_x = 25, .name_y = 0, .name_align = LV_ALIGN_TOP_MID,
-		.units_x = 50, .units_y = 25, .units_align = LV_ALIGN_TOP_MID,
-		.name_font = &ui_font_number21, .units_font = &ui_font_number21,
-		.img_src = NULL },
-
-	/* Температура: LabelMeasName(35,0) */
-	[MEAS_TEMP] = {
-		.img_visible = 1, .val_visible = 1, .name_visible = 1, .units_visible = 1,
-		.img_x = 55, .img_y = -5, .img_align = LV_ALIGN_TOP_MID,
-		.val_x = 0, .val_y = 30, .val_align = LV_ALIGN_CENTER,
-		.name_x = 35, .name_y = 0, .name_align = LV_ALIGN_TOP_MID,
-		.units_x = 50, .units_y = 25, .units_align = LV_ALIGN_TOP_MID,
-		.name_font = &ui_font_number21, .units_font = &ui_font_number21,
-		.img_src = &ui_img_imagemenu_temp_png },
-
-	/* Влажность: LabelMeasName(35,0) */
-	[MEAS_HUM] = {
-		.img_visible = 1, .val_visible = 1, .name_visible = 1, .units_visible = 1,
-		.img_x = 55, .img_y = -5, .img_align = LV_ALIGN_TOP_MID,
-		.val_x = 0, .val_y = 30, .val_align = LV_ALIGN_CENTER,
-		.name_x = 35, .name_y = 0, .name_align = LV_ALIGN_TOP_MID,
-		.units_x = 50, .units_y = 25, .units_align = LV_ALIGN_TOP_MID,
-		.name_font = &ui_font_number21, .units_font = &ui_font_number21,
-		.img_src = &ui_img_imagemenu_humidity_png },
-
-	/* Давление: LabelMeasName(25,0) */
-	[MEAS_PRESS] = {
-		.img_visible = 1, .val_visible = 1, .name_visible = 1, .units_visible = 1,
-		.img_x = 55, .img_y = -5, .img_align = LV_ALIGN_TOP_MID,
-		.val_x = 0, .val_y = 30, .val_align = LV_ALIGN_CENTER,
-		.name_x = 25, .name_y = 0, .name_align = LV_ALIGN_TOP_MID,
-		.units_x = 50, .units_y = 25, .units_align = LV_ALIGN_TOP_MID,
-		.name_font = &ui_font_number21, .units_font = &ui_font_number21,
-		.img_src = &ui_img_imagemenu_pressure_png },
-
-	/* Координаты: панель на весь экран; ImageMeas и LabelMeas скрыты;
-	   LabelMeasName(0,15) и LabelMeasUnits(0,60) - обе строки шрифтом number36
-	   (широта в подписи, долгота в «единицах») */
-	[MEAS_COORD] = {
-		.full_width = 1,
-		.name_visible = 1, .units_visible = 1,
-		.img_align = LV_ALIGN_TOP_MID,
-		.val_x = 0, .val_y = 30, .val_align = LV_ALIGN_CENTER,
-		.name_x = 0, .name_y = 15, .name_align = LV_ALIGN_TOP_MID,
-		.units_x = 0, .units_y = 60, .units_align = LV_ALIGN_TOP_MID,
-		.name_font = &ui_font_number36, .units_font = &ui_font_number36,
-		.img_src = NULL },
-
-	/* AQI (индекс качества воздуха): LabelMeas(0,30) цветом textcolor2
-	   (зелёный), ImageMeas и LabelMeasUnits скрыты; подпись - справа сверху,
-	   на месте пары «подпись+иконка» из остальных режимов (в макете «AQI»
-	   стоит у правого края, иконки у режима нет) */
-	[MEAS_AQI] = {
-		.val_visible = 1, .name_visible = 1,
-		.img_align = LV_ALIGN_TOP_MID,
-		.val_x = 0, .val_y = 30, .val_align = LV_ALIGN_CENTER,
-		.name_x = 45, .name_y = 0, .name_align = LV_ALIGN_TOP_MID,
-		.units_x = 50, .units_y = 25, .units_align = LV_ALIGN_TOP_MID,
-		.name_font = &ui_font_number21, .units_font = &ui_font_number21,
-		.val_color2 = 1, .img_src = NULL },
-
-	/* Пульс: панель на весь экран; LabelMeasUnits скрыт;
-	   LabelMeasName(115,25) ImageMeas(130,0) LabelMeas(0,0) цвет textcolor */
-	[MEAS_HEART] = {
-		.full_width = 1,
-		.img_visible = 1, .val_visible = 1, .name_visible = 1,
-		.img_x = 130, .img_y = 0, .img_align = LV_ALIGN_TOP_MID,
-		.val_x = 0, .val_y = 0, .val_align = LV_ALIGN_CENTER,
-		.name_x = 115, .name_y = 25, .name_align = LV_ALIGN_TOP_MID,
-		.units_x = 50, .units_y = 25, .units_align = LV_ALIGN_TOP_MID,
-		.name_font = &ui_font_number21, .units_font = &ui_font_number21,
-		.img_src = &ui_img_imagemenu_heart_png },
-
-	/* Голосовые сообщения: подписи скрыты, иконка по центру панели */
-	[MEAS_VOICE] = {
-		.img_visible = 1,
-		.img_x = 0, .img_y = 0, .img_align = LV_ALIGN_CENTER,
-		.val_x = 0, .val_y = 30, .val_align = LV_ALIGN_CENTER,
-		.name_x = 25, .name_y = 0, .name_align = LV_ALIGN_TOP_MID,
-		.units_x = 50, .units_y = 25, .units_align = LV_ALIGN_TOP_MID,
-		.name_font = &ui_font_number21, .units_font = &ui_font_number21,
-		.img_src = &ui_img_imagemenu_voice_png },
-
-	/* Чат (текстовые сообщения): подписи скрыты, иконка по центру панели */
-	[MEAS_CHAT] = {
-		.img_visible = 1,
-		.img_x = 0, .img_y = 0, .img_align = LV_ALIGN_CENTER,
-		.val_x = 0, .val_y = 30, .val_align = LV_ALIGN_CENTER,
-		.name_x = 25, .name_y = 0, .name_align = LV_ALIGN_TOP_MID,
-		.units_x = 50, .units_y = 25, .units_align = LV_ALIGN_TOP_MID,
-		.name_font = &ui_font_number21, .units_font = &ui_font_number21,
-		.img_src = &ui_img_imagemenu_chat_png },
-
-	/* RSSI: LabelMeasUnits скрыт; LabelMeasName(-40,10) = «RSSI:» слева сверху
-	   (макет), значение - в LabelMeas(0,30) */
-	[MEAS_RSSI] = {
-		.img_visible = 1, .val_visible = 1, .name_visible = 1,
-		.img_x = 55, .img_y = -5, .img_align = LV_ALIGN_TOP_MID,
-		.val_x = 0, .val_y = 30, .val_align = LV_ALIGN_CENTER,
-		.name_x = -40, .name_y = 10, .name_align = LV_ALIGN_TOP_MID,
-		.units_x = 50, .units_y = 25, .units_align = LV_ALIGN_TOP_MID,
-		.name_font = &ui_font_number21, .units_font = &ui_font_number21,
-		.img_src = &ui_img_imagemenu_ltebig_png },
-
-	/* Количество спутников: в макете только иконка и число - LabelMeasName и
-	   LabelMeasUnits скрыты, число - в LabelMeas(0,30) */
-	[MEAS_SAT] = {
-		.img_visible = 1, .val_visible = 1,
-		.img_x = 55, .img_y = -5, .img_align = LV_ALIGN_TOP_MID,
-		.val_x = 0, .val_y = 30, .val_align = LV_ALIGN_CENTER,
-		.name_x = 25, .name_y = 0, .name_align = LV_ALIGN_TOP_MID,
-		.units_x = 50, .units_y = 25, .units_align = LV_ALIGN_TOP_MID,
-		.name_font = &ui_font_number21, .units_font = &ui_font_number21,
-		.img_src = &ui_img_imagemenu_satellite_png },
-
-	/* Ошибки: панель на весь экран; ImageMeas/LabelMeas/LabelMeasUnits скрыты;
-	   LabelMeasName(0,15) number21, текст ВЛЕВО и во всю ширину панели (длинная
-	   строка прокручивается) - сюда встаёт текст из LCD_UpdateErrorDisplay */
-	[MEAS_ERR] = {
-		.full_width = 1,
-		.name_visible = 1,
-		.img_align = LV_ALIGN_TOP_MID,
-		.val_x = 0, .val_y = 30, .val_align = LV_ALIGN_CENTER,
-		.name_x = 0, .name_y = 15, .name_align = LV_ALIGN_TOP_MID,
-		.units_x = 50, .units_y = 25, .units_align = LV_ALIGN_TOP_MID,
-		.name_font = &ui_font_number21, .units_font = &ui_font_number21,
-		.name_line = 1, .img_src = NULL },
-};
-
-//------------------------------------------------------------------------------
-/* Объекты панели. Храним указатели НА ПЕРЕМЕННЫЕ SquareLine (ui_PanelMeasure и
-   т.д.), а не их значения: ui_ScreenMeasurements_screen_init() перезаписывает
-   их при создании экрана, а ui_ScreenMeasurements_screen_destroy() (зовётся из
-   scr_unloaded_delete_cb при уходе с экрана) - обнуляет. Поэтому разыменовываем
-   перед каждым использованием и проверяем NULL. */
-typedef struct
-{
-	lv_obj_t ** panel;
-	lv_obj_t ** img;
-	lv_obj_t ** val;
-	lv_obj_t ** name;
-	lv_obj_t ** units;
-} meas_panel_t;
-
-static const meas_panel_t meas_panel[2] =
-{
-	{ &ui_PanelMeasure,  &ui_ImageMeas,  &ui_LabelMeas,  &ui_LabelMeasName,  &ui_LabelMeasUnits  },
-	{ &ui_PanelMeasure1, &ui_ImageMeas1, &ui_LabelMeas1, &ui_LabelMeasName1, &ui_LabelMeasUnits1 },
-};
-
-/* Кэш на панель: последний режим и указатель панели, плюс последний текст
-   значения (чтобы не подбирать шрифт каждый проход). Сбрасывает их
-   meas_reset_cache() - см. вызов в LCD_Fill_Template(). */
-static uint8_t   meas_mode_cache[2] = { (uint8_t)MEAS_MODE_END, (uint8_t)MEAS_MODE_END };
-static lv_obj_t *meas_pnl_cache[2]  = { NULL, NULL };
-static char      meas_value_cache[2][MEAS_VALUE_SZ];
-
 /* Экран ПЕРЕСОЗДАН: кэши раскладок надо сбросить, иначе LCD_Measure() решит,
    что геометрия уже выставлена, а объекты на самом деле свежие - со значениями
    из дизайна SquareLine (панель 152x144, "143"/"H"/"°C", шрифт number85, цвет
@@ -1445,28 +1195,6 @@ static void meas_reset_cache(void)
 	}
 }
 
-/* Страницы экрана измерений: state_menu (0..VECTOR_MEASURE_PAGES-1) -> режим
-   левой и правой панелей; MEAS_NONE = панель скрыта (её место занял режим с
-   full_width). Порядок страниц и состав панелей - по макету автора:
-   «Индекс» (AQI|T, H|P), «Координаты», «Спутники и RSSI», «Пульс»,
-   «Сообщения».
-   Страницы 5 и 6 - это ОДНА страница «Сообщения» (голосовые | чат): они
-   отличаются ТОЛЬКО подсветкой панелей (см. LCD_MeasureScreen) - это выбор
-   пункта меню 5/6, куда пойдёт LONG Button3: 5 -> SCREEN_VOICE_MESSAGE,
-   6 -> SCREEN_TEXT_MESSAGE (ветки в menu_navigate, скролл 0..6).
-   MEAS_ERR в ротацию НЕ включён: строку ошибок логичнее показывать по событию
-   (или подменять ею страницу при error_queue_count != 0) - решение за автором. */
-static const uint8_t meas_pages[VECTOR_MEASURE_PAGES][2] =
-{
-	{ (uint8_t)MEAS_AQI,   (uint8_t)MEAS_TEMP  },   /* 0 AQI (зелёный) | температура */
-	{ (uint8_t)MEAS_HUM,   (uint8_t)MEAS_PRESS },   /* 1 влажность     | давление    */
-	{ (uint8_t)MEAS_COORD, (uint8_t)MEAS_NONE  },   /* 2 координаты (весь экран)     */
-	{ (uint8_t)MEAS_RSSI,  (uint8_t)MEAS_SAT   },   /* 3 RSSI          | спутники    */
-	{ (uint8_t)MEAS_HEART, (uint8_t)MEAS_NONE  },   /* 4 пульс (весь экран)          */
-	{ (uint8_t)MEAS_VOICE, (uint8_t)MEAS_CHAT  },   /* 5 сообщения: выбраны голосовые */
-	{ (uint8_t)MEAS_VOICE, (uint8_t)MEAS_CHAT  },   /* 6 сообщения: выбран чат        */
-};
-typedef char meas_pages_assert[(sizeof(meas_pages) / sizeof(meas_pages[0]) == (size_t)VECTOR_MEASURE_PAGES) ? 1 : -1];
 
 //===========================================================================================================================
 // Форматирование значений
@@ -1734,8 +1462,11 @@ static void meas_fill(uint8_t mode, char *value, char *name, char *units)
 			meas_fmt_x10(value, MEAS_VALUE_SZ, meas_f2i(sensors_status.Pressure / 10.0f));
 		}
 		else { snprintf(value, MEAS_VALUE_SZ, "%s", MEAS_NO_DATA); }
+		/* Подписи T/H/P, «°C», «%», «AQI», «RSSI:» - международные, в таблицы
+		   переводов не заносим; «кПа» и «уд./мин» - русские, поэтому помечены
+		   _() (lv_i18n) и добавлены в lv_i18n.c: en-GB «kPa» / «bpm». */
 		snprintf(name,  MEAS_NAME_SZ,  "%s", "P");
-		snprintf(units, MEAS_UNITS_SZ, "%s", "кПа");
+		snprintf(units, MEAS_UNITS_SZ, "%s", _("кПа"));
 		break;
 
 	case MEAS_COORD:
@@ -1759,9 +1490,10 @@ static void meas_fill(uint8_t mode, char *value, char *name, char *units)
 		break;
 
 	case MEAS_HEART:
-		/* Подпись - «уд./мин» (макет), стоит под иконкой справа сверху */
+		/* Подпись - «уд./мин» (макет), стоит под иконкой справа сверху;
+		   помечена _() - в lv_i18n.c добавлен перевод en-GB «bpm».      */
 		snprintf(value, MEAS_VALUE_SZ, "%s", MEAS_NO_DATA);   /* пульсометра нет */
-		snprintf(name,  MEAS_NAME_SZ,  "%s", "уд./мин");
+		snprintf(name,  MEAS_NAME_SZ,  "%s", _("уд./мин"));
 		break;
 
 	case MEAS_RSSI:
@@ -1803,7 +1535,8 @@ static void meas_fill(uint8_t mode, char *value, char *name, char *units)
 		}
 		else
 		{
-			snprintf(name, MEAS_NAME_SZ, "%s", "Ошибок нет");
+			/* _() - перевод en-GB «No errors» (lv_i18n.c) */
+			snprintf(name, MEAS_NAME_SZ, "%s", _("Ошибок нет"));
 		}
 		break;
 
@@ -1829,8 +1562,53 @@ void LCD_MeasureScreen(uint8_t num)
 	static char value[2][MEAS_VALUE_SZ];
 	static char name[2][MEAS_NAME_SZ];
 	static char units[2][MEAS_UNITS_SZ];
+	/* Фаза чередования «страница / ошибка» (указание автора: показывать MEAS_ERR
+	   вместе с текущей страницей, например по 3 с). 0 = страница, 1 = ошибка;
+	   сбрасывается в 0, как только очередь ошибок пуста. */
+	static uint8_t meas_err_phase = 0u;
 	uint8_t page = (num >= (uint8_t)VECTOR_MEASURE_PAGES) ? 0u : num;
 	uint8_t i;
+
+	/* ЧЕРЕДОВАНИЕ С ОШИБКОЙ: error_queue_count/error_display_index ведёт
+	   LCD_UpdateErrorDisplay() (Menu_Draw зовёт её ДО отрисовки экрана, текст -
+	   current_error_text, его и печатает meas_fill(MEAS_ERR)). Пока ошибки есть,
+	   раз в TIME_RTC_DISP_FLASHING_ERR (3 с) меняем фазу: половину времени
+	   показывается обычная страница, половину - строка ошибки на весь контейнер.
+	   Таймер - TIMER_RTC_DISP_FLASHING_ERR («Таймер переключения ошибок на
+	   экране»), взводится здесь же; сам текст ошибки ротует
+	   LCD_UpdateErrorDisplay раз в секунду, поэтому за 3 с ошибки из очереди
+	   успевают смениться. Номера страниц чередование НЕ трогает: ошибки
+	   исчезли - показ продолжается с той же страницы.                      */
+	if (error_queue_count == 0u)
+	{
+		meas_err_phase = 0u;
+		RESET_TIMER_RTC(TIMER_RTC_DISP_FLASHING_ERR);
+	}
+	else if (TEST_TIMER_RTC(TIMER_RTC_DISP_FLASHING_ERR) != 0)
+	{
+		meas_err_phase = (uint8_t)!meas_err_phase;
+		START_TIMER_RTC(TIMER_RTC_DISP_FLASHING_ERR, TIME_RTC_DISP_FLASHING_ERR);
+	}
+	else if (TEST_TIMER_RUN_RTC(TIMER_RTC_DISP_FLASHING_ERR) == 0u)
+	{
+		START_TIMER_RTC(TIMER_RTC_DISP_FLASHING_ERR, TIME_RTC_DISP_FLASHING_ERR);
+	}
+
+	if (meas_err_phase != 0u)
+	{
+		/* Ошибка вместо страницы: MEAS_ERR - full_width (x=0, w=311), правая
+		   панель гасится (MEAS_NONE). Подсветку выбора «Сообщения» гасим - на
+		   строке ошибки выбирать нечего (обе функции детектят изменение и
+		   лишний раз кадр не инвалидируют).                                */
+		meas_fill((uint8_t)MEAS_ERR, value[0], name[0], units[0]);
+		LCD_Measure(0u, (uint8_t)MEAS_ERR, value[0], name[0], units[0]);
+		LCD_Measure(1u, (uint8_t)MEAS_NONE, NULL, NULL, NULL);
+		ui_menu_item_set_focus(NULL, ui_PanelMeasure,  false, false);
+		ui_menu_item_set_focus(NULL, ui_PanelMeasure1, false, false);
+		ui_menu_item_set_recolor(ui_ImageMeas,  false);
+		ui_menu_item_set_recolor(ui_ImageMeas1, false);
+		return;
+	}
 
 	for (i = 0u; i < 2u; i++)
 	{
