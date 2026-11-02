@@ -38,6 +38,23 @@ static struct {
     volatile uint32_t count;  // всего падений с включения
 } fall_cache = {false, 0};
 
+// Детектор движения (неподвижность): движение = резкое отклонение ускорения от
+// медленного опорного вектора. Опорный вектор «тянется» к текущему с постоянной
+// ~0.8 с, поэтому ходьба/встряхивание дают события, а медленная смена позы и
+// дрейф нуля - нет (смену позы отдельно ловит 6D-ориентация).
+static struct {
+    volatile bool pending;      // событие есть, не прочитано lis3dh_motion_event()
+    volatile uint32_t count;    // всего событий движения с включения
+    uint16_t ths_mg;            // порог отклонения, мг
+    float ref_x;                // опорный вектор, мг
+    float ref_y;
+    float ref_z;
+    bool ref_valid;             // опорный вектор посчитан
+} motion_cache = {false, 0, LIS3DH_MOTION_THS_MG, 0.0f, 0.0f, 0.0f, false};
+
+// Скорость подстройки опорного вектора (1/8 от рассогласования за опрос)
+#define LIS3DH_MOTION_REF_K   0.125f
+
 // Кэш данных акселерометра
 #if LIS3DH_CACHE_ACCEL_ENABLE
 static struct {
@@ -240,6 +257,14 @@ int32_t lis3dh_update_all(void)
                 if (new_orient != orient_cache.current) {
                     orient_cache.current = new_orient;
                     orient_cache.changed = true;
+#if LIS3DH_MOTION_ENABLE
+                    // Смена позы - это тоже движение: взводим событие и
+                    // сбрасываем опорный вектор (гравитация перераспределилась
+                    // по осям, следующий опрос просто пересчитает его).
+                    motion_cache.count++;
+                    motion_cache.pending = true;
+                    motion_cache.ref_valid = false;
+#endif
                 }
             }
         }
@@ -305,6 +330,90 @@ bool lis3dh_is_accel_cached(void)
     return false;
 #endif
 }
+
+#if LIS3DH_MOTION_ENABLE
+// Порог детектора движения, мг. Зовётся из Alert_Init()/Alert_Tick() значением
+// настройки Immobility_Ths_mg; опорный вектор пересчитывается заново.
+int32_t lis3dh_motion_set_threshold(uint16_t ths_mg)
+{
+    if (ths_mg < 32) ths_mg = 32;      // шаг LSB генератора для ±4g
+    if (ths_mg > 4000) ths_mg = 4000;
+    motion_cache.ths_mg = ths_mg;
+    motion_cache.ref_valid = false;
+    return 0;
+}
+
+// [ПОТОК Measure Task - владелец I2C1] Опрос акселерометра: 1 = движение.
+// Период - LIS3DH_MOTION_POLL_MS (10 Гц) из measure_task_function. Чтение
+// OUT_X/Y/Z при BDU=1 гасит ZYXDA, но ODR 100 Гц даёт новый отсчёт каждые
+// 10 мс, поэтому lis3dh_update_all() (1 с) всё равно увидит data_ready.
+int32_t lis3dh_motion_poll(void)
+{
+    int16_t raw[3];
+    float mg[3];
+    float dx;
+    float dy;
+    float dz;
+    float ths;
+
+    if (lis3dh_acceleration_raw_get(&dev_ctx, raw) != 0) return -1;
+
+    mg[0] = lis3dh_from_fs4_hr_to_mg(raw[0]);
+    mg[1] = lis3dh_from_fs4_hr_to_mg(raw[1]);
+    mg[2] = lis3dh_from_fs4_hr_to_mg(raw[2]);
+
+    // Первый отсчёт (или после смены позы/порога) - просто запоминаем опору
+    if (!motion_cache.ref_valid) {
+        motion_cache.ref_x = mg[0];
+        motion_cache.ref_y = mg[1];
+        motion_cache.ref_z = mg[2];
+        motion_cache.ref_valid = true;
+        return 0;
+    }
+
+    dx = mg[0] - motion_cache.ref_x;
+    dy = mg[1] - motion_cache.ref_y;
+    dz = mg[2] - motion_cache.ref_z;
+    ths = (float)motion_cache.ths_mg;
+
+    if ((dx * dx + dy * dy + dz * dz) > (ths * ths)) {
+        // Движение: опору сразу на текущий вектор, иначе одно встряхивание
+        // даст серию событий на каждом последующем опросе.
+        motion_cache.ref_x = mg[0];
+        motion_cache.ref_y = mg[1];
+        motion_cache.ref_z = mg[2];
+        motion_cache.count++;
+        motion_cache.pending = true;
+        return 1;
+    }
+
+    // Покоя нет - медленно подтягиваем опору (дрейф нуля, медленная поза)
+    motion_cache.ref_x += dx * LIS3DH_MOTION_REF_K;
+    motion_cache.ref_y += dy * LIS3DH_MOTION_REF_K;
+    motion_cache.ref_z += dz * LIS3DH_MOTION_REF_K;
+    return 0;
+}
+
+// Событие движения: true ОДИН раз (флаг сбрасывается чтением)
+bool lis3dh_motion_event(void)
+{
+    bool was = motion_cache.pending;
+    motion_cache.pending = false;
+    return was;
+}
+
+// Счётчик событий движения с включения
+uint32_t lis3dh_motion_count(void)
+{
+    return motion_cache.count;
+}
+#else
+// Детектор выключен: заглушки, чтобы Alert_vector.c не обрастал #if
+int32_t  lis3dh_motion_set_threshold(uint16_t ths_mg) { (void)ths_mg; return 0; }
+int32_t  lis3dh_motion_poll(void) { return 0; }
+bool     lis3dh_motion_event(void) { return false; }
+uint32_t lis3dh_motion_count(void) { return 0; }
+#endif
 
 // Событие падения: true ОДИН раз на падение (флаг сбрасывается чтением)
 bool lis3dh_fall_event(void)

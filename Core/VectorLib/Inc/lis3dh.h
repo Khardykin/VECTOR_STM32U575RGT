@@ -48,6 +48,14 @@ extern "C" {
 #define LIS3DH_FF_THRESHOLD_MG      350  // шаг генератора для ±4g = 32 мг
 #define LIS3DH_FF_DURATION_MS       100  // при ODR 100 Гц шаг = 10 мс
 
+// Детектор движения (неподвижность, Alert_vector): движение = резкое отклонение
+// ускорения от медленного опорного вектора (гравитация + поза). Опрос идёт
+// ОПРОСОМ из Measure Task (генераторы INT1/INT2 уже заняты 6D-ориентацией и
+// free-fall), поэтому отдельного прерывания не требуется.
+#define LIS3DH_MOTION_ENABLE        1
+#define LIS3DH_MOTION_THS_MG        250  // порог по умолчанию (настройка Immobility_Ths_mg)
+#define LIS3DH_MOTION_POLL_MS       100  // период опроса (10 Гц) из measure_task_function
+
 // Ориентация устройства (6D detection)
 typedef enum {
     LIS3DH_ORIENT_UNKNOWN = 0,
@@ -76,6 +84,13 @@ uint8_t lis3dh_get_rotation_state(void);  // Возвращает 0 или 2 д�
 int32_t  lis3dh_enable_free_fall(uint16_t ths_mg, uint16_t dur_ms);
 bool     lis3dh_fall_event(void);       // true ОДИН раз на событие падения
 uint32_t lis3dh_get_fall_count(void);   // счётчик падений с включения
+
+// API детектора движения: lis3dh_motion_poll() - из Measure Task (I2C1),
+// lis3dh_motion_event() - потребляет Alert_Tick() (событие отдаётся один раз)
+int32_t  lis3dh_motion_set_threshold(uint16_t ths_mg);  // порог, мг (из конфига)
+int32_t  lis3dh_motion_poll(void);      // опрос: 1 = зафиксировано движение
+bool     lis3dh_motion_event(void);     // true ОДИН раз на событие движения
+uint32_t lis3dh_motion_count(void);     // счётчик событий движения с включения
 
 // Опционально: если нужен только акселерометр
 bool    lis3dh_get_cached_accel_g(float *x, float *y, float *z);  // Получить данные из кэша

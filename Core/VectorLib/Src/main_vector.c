@@ -88,6 +88,12 @@ volatile DOWN_TIMER_RTC  countdown_time_rtc = {0};
    меню (Menu_Init/Menu_GoTo в Menu_vector.c); экземпляр здесь, чтобы символ
    линковался при любой конфигурации.                                        */
 volatile uint8_t state_screen = 0;
+/* Метка быстрого ритма Measure Task (ALERT_MOTION_POLL_MS = 100 мс): опрос
+   детектора движения lis3dh_motion_poll() + движок статусов Alert_Tick().
+   Свой отсчёт по VTICK_MS, потому что timer.flag_100ms принадлежит LVGL Task
+   (Menu_Run/Vector_Run_Indication) - два потребителя одного флага дали бы
+   гонку и «проглоченные» такты.                                              */
+static uint32_t alert_tick_ms = 0;
 
 #if VECTOR_TASKS_ENABLE
 
@@ -583,6 +589,24 @@ static void measure_task_function(ULONG thread_input)
     }
     Vector_RunFlashMemory();
 
+    /* --- быстрый ритм 100 мс (ALERT_TICK_MS): детектор движения + статусы ---
+       Опрос акселерометра именно здесь: владелец шины I2C1 - Measure Task
+       (sensors_init/sensors_read), а генераторы INT1/INT2 уже заняты
+       6D-ориентацией и free-fall, поэтому движение ловим опросом 10 Гц.
+       Alert_Tick() ведёт счёт неподвижности (окно + предаварийный таймер),
+       свежесть устройств комплекта (СИЗ/ГА/браслет), забирает downlink LoRa
+       (бит эвакуации + блок Message) и владеет индикацией через Notify.
+       Из секундного такта это не сделать: снятие статуса движением и отсчёт
+       «времени на реакцию» запаздывали бы до 1 с.                          */
+    if (VTICK_ELAPSED_MS(alert_tick_ms) >= ALERT_MOTION_POLL_MS)
+    {
+      alert_tick_ms = VTICK_MS();
+#if CONFIG_LIS3DH
+      (void)lis3dh_motion_poll();
+#endif
+      Alert_Tick();
+    }
+
     /* --- сервис: soft reset, стирание flash, конец режима обмена, батарея и
        сверка часов раз в секунду. Перенесено из receiver_task (решение автора);
        заодно «предсмертная» запись save_event_type_2 перед NVIC_SystemReset
@@ -842,6 +866,14 @@ void Vector_Run_Pre_Init(void)
      определит автор - каркас уже считает кнопки и ходит по screen_t.        */
   Menu_Init();
 #endif
+
+  /* Реестр статусов/тревог (Alert_vector): неподвижность, нет СИЗ/ГА/браслета,
+     «ОСТОРОЖНО! ГАЗ!», «ВСЕМ НА ВЫХОД», сообщение сервера. ПОСЛЕ Menu_Init():
+     там делается Notify_Init(), а Alert владеет секвенсором индикации и при
+     сбросе зовёт Notify_Stop(). Конфиг к этому моменту прочитан, поэтому
+     Alert_Init() сразу применяет порог детектора движения (Immobility_Ths_mg).
+     Дальше движок крутит Alert_Tick() (100 мс) в measure_task_function.     */
+  Alert_Init();
 
 #if (CONFIG_TYPE_LCD_TFT != 0) && VECTOR_LCD_USE_LVGL
   ui_lv_init();

@@ -305,6 +305,19 @@ extern void Ble_UpdateInputData(void);
 // из Ble_Run() каждый проход, ПОСЛЕ остального кода.
 extern void Ble_Control_States_Update(void);
 
+// --- Состав комплекта для статусов «Нет СИЗ/ГА/браслета» (Alert_vector) -----
+// Маска битов ALERT_DEV_EXPECT_* (Alert_vector.h): какие устройства прибор
+// ДОЛЖЕН видеть. Решение автора - брать состав АВТОМАТИЧЕСКИ из MAC-таблицы
+// BLE-модуля (docs/Mirax-Ble-protocol-v1.md п.5): таблицу задаёт конфигуратор
+// командой MACSET, читается она MSDGETALL, в записи есть DevType (1 маяк,
+// 2 СИЗ, 3 браслет-пульсометр, 4 AVIS-газоанализатор).
+// Разбора MAC-таблицы в модуле пока нет (см. TODO в Ble_ExpectedDevices),
+// поэтому маска пустая и статусы «нет X» не взводятся. Alert_vector.c
+// объединяет её по ИЛИ с Config_common.Devices_Expected (ручная маска).
+// КОНТЕКСТ: любой поток (только чтение/запись одного uint16_t).
+extern uint16_t Ble_ExpectedDevices(void);
+extern void Ble_SetExpectedDevices(uint16_t mask);
+
 #endif /* CONFIG_BLE */
 
 #ifdef __cplusplus

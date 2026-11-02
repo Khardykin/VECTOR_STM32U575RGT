@@ -464,6 +464,24 @@ static void menu_navigate(void)
   uint8_t g2 = Menu_Gesture(2u);
   uint8_t g3 = Menu_Gesture(3u);
 
+	/* КВИТИРОВАНИЕ ЗЕЛЁНОЙ кнопкой (номер - ALERT_ACK_BUTTON, vector_config.h):
+	   короткое нажатие гасит ИНДИКАЦИЮ приоритетного статуса (Alert_vector), а
+	   сам СТАТУС и его таймеры остаются (требование автора п.2): неподвижность
+	   продолжит отсчёт и отправит инцидент, если сотрудник не двигается.
+	   Работает на ЛЮБОМ экране - до экранного switch.
+	   Если квитировать нечего (активной индикации нет, либо она не снимается
+	   вручную - «нет СИЗ/ГА/браслета»), жест НЕ съедаем: он уходит в навигацию
+	   ниже. Кнопка выбирается по ALERT_ACK_BUTTON (1/2 -> Button1/2, иначе 3).
+	   КОНТЕКСТ: поток LVGL Task (Menu_Run, 100 мс).                          */
+	{
+		uint8_t *g_ack = (ALERT_ACK_BUTTON == 1u) ? &g1 :
+					   ((ALERT_ACK_BUTTON == 2u) ? &g2 : &g3);
+		if ((*g_ack == (uint8_t)GEST_SHORT) &&
+			(Alert_AckButton() != (uint8_t)ALERT_NONE)){
+			*g_ack = (uint8_t)GEST_NONE;
+		}
+	}
+
 
   /* Выключение прибора - ПОЭКРАННО (Menu_TurnOff): LONG Button2 на
      SCREEN_START уже работает, на SCREEN_MEASURE в Avis это LONG с обратным

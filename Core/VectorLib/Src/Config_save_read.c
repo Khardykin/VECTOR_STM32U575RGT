@@ -829,6 +829,15 @@ void DefaultConfig(SNS_CFG *pSnsCfg)
 	// Working_data (часы/смещение) НЕ трогаем: часы - рантайм (RTC BKP0),
 	// дефолтный конфиг их обнулять не должен.
 	//----------------------------------------------------------------------------
+	// Статусы/тревоги (Alert_vector.c): неподвижность и ожидаемые устройства
+	// комплекта. Поля заняли место Reserve[] - размер SNS_CFG прежний.
+	pSnsCfg->Config_common.Immobility_Enable      = ALERT_IMMOB_ENABLE_DEF;
+	pSnsCfg->Config_common.Immobility_Window_s    = ALERT_IMMOB_WINDOW_S_DEF;
+	pSnsCfg->Config_common.Immobility_PreAlarm_s  = ALERT_IMMOB_PREALARM_S_DEF;
+	pSnsCfg->Config_common.Immobility_Ths_mg      = ALERT_MOTION_THS_MG_DEF;
+	pSnsCfg->Config_common.Devices_Expected       = ALERT_DEVICES_EXPECTED_DEF;
+	pSnsCfg->Config_common.Alert_Flags            = ALERT_CFG_IMMOB_SOUND;
+	//----------------------------------------------------------------------------
 	// Настройка Lora
 #if CONFIG_LORA
 	Lora_Cfg_ApplyDefaults(pSnsCfg);

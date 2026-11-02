@@ -339,6 +339,16 @@ typedef struct
 	uint8_t			gas_online;					// 1 = AVIS подключён/данные свежие
 	uint32_t		gas_ms;						// GetTick() последнего пакета AVIS
 	uint16_t		gas_serial;					// серийник AVIS (0 = legacy, TODO)
+	/* --- браслет (пульсометр) -------------------------------------------------
+	   В BLE-протоколе v1 это DevType 3 (п.5: таблица MAC задаётся конфигуратором,
+	   приём - MSDGETALL/ADV), а Ble_vector.c пока разбирает GAS/SUBDEV/BEACONS/
+	   PPE/AGG, то есть транспорт браслета ещё не реализован. Поля заведены, чтобы
+	   статус «Нет браслета» (Alert_vector) заработал сразу, как только появится
+	   парсер: достаточно обновлять bracelet_online/bracelet_ms при приёме пакета. */
+	uint8_t			bracelet_online;			// 1 = браслет на связи (данные свежие)
+	uint32_t		bracelet_ms;					// GetTick() последнего пакета браслета
+	uint16_t		bracelet_serial;			// серийный номер браслета
+	uint8_t			bracelet_battery;			// заряд, % (0xFF = нет данных)
 } BLE_TELEMETRY;
 extern BLE_TELEMETRY		Ble_telemetry;
 
@@ -383,7 +393,20 @@ typedef struct//
   uint16_t				Lora_dr_rx2;
 
   uint16_t				current_build_type;
-  uint16_t              Reserve[10];
+
+  /* --- НЕПОДВИЖНОСТЬ (обездвиженность) и ОЖИДАЕМЫЕ УСТРОЙСТВА КОМПЛЕКТА ---
+     Поля взяты ИЗ Reserve[10] (было 10, осталось 4) - размер SNS_CFG и
+     раскладка CRC НЕ изменились, старый конфиг во flash читается как прежде
+     (в сохранённом Reserve лежали нули = «функция выключена» -> дефолты
+     проставит DefaultConfig только при первом пуске/сбросе к заводским).
+     Настраиваются конфигуратором/меню (экран настроек - TODO автора).      */
+  uint16_t              Immobility_Enable;      // 1 = функция «Обездвиженность» включена (Alert_vector)
+  uint16_t              Immobility_Window_s;    // сек без движения -> статус «неподвижность» + индикация
+  uint16_t              Immobility_PreAlarm_s;  // сек на реакцию сотрудника; истекло -> инцидент на сервер
+  uint16_t              Immobility_Ths_mg;      // порог движения, мг (0 = ALERT_MOTION_THS_MG_DEF)
+  uint16_t              Devices_Expected;       // маска ALERT_DEV_EXPECT_*: СИЗ/ГА/браслет в настройках трекера
+  uint16_t              Alert_Flags;            // биты ALERT_CFG_*: мастер-режим, звук при неподвижности
+  uint16_t              Reserve[4];
 }SNS_CFG_Type_common; //Общая струкрутра для сенсоров
 
 typedef struct

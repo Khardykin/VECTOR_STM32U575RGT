@@ -750,6 +750,39 @@ static void LCD_FormatErrorText(char *out_buf, uint8_t buf_size,
             snprintf(out_buf, buf_size, "LORA: %s", _(lora_status_keys[item->error_bit]));
         }
     }
+    else if (item->category == 3) {
+        /* СТАТУСЫ/ТРЕВОГИ (Alert_vector): «ОСТОРОЖНО! ГАЗ!», «ВСЕМ НА ВЫХОД»,
+           «Неподвижность», «Нет ГА/СИЗ/браслета», «Сообщение». Имя статуса -
+           ключ i18n (RU-литерал из таблицы s_desc), переводим через _().
+           Газовая тревога показывает ID трекера-источника (требование автора
+           п.4: на дисплее виден ID сотрудника, у которого сработал ГА);
+           «ID» - аббревиатура, одинаковая в обоих языках, без перевода.
+           Сообщение сервера показываем текстом (он уже UTF-8 после
+           Alert_LoraMessage), буфер очереди 40 байт - snprintf обрежет.   */
+        alert_id_t id = (alert_id_t)item->error_bit;
+        if ((id > ALERT_NONE) && (id < ALERT_ID_COUNT) && (Alert_IsActive(id) != 0u)) {
+            if (id == ALERT_GAS_ALARM) {
+                uint16_t src = Alert_Param(id);
+                if (src != 0u) {
+                    /* %u для snprintf - unsigned int (uint32_t в этом
+                       тулчейне = unsigned long, GCC дал бы -Wformat).     */
+                    snprintf(out_buf, buf_size, "%s ID %u", _(Alert_Name(id)),
+                             (unsigned int)src);
+                } else {
+                    snprintf(out_buf, buf_size, "%s", _(Alert_Name(id)));
+                }
+            } else if (id == ALERT_MESSAGE) {
+                const char *msg = Alert_MessageText();
+                if (msg[0] != '\0') {
+                    snprintf(out_buf, buf_size, "%s", msg);
+                } else {
+                    snprintf(out_buf, buf_size, "%s", _(Alert_Name(id)));
+                }
+            } else {
+                snprintf(out_buf, buf_size, "%s", _(Alert_Name(id)));
+            }
+        }
+    }
 }
 
 //===========================================================================================================================
@@ -789,6 +822,24 @@ static uint32_t LCD_CalculateErrorHash(SNS_CFG *pSnsCfg)
     }
     #endif
 
+    /* 4. Статусы/тревоги (Alert_vector): маска активных статусов (биты 1..7 по
+          alert_id_t) + параметр газовой тревоги в старших разрядах - ID
+          трекера-источника может смениться, пока маска та же.                */
+    {
+        static uint32_t prev_alert = 0;
+        uint32_t curr_alert = 0;
+        for (uint8_t i = 1u; i < (uint8_t)ALERT_ID_COUNT; i++) {
+            if (Alert_IsActive((alert_id_t)i) != 0u) {
+                curr_alert |= (1u << i);
+            }
+        }
+        curr_alert ^= ((uint32_t)Alert_Param(ALERT_GAS_ALARM) << 16);
+        if (curr_alert != prev_alert) {
+            changed = 1;
+            prev_alert = curr_alert;
+        }
+    }
+
     return changed;
 }
 
@@ -814,6 +865,20 @@ void LCD_BuildErrorQueue(SNS_CFG *pSnsCfg)
 //            }
 //        }
 //    }
+
+    /* 1. Статусы/тревоги (Alert_vector) - ПЕРЕД системными ошибками: порядок в
+          очереди задаёт порядок показа в строке, а угроза жизни (газ,
+          эвакуация) и неподвижность важнее «Ошибка МЕМ». Перебор по alert_id_t
+          = по приоритету модуля (GAS_ALARM -> MESSAGE).                       */
+    for (uint8_t id = 1u; id < (uint8_t)ALERT_ID_COUNT; id++) {
+        if ((Alert_IsActive((alert_id_t)id) != 0u) && (error_queue_count < MAX_ERROR_QUEUE)) {
+            error_queue[error_queue_count].channel = 0xFD;
+            error_queue[error_queue_count].category = 3;
+            error_queue[error_queue_count].error_bit = id;
+            error_queue[error_queue_count].key = (3 << 8) | (0xFD << 4) | id;
+            error_queue_count++;
+        }
+    }
 
     // 2. Системные ошибки
     uint32_t sys_err_mask = pSnsCfg->Config_common.StateErr & ERROR_MASK_ST_2;

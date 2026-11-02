@@ -375,6 +375,201 @@
 #define VECTOR_TASKS_LVGL_DELAY_MS       10u
 #endif
 
+/* --- СТАТУСЫ И ТРЕВОГИ (Alert_vector.c) ----------------------------------
+ *  Неподвижность (обездвиженность), отсутствие устройств комплекта
+ *  (СИЗ/ГА/браслет), «ОСТОРОЖНО! ГАЗ!», «ВСЕМ НА ВЫХОД», сообщение сервера.
+ *  Модель: СТАТУС (признак) и ИНДИКАЦИЯ (звук/свет/вибро) - РАЗНЫЕ сущности:
+ *  зелёная кнопка гасит индикацию (квитирование), статус живёт, пока живо
+ *  условие (движение не появилось / связь не восстановилась / сервер не снял
+ *  бит). Значения по умолчанию - здесь; рабочие (настраиваемые) лежат в
+ *  Sns_Cfg_struct.Config_common (Immobility_*, Devices_Expected, Alert_Flags),
+ *  макросы ниже - только то, что НЕ меняется с сервера/меню.                 */
+#ifndef ALERT_TICK_MS
+#define ALERT_TICK_MS                    100u  /* период Alert_Tick, мс      */
+#endif
+
+/* Опрос акселерометра на движение: генераторы прерываний LIS3DH заняты
+   (INT1 - 6D-ориентация экрана, INT2 - free-fall), поэтому движение ловим
+   ОПРОСОМ из Measure Task (владелец I2C1) с периодом 100 мс - резко
+   встряхнутый трекер даёт 2..3 g и гарантированно попадает в выборку.      */
+#ifndef ALERT_MOTION_POLL_MS
+#define ALERT_MOTION_POLL_MS             100u
+#endif
+
+/* Порог движения по умолчанию, мг (для Config_common.Immobility_Ths_mg,
+   когда в конфиге 0). Акселерометр в HR-режиме, шкала +-4g: шаг 32 мг.     */
+#ifndef ALERT_MOTION_THS_MG_DEF
+#define ALERT_MOTION_THS_MG_DEF          250u
+#endif
+
+/* Значения по умолчанию для настроек неподвижности (DefaultConfig):
+   окно без движения -> статус; предаварийный таймер -> инцидент на сервер. */
+#ifndef ALERT_IMMOB_WINDOW_S_DEF
+#define ALERT_IMMOB_WINDOW_S_DEF         120u  /* 2 мин без движения         */
+#endif
+#ifndef ALERT_IMMOB_PREALARM_S_DEF
+#define ALERT_IMMOB_PREALARM_S_DEF       60u   /* 1 мин на реакцию сотрудника*/
+#endif
+#ifndef ALERT_IMMOB_ENABLE_DEF
+#define ALERT_IMMOB_ENABLE_DEF           1u    /* функция включена с завода  */
+#endif
+
+/* Маска ожидаемых устройств комплекта по умолчанию (DefaultConfig).
+   Решение автора: состав комплекта берётся АВТОМАТИЧЕСКИ из MAC-таблицы
+   BLE-модуля (MACSET/MSDGETALL, DevType: 2 = СИЗ, 3 = браслет, 4 = AVIS) -
+   её возвращает Ble_ExpectedDevices() (Ble_vector.c) и Alert_vector.c
+   объединяет с этим полем по ИЛИ. Поле - РУЧНОЕ дополнение/переопределение
+   (конфигуратор), дефолт 0 = ничего не ждём, пока таблица не прочитана:
+   ложных «нет СИЗ/ГА/браслета» не будет. Биты - ALERT_DEV_EXPECT_*.       */
+#ifndef ALERT_DEVICES_EXPECTED_DEF
+#define ALERT_DEVICES_EXPECTED_DEF       0x0000u
+#endif
+
+/* Свежесть данных BLE-телеметрии для статуса «нет X»: берём TTL протокола
+   (Ble_telemetry считается свежей BLE_TELEMETRY_TTL_MS = 5 мин).           */
+#ifndef ALERT_DEV_STALE_MS
+#define ALERT_DEV_STALE_MS               300000u
+#endif
+
+/* «Зелёная кнопка» квитирования: номер кнопки прибора (1..3). Автор:
+   «Индикация может быть снята вручную нажатием на зеленую кнопку на
+   трекере» - какая из трёх кнопок зелёная, УТОЧНИТЬ (пока Button1: она же
+   зеркалится в button_sos, LONG не занят в навигации).                     */
+#ifndef ALERT_ACK_BUTTON
+#define ALERT_ACK_BUTTON                 1u
+#endif
+
+/* Маркеры классификации текста downlink-сообщения (LoRa v4 п.7.1: сервер
+   шлёт свободный текст CP1251 из каталога PTS). Совпал маркер -> статус с
+   голосом; не совпал -> ALERT_MESSAGE (сигнал сообщения).                  */
+#define ALERT_MSG_MARK_GAS               "ОСТОРОЖНО! ГАЗ"
+#define ALERT_MSG_MARK_EVACUATION        "ВСЕМ НА ВЫХОД"
+#define ALERT_MSG_MARK_ID                "ID"       /* «... ID 123» -> параметр */
+
+/* --- ЗВУКИ ТРЕВОГ: КАРТА РОЛЕЙ (автор добавит клипы позже) -----------------
+ *  Сейчас голоса НЕТ: ALERT_SND_NONE = 0xFFFF, и Alert_vector.c не выставляет
+ *  бит NOTIFY_CH_SOUND - индикация идёт писком BEEP (внутренняя flash, доступен
+ *  всегда) + свет/вибро. Как только клипы появятся, голос включится сам:
+ *  достаточно заменить ALERT_SND_NONE на индекс клипа (notify_phase_t.sound_idx
+ *  - это номер SND_* из audio_ids.h, его играет audio_play_now()).
+ *
+ *  5 ролей из списка автора и рекомендуемые имена файлов (порядок в команде
+ *  сборки задаёт номера SND_*, поэтому имена - заодно и порядок):
+ *    роль                     макрос                 файл в tools/
+ *    1 «Внимание, загазованность»  ALERT_SND_GAS        alert_gas.wav
+ *    2 «Внимание, всем на выход»   ALERT_SND_EVACUATION alert_evacuation.wav
+ *    3 сигнал тревоги (период.)    ALERT_SND_ALARM      alert_alarm.wav
+ *    4 сигнал сообщения            ALERT_SND_MESSAGE    alert_message.wav
+ *    5 сигнал звонка               ALERT_SND_RING       alert_ring.wav
+ *
+ *  ПОРЯДОК ПОДКЛЮЧЕНИЯ (audio_ids.h СОЗДАЁТСЯ СКРИПТОМ - руками не править):
+ *    1. положить 5 wav в tools/ (рядом с имеющимися);
+ *    2. python tools\pack_sounds.py tools\*.wav --out tools\sounds.bin
+ *       -> пересоберётся tools/sounds.bin (+ .manifest.txt) и ПЕРЕГЕНЕРИРУЕТСЯ
+ *       Core/VectorLib/Src/Audio/Inc/audio_ids.h с SND_ALERT_GAS и т.д.;
+ *    3. в ЭТОМ файле заменить ALERT_SND_NONE на имена из нового audio_ids.h:
+ *         #define ALERT_SND_GAS        SND_ALERT_GAS
+ *         #define ALERT_SND_EVACUATION SND_ALERT_EVACUATION
+ *         #define ALERT_SND_ALARM      SND_ALERT_ALARM
+ *         #define ALERT_SND_MESSAGE    SND_ALERT_MESSAGE
+ *         #define ALERT_SND_RING       SND_ALERT_RING
+ *    4. прошить новый sounds.bin во внешнюю flash (иначе плеер сыграет клип с
+ *       прошлым содержимым образа - номера разъедутся).
+ *  Никаких правок Alert_vector.c/Notify_vector.c не требуется: таблица статусов
+ *  s_desc[] уже ссылается на эти макросы.                                    */
+#define ALERT_SND_NONE                   (0xFFFFu)
+#ifndef ALERT_SND_GAS
+#define ALERT_SND_GAS                    ALERT_SND_NONE  /* «Внимание, загазованность» */
+#endif
+#ifndef ALERT_SND_EVACUATION
+#define ALERT_SND_EVACUATION             ALERT_SND_NONE  /* «Внимание, всем на выход»  */
+#endif
+#ifndef ALERT_SND_ALARM
+#define ALERT_SND_ALARM                  ALERT_SND_NONE  /* сигнал тревоги (период.)   */
+#endif
+#ifndef ALERT_SND_MESSAGE
+#define ALERT_SND_MESSAGE                ALERT_SND_NONE  /* сигнал сообщения           */
+#endif
+#ifndef ALERT_SND_RING
+#define ALERT_SND_RING                   ALERT_SND_NONE  /* сигнал звонка              */
+#endif
+
+/* Период/пауза индикации тревог, мс (как у LedSoundVibroPlay Avis - там
+   единицы 100 мс: 10/5 = 1 с период, 0.5 с пауза).                         */
+#ifndef ALERT_PERIOD_ALARM_MS
+#define ALERT_PERIOD_ALARM_MS            1000u
+#endif
+#ifndef ALERT_PAUSE_ALARM_MS
+#define ALERT_PAUSE_ALARM_MS             500u
+#endif
+#ifndef ALERT_PERIOD_GAS_MS
+#define ALERT_PERIOD_GAS_MS              600u   /* «ОСТОРОЖНО! ГАЗ!» - чаще  */
+#endif
+#ifndef ALERT_PAUSE_GAS_MS
+#define ALERT_PAUSE_GAS_MS               400u
+#endif
+#ifndef ALERT_PERIOD_EVAC_MS
+#define ALERT_PERIOD_EVAC_MS             1000u  /* «ВСЕМ НА ВЫХОД»           */
+#endif
+#ifndef ALERT_PAUSE_EVAC_MS
+#define ALERT_PAUSE_EVAC_MS              300u
+#endif
+#ifndef ALERT_PERIOD_IMMOB_MS
+#define ALERT_PERIOD_IMMOB_MS            500u   /* неподвижность             */
+#endif
+#ifndef ALERT_PAUSE_IMMOB_MS
+#define ALERT_PAUSE_IMMOB_MS             500u
+#endif
+#ifndef ALERT_PERIOD_DEVICE_MS
+#define ALERT_PERIOD_DEVICE_MS           200u   /* нет СИЗ/ГА/браслета       */
+#endif
+#ifndef ALERT_PAUSE_DEVICE_MS
+#define ALERT_PAUSE_DEVICE_MS            300u
+#endif
+#ifndef ALERT_PERIOD_MSG_MS
+#define ALERT_PERIOD_MSG_MS              300u   /* сигнал сообщения          */
+#endif
+#ifndef ALERT_PAUSE_MSG_MS
+#define ALERT_PAUSE_MSG_MS               700u
+#endif
+
+/* Локальная газовая тревога ПО ПОРОГАМ подключённого газоанализатора Avis
+   (автор: «где-то по порогам с Ависа, где-то от сервера»): маска битов
+   Connected_device.StateErr, которые считаются загазованностью. По умолчанию
+   биты 0..4 = Порог 1/2/3, STEL, TWA (enum ST_GA_ERR, shared_types.h). Бит 5
+   «Превышение диапазона» намеренно не входит: это не тревога по газу.      */
+#ifndef ALERT_GAS_THR_MASK
+#define ALERT_GAS_THR_MASK               0x001Fu
+#endif
+
+/* АВТООЧИСТКА статусов с одноразовым источником (колонка hold_s в таблице
+   s_desc): пока условие подтверждается, Alert_Set() обновляет метку времени,
+   поэтому статус живёт; как только подтверждения нет hold_s секунд - гаснет.
+     - газ (ALERT_GAS_HOLD_S): сервер шлёт сообщение, пока не получит MsgAck,
+       затем статус держится 5 мин и снимается. Локальные пороги Avis снимают
+       его СРАЗУ, как только концентрация вернулась в норму (источник
+       отслеживается отдельно, серверную тревогу локальный сброс не гасит);
+     - эвакуация (ALERT_EVAC_HOLD_S): снимает сервер (бит EVACUATION в
+       ControlLora16 обновляет метку каждую секунду), а локальную тревогу
+       режима «мастер» гасим через 10 мин;
+     - сообщение (ALERT_MSG_HOLD_S): сигнал сообщения длится минуту, сам текст
+       остаётся доступен (Alert_MessageText) для экрана сообщения.           */
+#ifndef ALERT_GAS_HOLD_S
+#define ALERT_GAS_HOLD_S                 300u
+#endif
+#ifndef ALERT_EVAC_HOLD_S
+#define ALERT_EVAC_HOLD_S                600u
+#endif
+#ifndef ALERT_MSG_HOLD_S
+#define ALERT_MSG_HOLD_S                 60u
+#endif
+
+/* Длина текста сообщения сервера в RAM (байт, UTF-8 после конверсии
+   CP1251 -> до 2 байт на символ). LORA_MESSAGE_MAX_LEN протокола = 237.    */
+#ifndef ALERT_MSG_UTF8_LEN
+#define ALERT_MSG_UTF8_LEN               96u
+#endif
+
 /* --- BLE: мастерская сторона модуля MK01 (Ble_vector.c) ---------------
  *  (замечание автора п.2): роли НЕ менялись - как и Avis, мы ХОЗЯИН своего
  * BLE-модуля (порт Ble_mk01.c: AT/ADVBLENAMESET/BLEADDR?/ADVPERIODMS/

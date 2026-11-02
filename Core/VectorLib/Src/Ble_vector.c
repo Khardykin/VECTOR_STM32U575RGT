@@ -635,6 +635,26 @@ void Ble_Control_States_Update(void)
 		ble_stg.ppe_dirty = 0u;
 	}
 
+	/* --- Браслет (пульсометр) -----------------------------------------------
+	   Статус «Нет браслета» (Alert_vector; бит ALERT_DEV_EXPECT_BRACELET в
+	   Config_common.Devices_Expected) уже считает свежесть полей
+	   Ble_telemetry.bracelet_online/bracelet_ms, но САМОГО ПРИЁМА браслета
+	   пока нет: в BLE-протоколе v1 это DevType 3 (п.5) - таблица MAC задаётся
+	   конфигуратором (MACSET), состав окружения читается MSDGETALL, реклама
+	   браслета - ble_pkt_bracelet_adv_t (5 байт). Ble_vector.c сейчас разбирает
+	   GAS/SUBDEV(AVIS)/BEACONS/PPE/AGG, а в SUBDEV-пакете поля SubID/DevType
+	   нет, поэтому отличить браслет от газоанализатора нечем.
+	   TODO(автор): 1) MACSET/MSDGETALL -> своя таблица окружения с DevType;
+	                2) ветка приёма DevType 3 -> ble_stg.bracelet_* и далее
+	                   Ble_telemetry.bracelet_online/bracelet_ms/serial/battery
+	                   (под TX_DISABLE, как блоки выше) - статус заработает без
+	                   правок Alert_vector.c;
+	                3) блок AGG для браслета (BlockMask бит 3) и/или пульс в
+	                   кадр LoRa v4.
+	   До появления приёма бит браслета в Devices_Expected лучше не выставлять:
+	   статус будет висеть постоянно (данных нет), а снимается он только
+	   восстановлением связи или удалением устройства из настроек.           */
+
 	/* --- СОСТОЯНИЯ: ошибка обмена -> Config_common.StateErr ----------------
 	   RMW общего поля StateErr из нескольких потоков - под блокировкой
 	   конфига (Sys_Cfg_Lock, п.65/66).                                      */
@@ -1080,6 +1100,52 @@ void Ble_Run(void)
 			Ble_DeInit(0);
 		}
 		Ble_Control_States_Update();			/* выходной мост (п.66): данные + ERR_BLE */
+	}
+}
+
+// ============================================================================
+// СОСТАВ КОМПЛЕКТА: маска устройств, которые прибор должен видеть (Alert_vector
+// делает по ней статусы «Нет СИЗ/ГА/браслета»). Хранилище - одно uint16_t,
+// чтение/запись атомарны, поэтому блокировка не нужна.
+// ============================================================================
+static uint16_t ble_expected_mask;
+
+/**
+ * @brief  Маска ожидаемых устройств комплекта (биты ALERT_DEV_EXPECT_*).
+ * @retval маска; 0 = пока ничего не ждём (статусы «нет X» не взводятся).
+ *
+ * По решению автора состав комплекта берётся АВТОМАТИЧЕСКИ из MAC-таблицы
+ * BLE-модуля: конфигуратор задаёт её командой MACSET, прибор читает состав
+ * через MSDGETALL (docs/Mirax-Ble-protocol-v1.md п.5), в записи таблицы есть
+ * DevType: 1 маяк, 2 СИЗ, 3 браслет-пульсометр, 4 AVIS-газоанализатор.
+ * TODO(автор): в разборе ответа MSDGETALL (Ble_MsdDataGet/приём OK-пакета)
+ *   пройтись по записям таблицы и выставить биты:
+ *     DevType 2 -> ALERT_DEV_EXPECT_PPE,
+ *     DevType 3 -> ALERT_DEV_EXPECT_BRACELET,
+ *     DevType 4 -> ALERT_DEV_EXPECT_GAS,
+ *   затем Ble_SetExpectedDevices(mask). Alert_vector.c подхватит маску без
+ *   правок: статус «нет X» взводится, только если бит выставлен И данные не
+ *   свежие, а снимается - когда связь восстановилась или устройство удалено
+ *   из таблицы/настроек (требование: индикация не снимается вручную).
+ * До появления разбора маска пустая - иначе «нет СИЗ/браслета» висело бы
+ * постоянно (приёма браслета нет вовсе, см. комментарий в Ble_telemetry).
+ * КОНТЕКСТ: любой поток.
+ */
+uint16_t Ble_ExpectedDevices(void)
+{
+	return ble_expected_mask;
+}
+
+/**
+ * @brief  Записать маску ожидаемых устройств (парсер MAC-таблицы/конфигуратор).
+ * @param  mask биты ALERT_DEV_EXPECT_* (Alert_vector.h).
+ * КОНТЕКСТ: любой поток.
+ */
+void Ble_SetExpectedDevices(uint16_t mask)
+{
+	if (ble_expected_mask != mask) {
+		ble_expected_mask = mask;
+		LOG_I(VLOG_M_SYS, "ble: expected devices mask = %x", (uint32_t)mask);
 	}
 }
 
