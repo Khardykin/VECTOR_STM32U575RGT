@@ -680,7 +680,7 @@ void Menu_Run(void)
     SaveConfig = 1u;
     LOG_I(VLOG_M_SYS, "menu: dirty data -> SaveConfig");
   }
-
+  Button_Run_Backlight();
   Menu_Draw();
 }
 
