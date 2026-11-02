@@ -22,12 +22,12 @@
 #include "app_azure_rtos.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): audio_player,
-   vector_tasks, extstore, vector_config/log, main.h, Menu_vector.h
-   (Vector_Run_Indication), Notify_vector.h (Notify_Tick: фазы свет/звук/
-   вибро ~10 мс), TFT.h/lvgl.h (TFT_Initialized, lv_timer_handler - при
-   CONFIG_TYPE_LCD_TFT && VECTOR_LCD_USE_LVGL).                              */
-#include "Vector_main.h"
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор main_vector.h): vlog/extstore,
+   audio_player (audio_init), vector_tasks (vector_tasks_init), vector_config/
+   log, main.h. Поток LVGL Task здесь больше НЕ создаётся (перенесён в
+   vector_tasks_init, main_vector.c) - Menu/Notify/TFT/lvgl этому файлу
+   не нужны.                                                                  */
+#include "main_vector.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -37,14 +37,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* Размеры стека для задач (в байтах). */
-#define LVGL_STACK_SIZE    4096
-
-/* Дескриптор потока ThreadX */
-static TX_THREAD lvgl_thread;
-
-/* Выделение памяти под стек потока (выравнивание обязательно для ThreadX) */
-static uint8_t lvgl_stack[LVGL_STACK_SIZE]   __attribute__((aligned(8)));
+/* Пусто: LVGL_STACK_SIZE/lvgl_thread/lvgl_stack переехали в main_vector.c
+   (VECTOR_TASKS_LVGL_* / lvgl_task_handler / lvgl_task_stack).               */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -71,39 +65,7 @@ static TX_BYTE_POOL tx_app_byte_pool;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
-/* ---------------------------------------------------------------------------
- * Поток дисплея/индикации (LVGL Task).
- * -------------------------------------------------------------------------*/
-void lvgl_thread_entry(ULONG thread_input)
-{
-  (void)thread_input;
-
-  while (1)
-  {
-    if (tasks_status.cnt_pre_init != 0u)     /* Pre_Init завершён */
-    {
-      if (timer.flag_100ms != 0u)
-      {
-        timer.flag_100ms = 0u;
-#if CONFIG_DISPLAY
-        Vector_Run_Indication();
-#endif
-      }
-      /* Секвенсор оповещений (Notify_vector): тик движка ~каждые 10 мс.
-         Вне гейта flag_100ms и вне CONFIG_DISPLAY: работает и при выключенном
-         приборе - сценарий включения (Button_Run_Start -> NotifySeq_PowerOn)
-         стартует как раз в состоянии OFF. */
-      Notify_Tick();
-#if (CONFIG_TYPE_LCD_TFT && VECTOR_LCD_USE_LVGL)
-      if (TFT_Initialized == 1u)
-      {
-        lv_timer_handler();
-      }
-#endif
-    }
-    tx_thread_sleep(1u);                     /* 10 мс */
-  }
-}
+/* Пусто: lvgl_thread_entry перенесён в main_vector.c (lvgl_task_function).   */
 /* USER CODE END PFP */
 
 /**
@@ -117,24 +79,16 @@ VOID tx_application_define(VOID *first_unused_memory)
   /* Порядок важен:
        0) vlog_init - консольный лог (USART1), чтобы шаги ниже были видны
        1) ext_init  - мьютекс шины flash + сканирование журнала (до потоков!)
-       2) audio_init- читает sounds.bin, создаёт поток плеера
-       3) vector_tasks_init - потоки "Receiver Task" (приём/парсинг UART)
-                          и "Measure Task" (периодика прибора)      */
+       2) audio_init- читает sounds.bin, создаёт поток "Audio Player"
+       3) vector_tasks_init - ВСЕ потоки прибора: "Receiver Task" (приём/
+          парсинг UART), "Measure Task" (периодика), "LVGL Task" (дисплей/
+          индикация - перенесён сюда из tx_application_define, вопрос автора
+          п.1: создание потоков единообразно, в init-функциях своих модулей)
+          и потоки модулей обмена по их CONFIG_*                       */
   vlog_init();
   ext_init();
   audio_init();
   vector_tasks_init();
-
-  /* Создаем поток для Графики LVGL (Приоритет 15 - средний). Звук целиком
-     живёт в потоке "Audio Player" из audio_player.c (создан в audio_init). */
-  if (tx_thread_create(&lvgl_thread, "LVGL Task", lvgl_thread_entry, 0,
-                       lvgl_stack, LVGL_STACK_SIZE,
-                       15, 15, TX_NO_TIME_SLICE, TX_AUTO_START) != TX_SUCCESS)
-  {
-    /* USER CODE BEGIN LvglThread_Error */
-    while (1) { }
-    /* USER CODE END LvglThread_Error */
-  }
   /* USER CODE END  tx_application_define_1 */
 #if (USE_STATIC_ALLOCATION == 1)
   UINT status = TX_SUCCESS;

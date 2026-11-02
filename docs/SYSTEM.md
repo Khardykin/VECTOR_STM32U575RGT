@@ -33,7 +33,7 @@ Inc/shared_types.h         общие типы автора: ID таймеров
 Inc/shared_macros.h        агрегатор макросов для перенесённого кода (main.h + статусы + время):
                            маски ошибок, SET/TEST/RESET_STATUS_COMMON_BIT, таймеры START/TEST/
                            RESET/END_TIMER[_RTC]
-Inc/Vector_main.h          агрегатор приложения: CubeMX-периферия, config_device/vector_config,
+Inc/main_vector.h          агрегатор приложения: CubeMX-периферия, config_device/vector_config,
                            модули, API датчиков (sensors_init/read, sensors_status), extern
                            экземпляров прибора (Sns_Cfg_struct и др.), карта внутренней flash
 Audio/Inc, Audio/Src
@@ -49,7 +49,7 @@ Audio/Inc, Audio/Src
                            AUDIO_IMG_BASE_ADDR
   audio_ids.h              индексы звуков SND_* (генерирует tools/pack_sounds.py)
   audio_beep.[ch]          аварийный писк (const PCM 44.1 кГц во внутренней flash)
-Src/Vector_main.c          ПОТОКИ ПРИБОРА: receiver_task (приём/парсинг UART), measure_task
+Src/main_vector.c          ПОТОКИ ПРИБОРА: receiver_task (приём/парсинг UART), measure_task
                            (+ Vector_Options_System), потоки модулей ble/lora/lte_task
                            (создаются только при CONFIG_BLE/CONFIG_LORA/CONFIG_G4),
                            Vector_Run_Measure/Pre_Init, датчики I2C1 (sensors_init/read), SNS_CFG
@@ -121,7 +121,7 @@ Inc/vector_macros.h        макросы и хелперы проекта: TIME
 Common/Src/vector_log.c    консольный лог: ITM/SWO и/или UART (выключается макросом)
 Inc/vector_log.h           API лога: LOG_D/I/W/E, фильтры уровня/модулей (vector_config.h)
 Inc/vector_tick.h          время ПОТОКОВ (сон, таймауты модулей) - тик ThreadX
-Src/Vector_main.c          ТАКТЫ ПРИБОРА: timer/countdown_time/countdown_time_rtc,
+Src/main_vector.c          ТАКТЫ ПРИБОРА: timer/countdown_time/countdown_time_rtc,
                            Timer_Tick_1ms() (TIM3) и Timer_Tick_1s() (RTC wakeup),
                            а также Vector_Run_Board_Init() (всё, что делается в
                            main() до RTOS: SRAM4, заморозка TIM6, усилитель,
@@ -175,11 +175,13 @@ main()
       ├─ ext_init()         мьютекс шины, sf_dma_init(), сканирование журнала
       ├─ audio_init()       семафор ap_wake, очередь ap_queue, поток "Audio Player",
       │                     load_image()  <-- чтение таблицы образа из внешней flash
-      ├─ vector_tasks_init() потоки "Receiver Task" (приём/парсинг UART) и
-      │                     "Measure Task" (периодика прибора, Vector_main.c);
-      │                     потоки модулей "BLE Task"/"LoRa Task"/"LTE Task" -
-      │                     только при CONFIG_BLE/CONFIG_LORA/CONFIG_G4
-      └─ tx_thread_create(lvgl_thread)     заглушка под будущую графику
+      └─ vector_tasks_init() потоки "Receiver Task" (приём/парсинг UART),
+                            "Measure Task" (периодика прибора) и "LVGL Task"
+                            (дисплей/индикация; перенесён сюда из
+                            tx_application_define - создание потоков
+                            единообразно, main_vector.c); потоки модулей
+                            "BLE Task"/"LoRa Task"/"LTE Task" - только при
+                            CONFIG_BLE/CONFIG_LORA/CONFIG_G4
 ```
 
 Здесь **нельзя** блокироваться на RTOS-объектах и нельзя спать: `sf_read()` сам
@@ -201,10 +203,10 @@ main()
 
 Мёртвый поток `Audio Task` и семафор `audio_done_sem` удалены: звуком владеет
 только `Audio Player`. Потоки прибора создаёт `vector_tasks_init()` (файл
-`Core/VectorLib/Src/Vector_main.c`, выключатель `VECTOR_TASKS_ENABLE`) — структура
+`Core/VectorLib/Src/main_vector.c`, выключатель `VECTOR_TASKS_ENABLE`) — структура
 повторяет `Avis_main.c` с другого прибора: приём и парсинг в одном потоке,
 периодика и обмен модулей в другом. Заглушки модулей объявлены `weak`,
-поэтому ваша реализация в файле модуля заменит их без правки `Vector_main.c`.
+поэтому ваша реализация в файле модуля заменит их без правки `main_vector.c`.
 
 ### 2.3 Прерывания
 
@@ -217,8 +219,8 @@ main()
 | `USART1` (GPS, PB6/PB7) | 1 байт → `Gps_Data_Verification()` (кадр NMEA и таймаут ведёт `Gps.c`) | да, но из ISR только накопление байта |
 | `EXTI11` (`ACCEL_INT`, PC11) | `lis3dh_irq_handler()` — только флаг; фронт переключается `LL_EXTI_*Trig_0_31` | да |
 | `SPI2` + `GPDMA1_Channel8` | выдача кадра на экран → `HAL_SPI_TxCpltCallback` → `LCD_transferCpltCallback()` → `lv_display_flush_ready(disp)` | да |
-| `TIM3_UP` (1 кГц) | `Timer_Tick_1ms()` (`Vector_main.c`): `countdown_time[]`, флаги `timer.flag_1ms/10ms/100ms/1s`, счётчики кнопок, таймауты кадров COM/GPS/LoRa | только счёт и флаги |
-| `RTC WakeUp` (1 Гц) | `Timer_Tick_1s()` (`Vector_main.c`): `countdown_time_rtc[]`, часы `Working_data.working_hours` (+ зеркало в RTC BKP0 каждую секунду, ; `working_hours_offset` — смещение, его ISR не трогает), `flag_start_work`, `timer_end_data_exchange` | только счёт и флаги |
+| `TIM3_UP` (1 кГц) | `Timer_Tick_1ms()` (`main_vector.c`): `countdown_time[]`, флаги `timer.flag_1ms/10ms/100ms/1s`, счётчики кнопок, таймауты кадров COM/GPS/LoRa | только счёт и флаги |
+| `RTC WakeUp` (1 Гц) | `Timer_Tick_1s()` (`main_vector.c`): `countdown_time_rtc[]`, часы `Working_data.working_hours` (+ зеркало в RTC BKP0 каждую секунду, ; `working_hours_offset` — смещение, его ISR не трогает), `flag_start_work`, `timer_end_data_exchange` | только счёт и флаги |
 | `TIM6_UP` | только `HAL_IncTick()` — внутренняя тайм-база HAL (тик ThreadX — SysTick от порта, 100 Гц) | — |
 
 > Порт ThreadX для Cortex-M33 маскирует критические секции через **PRIMASK**
@@ -275,7 +277,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback (vector_macros.c)
 | USART1/UART4 (лог) | `vector_log.c` (`VECTOR_LOG_ENABLE`) | только инициализация/поток, из ISR вызов отбрасывается; UART4 занят только логом |
 | Кольца приёма `InputBuffer[TYPE_*]` | поток `Receiver Task` (исключение — `TYPE_BLE`) | SPSC: производитель — ISR UART (`add_to_buffer`), потребитель — `receiver_task_function()` (напрямую или через `Lora_Receive()`/`Lte_Receive()`); кольцо `TYPE_BLE` читает только `Ble_TransmitReceive` в `BLE Task`; во время AT-обмена LoRa кольцо `TYPE_LORA` читает `Lora_TransmitReceive` (`LoRa Task`) — `Lora_Receive()` в это время не пускают гейты `get_state_init_flag_lora()`/`TimeFlagRX` |
 | Состояние плеера `audio_status` | `audio_player.c` | volatile-структура целиком; пишут поток и ISR SAI-DMA, порядок записи `sound_index`→`output` фиксирован |
-| I2C1 (PB8/PB9): BME280 0x76, LIS3DH 0x19, MAX17048 0x36 | поток `Measure Task` (`Vector_main.c`) | один владелец: чтение только из `sensors_read()`, блокирующий обмен через макросы `I2C_Master_Transmit/Receive` (main.h) |
+| I2C1 (PB8/PB9): BME280 0x76, LIS3DH 0x19, MAX17048 0x36 | поток `Measure Task` (`main_vector.c`) | один владелец: чтение только из `sensors_read()`, блокирующий обмен через макросы `I2C_Master_Transmit/Receive` (main.h) |
 | `LCD_platform.c` | ошибки SPI2/DMA экрана, принудительное освобождение порта, предупреждения о конфигурации куба |
 | Экран как ресурс LVGL | `LVGL Task` (порт дисплея) и `Measure Task` (поворот) | поворот безопасен благодаря флагу порта; приоритеты 15 и 13 |
 
@@ -396,12 +398,12 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback (vector_macros.c)
 
 | Модуль | События |
 |---|---|
-| `Vector_main.c` (`Vector_Run_Board_Init`) | результат `sf_probe()` (JEDEC ID) — ещё до RTOS |
+| `main_vector.c` (`Vector_Run_Board_Init`) | результат `sf_probe()` (JEDEC ID) — ещё до RTOS |
 | `spiflash.c` | чтение ≥ 1 КБ (адрес, объём, миллисекунды) — только при `VECTOR_SPI_LOG_READS 1`, иначе уровень DEBUG; каждая запись и стирание сектора, откат с DMA на опрос |
 | `extstore.c` | ретраи чтения (`ext_read: recovered after N retry`), конфиг/журнал (DEBUG) |
 | `audio_player.c` | старт, состояние образа, команды, запуск и ошибки звука, «звук доигран», watchdog |
-| `Vector_main.c` | старт потоков прибора (`tasks init`, `receiver task`, `measure task`, `pre init`) |
-| `Vector_main.c` (датчики) | инициализация I2C1-модулей (кто ответил), смена ориентации/поворота экрана |
+| `main_vector.c` | старт потоков прибора (`tasks init`, `receiver task`, `measure task`, `pre init`) |
+| `main_vector.c` (датчики) | инициализация I2C1-модулей (кто ответил), смена ориентации/поворота экрана |
 | `LCD_platform.c` | ошибки SPI2/DMA экрана, принудительное освобождение порта, предупреждения о конфигурации куба |
 
 Правила модуля (важно при доработке):
@@ -425,8 +427,8 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback (vector_macros.c)
 |---|---|---|---|
 | **SysTick** (приоритет 4) | **100 Гц = 10 мс** | `Core/Src/tx_initialize_low_level.S` (порт ThreadX, `SYSTEM_CLOCK = 160000000`) | **всё время приложения**: тик ядра ThreadX, `VTICK_*`, метки лога |
 | **TIM6** (`TIM6_IRQn`, приоритет 10) | 1 кГц | куб (`NVIC.TimeBase = TIM6_IRQn`, `TICK_INT_PRIORITY`), `stm32u5xx_hal_timebase_tim.c` | **только внутренняя тайм-база HAL**: `HAL_GetTick()` для таймаутов внутри драйверов HAL (`HAL_SPI_Transmit(..., 250)` и т.п.) |
-| **TIM3** (`TIM3_IRQn`, приоритет 2) | **1 кГц = 1 мс** | куб (`tim.c`) | **таймеры прибора**: `countdown_time[]` (мс), флаги `timer.flag_1ms/10ms/100ms/1s`, счётчики кнопок, таймауты кадров COM/GPS/LoRa. Обслуживает `Timer_Tick_1ms()` в `Vector_main.c` |
-| **RTC WakeUp** (`RTC_IRQn`, приоритет 0) | **1 Гц = 1 с** | куб (`.ioc`: `RTC → Wakeup Interrupt` + NVIC `RTC global interrupt`); сгенерированный `rtc.c` | **секундные таймеры прибора**: `countdown_time_rtc[]`, часы `working_hours` (время, единица = 1 с), `timer.flag_start_work`. Обслуживает `Timer_Tick_1s()` в `Vector_main.c` |
+| **TIM3** (`TIM3_IRQn`, приоритет 2) | **1 кГц = 1 мс** | куб (`tim.c`) | **таймеры прибора**: `countdown_time[]` (мс), флаги `timer.flag_1ms/10ms/100ms/1s`, счётчики кнопок, таймауты кадров COM/GPS/LoRa. Обслуживает `Timer_Tick_1ms()` в `main_vector.c` |
+| **RTC WakeUp** (`RTC_IRQn`, приоритет 0) | **1 Гц = 1 с** | куб (`.ioc`: `RTC → Wakeup Interrupt` + NVIC `RTC global interrupt`); сгенерированный `rtc.c` | **секундные таймеры прибора**: `countdown_time_rtc[]`, часы `working_hours` (время, единица = 1 с), `timer.flag_start_work`. Обслуживает `Timer_Tick_1s()` в `main_vector.c` |
 
 ### 7.1 Таймеры прибора (как в Avis)
 
@@ -446,7 +448,7 @@ if (timer.flag_1s) { timer.flag_1s = 0; Vector_Run_Measure(); }
 ID таймеров — `enum` в `shared_types.h` (`TIMER_*` для мс, `TIMER_RTC_*` для
 секунд), длительности — `TIME_RTC_*` там же. Экземпляры `timer`,
 `countdown_time`, `countdown_time_rtc` объявлены `volatile` (пишет
-прерывание, читают потоки) и живут в `Vector_main.c`.
+прерывание, читают потоки) и живут в `main_vector.c`.
 
 Что где использовать: **сон потока и таймауты модулей** — `VTICK_*` (тик
 ThreadX); **логика прибора** — `timer.flag_*` и `START_TIMER*`; **то, что
@@ -738,18 +740,18 @@ Task, до первого тика).
 ## 11. Инклуды в одном месте и экранный цикл (v13)
 
 **Агрегатор инклудов (решение автора).** Все заголовки проекта собраны В ОДНОМ
-МЕСТЕ — `Core/VectorLib/Inc/Vector_main.h` (блоки 1..9: CubeMX/HAL +
+МЕСТЕ — `Core/VectorLib/Inc/main_vector.h` (блоки 1..9: CubeMX/HAL +
 `stm32u5xx_it.h` → конфигурация → стандарт (включая `<time.h>` — без него
 `time_t tmp_current` в `Menu_vector.h` не объявлялся) → ядро
 (`shared_*`/`vector_*`/`tx_api.h`) → модули под `CONFIG_*` → память/журнал →
 звук → потоки → экран (`TFT.h`/`LCD_platform.h`/`TFT_indicator.h` при
 `CONFIG_TYPE_LCD_TFT != 0`)). Любой `.c` проекта включает ТОЛЬКО
-`Vector_main.h` (+ vendor-заголовок драйвера, если он нужен одному модулю:
+`main_vector.h` (+ vendor-заголовок драйвера, если он нужен одному модулю:
 `BME280/bme280.h`). Новый заголовок добавлять в агрегатор, не в `.c`. Плата за
 удобство: `TFT.h` при `VECTOR_LCD_USE_LVGL=1` тянет `lvgl.h`/`ui.h` в каждый
 `.c` — время сборки растёт; если станет критично, блок 9 можно вынести в
 отдельный «экранный» агрегатор (например, включать его только из
-`Menu_vector.c`, `TFT*.c`, `Vector_main.c`, `app_azure_rtos.c`).
+`Menu_vector.c`, `TFT*.c`, `main_vector.c`, `app_azure_rtos.c`).
 
 **Экранный цикл (аналог Avis `DisplayIndication`).** `Menu_Draw()`
 (`Menu_vector.c`, НЕ weak) вызывается из потока LVGL Task: каждые 100 мс из
@@ -763,7 +765,7 @@ switch (`SCREEN_MENU` → `LCD_Menu(state_menu)`, `SCREEN_INFO_DEVICE` →
 `LCD_SubMenuSetting`) → `ui_apply_visibility()`. Все вызовы LVGL — из одного
 потока (LVGL Task), `lv_timer_handler()` крутится там же.
 
-**`state_screen`** (экземпляр в `Vector_main.c`, extern в `shared_types.h`,
+**`state_screen`** (экземпляр в `main_vector.c`, extern в `shared_types.h`,
 макросы `IS_STATE_SCREEN()`/`TO_GO_STATE_SCREEN()` в `shared_macros.h`) —
 зеркало `menu_status.screen` для слоя индикации: пишет `Menu_Init`/`Menu_GoTo`,
 читает `LCD_Fill_Template` (выбор экрана) и `Menu_Draw` (switch отрисовки).

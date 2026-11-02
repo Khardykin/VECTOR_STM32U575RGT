@@ -32,7 +32,7 @@
   *          КОНТЕКСТ (замечание автора п.5 - по образцу
   *          indication_task_function из Avis_main.c): Menu_Init() - Measure
   *          Task (Vector_Run_Pre_Init, один раз); Vector_Run_Indication() -
-  *          поток LVGL Task (app_azure_rtos.c) по timer.flag_100ms (100 мс),
+  *          поток LVGL Task (main_vector.c) по timer.flag_100ms (100 мс),
   *          внутри по device_turn -> Menu_Run(). В Measure Task меню НЕ живёт.
   *          Из ISR не вызывать (тут таймеры прибора и SaveConfig).
   *
@@ -41,11 +41,11 @@
   *          DOUBLE), единая цепочка else-if на экран начинается с g1.
   ******************************************************************************
   */
-/* Инклуды проекта - В ОДНОМ МЕСТЕ (Vector_main.h): кнопки button1..3
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (main_vector.h): кнопки button1..3
    (stm32u5xx_it.h), время VTICK_ и GetTick (vector_tick.h/vector_macros.h),
    лог, Notify_vector.h (NotifySeq_PowerOn), экран LCD_Init/backlight_set/
    LCD_* (TFT.h/LCD_platform.h/TFT_indicator.h при CONFIG_TYPE_LCD_TFT).   */
-#include "Vector_main.h"
+#include "main_vector.h"
 
 #if CONFIG_DISPLAY
 
@@ -69,7 +69,7 @@ static uint8_t state_flashing_system = 0;
 
 /* ui_lv_init() (lv_init + lv_display_create + lv_i18n + ui_init + экраны
    SquareLine) выполняется ОДИН РАЗ и ДО ПОТОКОВ - в конце
-   Vector_Run_Pre_Init() (Vector_main.c). Порядок как в Avis (указание
+   Vector_Run_Pre_Init() (main_vector.c). Порядок как в Avis (указание
    автора): «сначала инициализация ui, потом потоки, а инициализация экрана -
    во время включения по кнопке». Иначе TFT_Init() -> TFT_Rotation() ->
    lv_obj_invalidate(lv_scr_act()) отрабатывал по NULL (дисплей LVGL ещё не
@@ -740,7 +740,7 @@ void Button_Run_Start(void)
 			   Menu_TurnOff -> LCD_DeInit) содержит мусор, а объекты LVGL живут
 			   в RAM и не пересоздаются: помечаем активный экран и верхний слой
 			   (там PanelHead/ImageMirax) грязными - ближайший lv_timer_handler()
-			   (гейт TFT_Initialized == 1 в lvgl_thread_entry) перерисует кадр
+			   (гейт TFT_Initialized == 1 в lvgl_task_function, main_vector.c) перерисует кадр
 			   целиком.                                                      */
 			lv_obj_invalidate(lv_screen_active());
 			lv_obj_invalidate(lv_layer_top());
@@ -797,13 +797,13 @@ void Button_Run_Start(void)
 }
 
 /* Аналог Avis_Run_Indication (Avis_main.c) - вызывается из потока LVGL Task
-   (app_azure_rtos.c) по timer.flag_100ms. КОНТЕКСТ: поток LVGL Task.
+   (main_vector.c) по timer.flag_100ms. КОНТЕКСТ: поток LVGL Task.
    device_turn: ON/ON_1 -> Menu_Run() (кнопки/меню/отрисовка); OFF и
    OFF_PRE_INIT -> ничего (в Avis при OFF здесь DisplayChargeIndicationTurnOff
    + Button_Run_Start - экран заряда при выключенном приборе, появится с
    продуктовой кнопкой включения, PLAN этап 6). PRE_INIT сюда не попадает:
    LVGL Task (когда будет создан) ждёт завершения Vector_Run_Pre_Init
-   (device_turn/cnt_pre_init) - как receiver в Vector_main.c (PLAN п.60).     */
+   (device_turn/cnt_pre_init) - как receiver в main_vector.c (PLAN п.60).     */
 void Vector_Run_Indication(void)
 {
   switch (device_turn)

@@ -110,7 +110,7 @@
  * Flash одна и у звука (чтение, поток Audio Player), и у журнала/конфига
  * (запись, Measure Task). Бесконечное ожидание мьютекса замораживало бы поток
  * измерений вместе с датчиками и *_Run() (бывшие TODO в extstore.c и
- * Vector_main.c), поэтому все ожидания ограничены (схема «окно тишины»):
+ * main_vector.c), поэтому все ожидания ограничены (схема «окно тишины»):
  *   VECTOR_EXT_LOCK_READ_MS  - сколько читателю (ext_read плеера, cfg_load,
  *                              log_read/log_find_by_time журнала) разрешено
  *                              ждать шину, мс. 250 мс
@@ -257,7 +257,7 @@
 #define VECTOR_AUDIO_LOOP_PAUSE_MS 500u
 #endif
 
-/* --- РАБОЧЕЕ: потоки прибора (Vector_main.c, по образцу Avis_main.c) -------
+/* --- РАБОЧЕЕ: потоки прибора (main_vector.c, по образцу Avis_main.c) -------
  * Два потока, как на другом приборе:
  *   "Receiver Task" - приём и парсинг ПО КАЖДОМУ UART: command_message() (COM),
  *                     Lora_Receive() (LoRa), Ble_Receive(), Lte_Receive(),
@@ -354,6 +354,25 @@
 #endif
 #ifndef VECTOR_TASKS_LTE_DELAY_MS
 #define VECTOR_TASKS_LTE_DELAY_MS        50u
+#endif
+
+/* --- Поток дисплея/индикации (LVGL Task) --------------------------------
+ *  (вопрос автора: «почему создание потоков для остальных модулей внутри
+ *  функций их файлов, а для LVGL прямо в tx_application_define?» - теперь
+ *  ЕДИНООБРАЗНО: поток создаёт vector_tasks_init() в main_vector.c, рядом с
+ *  receiver/measure/BLE/LoRa/LTE, а не «сбоку» в app_azure_rtos.c).
+ *  Макросы - в общем ряду VECTOR_TASKS_*; стек в БАЙТАХ (ThreadX), приоритет
+ *  по прежней схеме: audio=10 > BLE=11 > rcv=LoRa=LTE=12 > measure=13 > LVGL=15
+ *  (индикация уступает обмену, 15 - средний приоритет, как было в ST-шаблоне).
+ *  DELAY - период сна потока: 10 мс, тик секвенсора Notify_Tick().            */
+#ifndef VECTOR_TASKS_LVGL_PRIORITY
+#define VECTOR_TASKS_LVGL_PRIORITY       15u
+#endif
+#ifndef VECTOR_TASKS_LVGL_STACK
+#define VECTOR_TASKS_LVGL_STACK          4096u
+#endif
+#ifndef VECTOR_TASKS_LVGL_DELAY_MS
+#define VECTOR_TASKS_LVGL_DELAY_MS       10u
 #endif
 
 /* --- BLE: мастерская сторона модуля MK01 (Ble_vector.c) ---------------
@@ -484,11 +503,11 @@
 #endif
 
 /* --- РАБОЧЕЕ: датчики на I2C1 (BME280, LIS3DH, MAX17048) -------------------
- * Чтение - sensors_read() в Vector_main.c: конфигурационные измерения (T/H/P,
+ * Чтение - sensors_read() в main_vector.c: конфигурационные измерения (T/H/P,
  * батарея) -> Sns_Cfg_struct.Config_common, живость чипов -> маска
  * sensors_status.Sensors_ok; runtime-данные (оси Accel_x/y/z, статусы падения,
  * копия Orientation/Screen_rotation) и счётчики диагностики шины I2C1 ->
- * sensors_status (Vector_main.h).
+ * sensors_status (main_vector.h).
  * Включение каждой микросхемы - CONFIG_BME / CONFIG_LIS3DH / CONFIG_MAX17048 в
  * config_device.h: при 0 драйвер не компилируется вовсе (тело файла под #if).
  *
@@ -531,7 +550,7 @@
  *     Отсюда "антидребезг 50 мс длится секунды" и "пауза цикла 40 с".
  * 0 = обычное поведение (таймер крутится и под отладчиком).
  * На боевой прошивке ни на что не влияет - ядро там не останавливается.
- * Строка стоит в Vector_Run_Board_Init() (до RTOS, Vector_main.c).                              */
+ * Строка стоит в Vector_Run_Board_Init() (до RTOS, main_vector.c).                              */
 #ifndef VECTOR_DBG_FREEZE_TICK
 #define VECTOR_DBG_FREEZE_TICK    1
 #endif
@@ -598,7 +617,7 @@
 // *         во flash (program под звуком разрешён, erase в окно тишины);
 // *       - раз в 5 с отчёт в терминал (VLOG_M_TASKS): req/q/drop/written/
 // *         defers/errors, ext_dbg_*, контрольное чтение последней записи.
-// * УДАЛЕНИЕ: этот блок, include в Vector_main.h, вызов в Vector_main.c
+// * УДАЛЕНИЕ: этот блок, include в main_vector.h, вызов в main_vector.c
 // * (помечены "[ВРЕМЕННЫЙ ТЕСТ]") и оба файла snd_log_test.*.                 */
 #ifndef VECTOR_SND_LOG_TEST
 #define VECTOR_SND_LOG_TEST       0   /* 1 = тест включён, 0 = выключен.

@@ -3,7 +3,7 @@
   * @file    snd_log_test.c
   * @brief   [ВРЕМЕННЫЙ ТЕСТ - УДАЛИТЬ ПОСЛЕ ПРОВЕРКИ] Реализация: см. .h.
   *
-  *          КОНТЕКСТ: поток measure_task (Vector_main.c, секция flag_1s).
+  *          КОНТЕКСТ: поток measure_task (main_vector.c, секция flag_1s).
   *          Пишет в журнал НЕ сам: только взводит SaveEvent/TypeLogEvent,
   *          а запись делает штатный Vector_RunFlashMemory() того же потока
   *          (окно тишины, отсрочка стираний и т.д.) - тестируется ИМЕННО
@@ -67,7 +67,7 @@
   ******************************************************************************
   */
 #include "main.h"              /* типовые определения проекта                  */
-#include "Vector_main.h"       /* Sns_Cfg_struct, tasks_status, snd_log_test.h */
+#include "main_vector.h"       /* Sns_Cfg_struct, tasks_status, snd_log_test.h */
 #include "Config_save_read.h"  /* SaveEvent, TypeLogEvent, log_read, TYPE_LOG  */
 #include "audio_player.h"      /* audio_*, audio_status                        */
 #include "audio_ids.h"         /* SND_* (образ sounds.bin)                     */

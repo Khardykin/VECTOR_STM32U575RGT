@@ -1,8 +1,8 @@
-/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): main.h, tx_api.h
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор main_vector.h): main.h, tx_api.h
    (TX_DISABLE: снимки Connected_device/Ble_telemetry в мосту, п.65), stdio
    (AT-команды), string (memcpy), math (cosf/lround: GPS-дельты в метры),
    Lora_S7678S.h (при CONFIG_LORA).                                          */
-#include "Vector_main.h"
+#include "main_vector.h"
 
 #if CONFIG_LORA
 
@@ -2801,7 +2801,7 @@ static uint8_t Lora_Transmit(COMMAND_LORA command, uint8_t *data)
 // Hex-разбор (IsHexChar/HexToByte/HexStringToBytes) ВЫНЕСЕН в общий код:
 // Vector_IsHexChar / Vector_HexToByte / Vector_HexStringToBytes - см.
 // vector_macros.h (Common/Src/vector_macros.c). Общая реализация для LoRa и
-// BLE (Ble_vector.c); объявлены в vector_macros.h (подключён через Vector_main.h).
+// BLE (Ble_vector.c); объявлены в vector_macros.h (подключён через main_vector.h).
 //===========================================================================================================================
 // DOWNLINK PARSER
 //===========================================================================================================================

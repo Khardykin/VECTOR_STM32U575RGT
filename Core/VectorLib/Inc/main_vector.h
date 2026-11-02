@@ -1,17 +1,17 @@
 /*
- * Vector_main.h
+ * main_vector.h
  *
  *  Created on: 1 окт. 2026 г.
  *      Author: Dmitriy
  */
 
-#ifndef VECTORLIB_INC_VECTOR_MAIN_H_
-#define VECTORLIB_INC_VECTOR_MAIN_H_
+#ifndef VECTORLIB_INC_MAIN_VECTOR_H_
+#define VECTORLIB_INC_MAIN_VECTOR_H_
 
 //===========================================================================================================================
 /* ВСЕ ИНКЛУДЫ ПРОЕКТА - В ОДНОМ МЕСТЕ (решение автора): любой .c файл проекта
-   (Menu_vector.c, Vector_main.c, Gps.c, TFT_indicator.c, ...) включает ТОЛЬКО
-   "Vector_main.h" и получает всё перечисленное ниже. Исключение - vendor-
+   (Menu_vector.c, main_vector.c, Gps.c, TFT_indicator.c, ...) включает ТОЛЬКО
+   "main_vector.h" и получает всё перечисленное ниже. Исключение - vendor-
    заголовки драйверов (BME280/bme280.h и т.п.): они нужны одному .c и живут
    рядом с ним. Порядок блоков: CubeMX/HAL -> конфигурация -> стандарт ->
    ядро (типы/макросы/время/лог/RTOS) -> модули -> память/журнал -> звук ->
@@ -100,6 +100,10 @@
 #endif
 //===========================================================================================================================
 
+/* ============================================================================
+ *                                 МАКРОСЫ
+ * Порядок в файле (указание автора): МАКРОСЫ -> ТИПЫ/ПЕРЕМЕННЫЕ -> ФУНКЦИИ.
+ * ============================================================================ */
 
 /* Карта ВНУТРЕННЕЙ flash. Заводские данные - последняя страница банка 2
    (0x080FE000..0x080FFFFF, 8 КБ): линкерный скрипт ограничивает код 1016K,
@@ -111,6 +115,17 @@
    заводских полей идёт через RAM-окно 64 Б (Internal_Flash_Write).        */
 #define FLASH_ADDRESS_START_BOOTLOADER  (0x08000000)	// Начало основной программы (бутлоадера пока нет)
 #define FLASH_ADDRESS_STOP_BOOTLOADER   (0x08005000)  	// Резерв: граница бутлоадера, когда появится
+
+/* Биты sensors_status.Sensors_ok (маска переехала из Config_common) -
+   какие микросхемы ответили при инициализации (выставляет sensors_init()). */
+#define SENSORS_OK_BME        (1u)
+#define SENSORS_OK_LIS3DH     (2u)
+#define SENSORS_OK_MAX17048   (4u)
+
+/* ============================================================================
+ *                          ТИПЫ И ПЕРЕМЕННЫЕ (extern)
+ * Экземпляры определены в main_vector.c (секция ПЕРЕМЕННЫЕ).
+ * ============================================================================ */
 
 /* --- датчики на I2C1: BME280 (0x76), LIS3DH (0x19), MAX17048 (0x36) --------
  * Владелец шины - поток Measure Task: чтение только из sensors_read(), поэтому
@@ -164,12 +179,19 @@ typedef struct
 
 extern volatile sensors_status_t sensors_status;
 
-/* Биты sensors_status.Sensors_ok (маска переехала из Config_common) -
-   какие микросхемы ответили при инициализации (выставляет sensors_init()). */
-#define SENSORS_OK_BME        (1u)
-#define SENSORS_OK_LIS3DH     (2u)
-#define SENSORS_OK_MAX17048   (4u)
+/* --- сервис (по образцу Avis) ------------------------------------------
+ * SoftResetProgram: 1 = команда мягкой перезагрузки прошивки (взводит COM/
+ *   BLE-модуль ВМЕСТЕ с START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, N)); */
+extern uint8_t SoftResetProgram;
 
+/* --- общие данные модулей обмена -------------------------------------- */
+extern uint8_t deveui_com[8];
+
+/* ============================================================================
+ *                                  ФУНКЦИИ
+ * ============================================================================ */
+
+/* --- датчики на I2C1 -------------------------------------------------- */
 void    sensors_init(void);             /* из Vector_Run_Pre_Init (один раз) */
 void    Battery_Init(void);             /* MAX17048: quickStart + лимиты напряжения
                                            от BAT_MIN/BAT_MAX конфига; зовёт
@@ -178,21 +200,14 @@ void    sensors_read(void);             /* из Vector_Run_Measure (1 с)       
 uint8_t sensors_rotation_changed(void);
 uint8_t sensors_fall_event(void);       /* 1 = было падение, флаг сбрасывается */
 
-/* --- сервис (по образцу Avis) ------------------------------------------
- * SoftResetProgram: 1 = команда мягкой перезагрузки прошивки (взводит COM/
- *   BLE-модуль ВМЕСТЕ с START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, N)); */
-extern uint8_t SoftResetProgram;
 void Avis_Battery_System(void);
-
-/* --- общие данные модулей обмена -------------------------------------- */
-extern uint8_t deveui_com[8];
 
 /* --- такты прибора -------------------------------------------------------- */
 /* Блокировка конфигурации (п.65): RMW-секции Sns_Cfg_struct (биты State,
    PeriodTimeLora, маски, downlink LoRa, сброс к заводским, будущий
    конфигуратор COM/BLE, меню) выполнять ПОД этой парой; одиночные чтения
    выровненных u16/u32 атомарны на Cortex-M33 - читатели блокировку НЕ
-   берут. Реализация/экземпляр - Vector_main.c (мьютекс создан в
+   берут. Реализация/экземпляр - main_vector.c (мьютекс создан в
    vector_tasks_init, до потоков; до создания - no-op, как vlog_lock).   */
 void Sys_Cfg_Lock(void);
 void Sys_Cfg_Unlock(void);
@@ -208,4 +223,4 @@ void Vector_Run_Board_Init(void);
    с command_message(). Зовётся из Timer_Tick_1ms().                        */
 void Uart_Command_Receive_Timer_Inc(void); /* 1 = экран надо повернуть (сброс)  */
 
-#endif /* VECTORLIB_INC_VECTOR_MAIN_H_ */
+#endif /* VECTORLIB_INC_MAIN_VECTOR_H_ */

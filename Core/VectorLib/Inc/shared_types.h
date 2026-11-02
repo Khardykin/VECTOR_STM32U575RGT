@@ -7,7 +7,7 @@
   *          (TIMER_RTC_*) с длительностями (TIME_RTC_*); типы обратного отсчёта
   *          DOWN_TIMER/DOWN_TIMER_RTC и volatile-экземпляры countdown_time/
   *          countdown_time_rtc (пишут Timer_Tick_1ms/1s из TIM3 1 кГц и RTC
-  *          wakeup 1 Гц - Vector_main.c, читают потоки); DEVICE_TURNED
+  *          wakeup 1 Гц - main_vector.c, читают потоки); DEVICE_TURNED
   *          (включён/выключен); COUNT_CHAN (10, решение автора); пороги
   *          батареи/LED по умолчанию (BAT_*_DEF, TIME_RTC_LED_STATE_*);
   *          SNS_CFG_Type_common/SNS_CFG - конфигурация прибора (хранится во
@@ -83,7 +83,7 @@ typedef enum {
 //  DEVICE_TURNED_END,
 }DEVICE_TURNED;
   
-// Определение - Vector_main.c. Старт: DEVICE_TURNED_OFF_PRE_INIT;
+// Определение - main_vector.c. Старт: DEVICE_TURNED_OFF_PRE_INIT;
 // DEVICE_TURNED_ON - в конце Vector_Run_Pre_Init(); DEVICE_TURNED_OFF -
 // обработчик выключения (PLAN этап 6); DEVICE_TURNED_ON_1 - прогрев/авто-выкл.
 extern DEVICE_TURNED device_turn;
@@ -179,7 +179,7 @@ extern volatile DOWN_TIMER_RTC 		countdown_time_rtc;	 /* секундные (RTC
 /* Текущий экран для слоя индикации: макросы IS_STATE_SCREEN()/
    TO_GO_STATE_SCREEN() (shared_macros.h). Зеркало menu_status.screen: пишет
    меню (Menu_Init/Menu_GoTo), читает LCD_Fill_Template (выбор экрана по
-   таблице scr_map). Экземпляр - Vector_main.c (рядом с countdown_time, чтобы
+   таблице scr_map). Экземпляр - main_vector.c (рядом с countdown_time, чтобы
    ссылка линковалась и при CONFIG_DISPLAY=0).                                */
 extern volatile uint8_t state_screen;
 //--------------------------------------------------------------------------------------------------------------
@@ -306,7 +306,7 @@ extern uint16_t calculating_the_discreteness(uint16_t device_setting, uint16_t s
      свежие" и серийник (0 = legacy-пакет Avis без серийника).
    Заполняет Ble_vector.c (CONFIG_BLE), читает Lora_S7678S.c (CONFIG_LORA) -
    поэтому типы/экземпляр живут ЗДЕСЬ, вне обоих CONFIG. Экземпляр -
-   Vector_main.c. Свежесть: потребитель сравнивает *_ms (GetTick, мс) с
+   main_vector.c. Свежесть: потребитель сравнивает *_ms (GetTick, мс) с
    BLE_TELEMETRY_TTL_MS. Протокол BLE - docs/Mirax-Ble-protocol-v1.md.       */
 #define BLE_BEACONS_MAX		(16u)	// маяков в хранителе (ограничение блока LoRa)
 #define BLE_PPE_MAX			(8u)	// единиц СИЗ (LoRa v4: PresenceMask 8 бит)

@@ -6,7 +6,7 @@
   *          API: max17048_init(), max17048_cellVoltage()/cellPercent()/
   *          chargeRate(), max17048_reset()/quickStart(). Владелец шины -
   *          Measure Task: init из sensors_init(), чтение раз в секунду из
-  *          sensors_read() (Vector_main.c) -> Sns_Cfg_struct.Config_common.
+  *          sensors_read() (main_vector.c) -> Sns_Cfg_struct.Config_common.
   *          battery_charge_percent/battery_charge_volt; живость чипа - бит
   *          SENSORS_OK_MAX17048, ошибки шины -> ST_COMMON_BIT_ERR_* и
   *          счётчики sensors_status. Обмен через макросы
@@ -14,9 +14,9 @@
   *          (PLAN.md, «Перенос с AT32»).
   ******************************************************************************
   */
-/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): MAX17048.h
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор main_vector.h): MAX17048.h
    (при CONFIG_MAX17048), i2c.h, лог, тик.                                   */
-#include "Vector_main.h"
+#include "main_vector.h"
 
 #if (CONFIG_MAX17048)
 

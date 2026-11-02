@@ -31,7 +31,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "Vector_main.h"    /* CONFIG_*, Uart_Gps/Lora_Receive_Timer_Inc */
+#include "main_vector.h"    /* CONFIG_*, Uart_Gps/Lora_Receive_Timer_Inc */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -117,7 +117,7 @@ int main(void)
 
   /* Бортовая инициализация до RTOS одним вызовом (такт SRAM4, заморозка TIM6
      под отладчиком, SD_MODE усилителя, sf_probe, audio_selftest) - живет в
-     Vector_main.c, см. Vector_Run_Board_Init().                            */
+     main_vector.c, см. Vector_Run_Board_Init().                            */
   Vector_Run_Board_Init();
   /* USER CODE END 2 */
 
@@ -232,7 +232,7 @@ void PeriphCommonClock_Config(void)
 /* USER CODE BEGIN 4 */
 //===========================================================================================================================
 /* Обслуживание таймеров прибора (Countdown_Timer, Countdown_Timer_Rtc,
-   Clear_Timer_Rtc, Timer_Tick_1ms/1s) - в Vector_main.c: там же экземпляры
+   Clear_Timer_Rtc, Timer_Tick_1ms/1s) - в main_vector.c: там же экземпляры
    timer / countdown_time / countdown_time_rtc. Здесь остаются только вызовы
    из прерываний.                                                           */
 /* USER CODE END 4 */
@@ -261,7 +261,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   else if(htim->Instance == TIM3){
 	  /* TIM3 = 1 кГц: такт таймеров прибора. Всё (декремент countdown_time[],
 	     флаги timer.flag_1ms/10ms/100ms/1s, счётчики кнопок, таймауты кадров
-	     COM/GPS/LoRa) делает Timer_Tick_1ms() из Vector_main.c.              */
+	     COM/GPS/LoRa) делает Timer_Tick_1ms() из main_vector.c.              */
 	  Timer_Tick_1ms();
   }
   /* TIM6 - только тайм-база HAL (uwTick). Время потоков - тик ThreadX

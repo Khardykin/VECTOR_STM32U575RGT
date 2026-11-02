@@ -33,13 +33,13 @@
  *
  * Обмен СО СВОИМ модулем - синхронный (Ble_TransmitReceive: 4 попытки,
  * контроль OK/ERROR, как в Avis). Байты USART3 складывает ISR в ring
- * InputBuffer[TYPE_BLE] (Vector_main.c); читает ring ТОЛЬКО Ble_TransmitReceive
+ * InputBuffer[TYPE_BLE] (main_vector.c); читает ring ТОЛЬКО Ble_TransmitReceive
  * - публичный Ble_Receive() (вызов из BLE Task, п.65) оставлен пустым, чтобы
  * не выедать ответы модуля (в Avis Receiver Task BLE тоже не обслуживает).
  *
  * Управление: CONFIG_BLE (config_device.h), USART_BLE (huart3, PC4/PC5,
  * 115200), пин BLE_RESET (PC12). Запуск из BLE Task (п.65) - Ble_Run()
- * (переопределяет weak-заглушку Vector_main.c), скелет - Avis Ble_Run():
+ * (переопределяет weak-заглушку main_vector.c), скелет - Avis Ble_Run():
  * INIT-таймер -> Ble_Init(serial); SET-таймер -> Ble_MsdDataGet() (опрос);
  * SLEEP-таймер -> Ble_MsdDataSleep(); ошибка 3 серий подряд ->
  * ST_COMMON_BIT_ERR_BLE (общая ошибка BLE).
@@ -291,7 +291,7 @@ extern void BLE_InitName(uint32_t serial);
 // Публичная заглушка для BLE Task (ring TYPE_BLE читает только
 // Ble_TransmitReceive - см. комментарий файла).
 extern void Ble_Receive(void);
-// Периодика из BLE Task (переопределяет weak из Vector_main.c).
+// Периодика из BLE Task (переопределяет weak из main_vector.c).
 extern void Ble_Run(void);
 
 // --- Мосты с основными структурами (п.66, симметрично LoRa п.63/65) ---------

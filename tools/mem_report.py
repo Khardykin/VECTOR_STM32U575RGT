@@ -11,7 +11,7 @@ mem_report.py — таблица расхода RAM и FLASH по модулям
   RAM   = .data + .bss + COMMON + ._user_heap_stack (резерв кучи/стека)
 
 Динамической памяти в проекте нет (ThreadX byte pool не создаётся, malloc не
-используется — стек каждого потока это статический массив .bss в Vector_main.c),
+используется — стек каждого потока это статический массив .bss в main_vector.c),
 поэтому map-файл даёт ПОЛНУЮ картину: сумма таблицы = всё занятое RAM/FLASH.
 Стеки потоков видны как .bss.<имя_массива> у объекта-владельца (раздел
 «Топ символов RAM»).
@@ -365,7 +365,7 @@ LOAD c:/st/gcc-arm-none-eabi/lib/libc.a
                 0x20000000                g_cfg
 .bss            0x20000080       0x800
  .bss.ble_task_stack
-                0x20000080       0x800 Core/VectorLib/Src/Vector_main.o
+                0x20000080       0x800 Core/VectorLib/Src/main_vector.o
                 0x20000080                ble_task_stack
 COMMON          0x20000880        0x10
  .bss.shared    0x20000880        0x10 Core/Src/main.o

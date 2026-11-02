@@ -12,7 +12,7 @@
   *          зависит.
   ******************************************************************************
   */
-#include "Vector_main.h"
+#include "main_vector.h"
 #if (CONFIG_TYPE_LCD_TFT == 1)   /* слой индикации Avis: ждёт переноса (SNS_CFG_Type,
                                     CALIB_CFG, COUNT_CHAN, DEVICE_NUMBER Device2/3_Pro).
                                     макрос объединён автором - прежний guard
@@ -25,7 +25,7 @@
                                     #if (CONFIG_TYPE_LCD_TFT), т.е. при 2 они
                                     тоже собираются - для чистой сборки режима 2
                                     их guard'ы надо сузить до == 1 */
-/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): TFT.h (TFT_*,
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор main_vector.h): TFT.h (TFT_*,
    LCD_Init + ui.h LVGL/SquareLine), LCD_platform.h (backlight_set),
    TFT_indicator.h (API этого слоя), shared_types/shared_macros, vector_tick
    (VTICK_MS), sensors_status, Sns_Cfg_struct.                              */
@@ -1443,7 +1443,7 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
     }
 
     // --- 5.1. Температура, давление и влажность ---
-    /* Единицы sensors_status (BME280 int32-драйвер, см. Vector_main.h):
+    /* Единицы sensors_status (BME280 int32-драйвер, см. main_vector.h):
        Temperature = °C×100, Humidity = %×1024, Pressure = гПа×10.
        На экран - целые: °C, % и мм рт.ст. (гПа×10 × 0.0750062 = mmHg,
        10132 -> 760). Раньше значения печатались сырыми (×100/×1024).     */

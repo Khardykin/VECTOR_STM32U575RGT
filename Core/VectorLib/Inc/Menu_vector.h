@@ -30,7 +30,7 @@
   *          Button_Menu()). Вызовы (замечание автора п.5 - по образцу
   *          indication_task_function из Avis_main.c): Menu_Init() - из
   *          Vector_Run_Pre_Init(); Vector_Run_Indication() - из потока LVGL
-  *          Task (app_azure_rtos.c) по timer.flag_100ms, внутри по device_turn
+  *          Task (main_vector.c) по timer.flag_100ms, внутри по device_turn
   *          вызывает Menu_Run(). В Measure Task меню больше не живёт.
   *          Приоритет жестов ПОСТОЯННЫЙ (замечание автора п.3):
   *          Button1 > Button2 > Button3, внутри кнопки LONG > SHORT.

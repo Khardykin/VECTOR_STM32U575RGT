@@ -354,7 +354,7 @@ typedef struct
 /* ble_beacon_t (запись блока BLEBeacons, байт-в-байт LoRa v4 п.4.7) определена
    В ОДНОМ МЕСТЕ - shared_types.h: тип МЕЖМОДУЛЬНЫЙ (кэш BLE
    Ble_telemetry.beacons[] читает этот модуль). Повторное определение здесь
-   запрещено - конфликт typedef при включении обоих заголовков (Vector_main.h). */
+   запрещено - конфликт typedef при включении обоих заголовков (main_vector.h). */
 
 typedef struct
 {

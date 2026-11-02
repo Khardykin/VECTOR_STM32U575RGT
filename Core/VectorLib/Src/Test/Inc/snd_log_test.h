@@ -20,8 +20,8 @@
   *              кнопкой PB2 демо-режима) - перезапуск.
   *
   *          Включение: VECTOR_SND_LOG_TEST в vector_config.h (1 = вкл).
-  *          Хуки (помечены "[ВРЕМЕННЫЙ ТЕСТ]"): include в Vector_main.h,
-  *          вызов SndLogTest_Run1s() в Vector_main.c (поток measure,
+  *          Хуки (помечены "[ВРЕМЕННЫЙ ТЕСТ]"): include в main_vector.h,
+  *          вызов SndLogTest_Run1s() в main_vector.c (поток measure,
   *          секция timer.flag_1s).
   *          УДАЛЕНИЕ ПОСЛЕ ПРОВЕРКИ: снять макрос (или =0), затем удалить
   *          snd_log_test.c/.h и оба помеченных места.

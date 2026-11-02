@@ -13,12 +13,12 @@
  * (бренд прибора, последняя страница внутренней flash - как в Avis;
  * закрывает висячую ссылку TFT_indicator.c и нужна имени BLE-модуля).
  */
-/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): HAL/SNS_CFG/
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор main_vector.h): HAL/SNS_CFG/
    макросы статусов и таймеров, tx_api.h (TX_DISABLE/TX_RESTORE очереди),
    extstore.h (cfg_save/cfg_load), sfmap.h (SF_CONFIG_BASE/DEFAULT),
    spiflash.h (геометрия кольца журнала), vector_log.h, Config_save_read.h,
    string, stddef (offsetof: ключ времени в слоте журнала).                  */
-#include "Vector_main.h"
+#include "main_vector.h"
 
 #define CALC_CRC_CONFIG(CFG, _CRC_)						\
         {									\
@@ -232,7 +232,7 @@ int log_ptr_save(const SNS_CFG *pSnsCfg)
 // Банк и страница ВНУТРЕННЕЙ flash. Сейчас не вызываются: конфигурация и
 // журнал переехали во внешнюю SPI-flash (extstore/sfmap.h), а бренд прибора
 // только читается (Init_Build_Type). Помощники оставлены под будущую запись во
-// внутреннюю flash (Internal_Flash_Write - карта в Vector_main.h, страница
+// внутреннюю flash (Internal_Flash_Write - карта в main_vector.h, страница
 // FLASH_ADDRESS_BUILD_TYPE), поэтому __attribute__((unused)): иначе -Wall даёт
 // -Wunused-function. Из сборки не вырезаются.
 static __attribute__((unused)) uint32_t GetBank(uint32_t addr)
@@ -367,7 +367,7 @@ static int log_time_at(uint32_t ptr, uint32_t *t)
 // ПОСТРОЕНИЕ ЗАПИСЕЙ (§4): снимок данных НА МОМЕНТ ВЫЗОВА (log_post) -
 // задержка переноса во flash время записи не искажает. Источники: SNS_CFG,
 // sensors_status, GPS (gps_nav.lat_scaled/lon_scaled, ×1e7 - Gps.h включён
-// через Vector_main.h под CONFIG_GPS; отдельных extern больше нет). Чего пока
+// через main_vector.h под CONFIG_GPS; отдельных extern больше нет). Чего пока
 // нет (каналы AVIS, СИЗ по BLE, aqi, удар/неактивность в motion) - нули
 // (§9: «SNAPSHOT при отсутствии AVIS: active_sensors=0, conc[]=0, chan_thr_bits=0»).
 

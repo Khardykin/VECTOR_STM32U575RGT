@@ -12,12 +12,12 @@
   *          orientation_changed()/get_rotation_state() (для TFT_Rotation в
   *          Measure Task), lis3dh_irq_handler() - из EXTI11 (ACCEL_INT, PC11):
   *          только флаг. Владелец шины I2C1 - Measure Task (sensors_init/
-  *          sensors_read в Vector_main.c, 1 с).
+  *          sensors_read в main_vector.c, 1 с).
   ******************************************************************************
   */
-/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): lis3dh.h (при
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор main_vector.h): lis3dh.h (при
    CONFIG_LIS3DH), math (sinf: порог 6D-ориентации), i2c.h, лог, тик.        */
-#include "Vector_main.h"
+#include "main_vector.h"
 #if (CONFIG_LIS3DH)
 
 // Внутренний контекст драйвера

@@ -39,17 +39,17 @@
 | Внешняя flash | `Src/Audio/Src/spiflash.c`, `extstore.c` | работает: DMA/опрос, ретраи, области SOUNDS/CONFIG/CONFIG_DEFAULT/LOG (`sfmap.h`) |
 | Лог | `Src/Common/Src/vector_log.c` | работает: ITM/SWO и/или UART4, уровни и маски, выключатели |
 | Кольцевые буферы UART | `Src/buffer.c`, `Inc/buffer.h` | каркас: приём по байту из ISR, передача polling/DMA |
-| Потоки прибора | `Src/Vector_main.c`, `Inc/vector_tasks.h` | каркас готов (GPS ранее ) по образцу `Avis_main.c`: поток `Receiver Task` (приём и парсинг по каждому UART) и поток `Measure Task` (периодика 1 с → `Vector_Run_Measure()` → `Ble_Run/Lora_Run/Lte_Run/Gps_Run`). Заглушки модулей — слабые (`__attribute__((weak))`): ваша реализация в файле модуля заменит их сама |
+| Потоки прибора | `Src/main_vector.c`, `Inc/vector_tasks.h` | каркас готов (GPS ранее ) по образцу `Avis_main.c`: поток `Receiver Task` (приём и парсинг по каждому UART) и поток `Measure Task` (периодика 1 с → `Vector_Run_Measure()` → `Ble_Run/Lora_Run/Lte_Run/Gps_Run`). Заглушки модулей — слабые (`__attribute__((weak))`): ваша реализация в файле модуля заменит их сама |
 | GPS/GNSS | `Src/Gps.c`, `Inc/Gps.h` | **приложен из другого прибора, включён** (`CONFIG_GPS 1` — решение автора): USART1 (PB6/PB7), NMEA (GGA/GLL/RMC), автоопределение чипа (Allystar/LOCOSYS), координаты для LoRa-трека, команды LOCOSYS. Проверка на живом модуле — раздел 5, этап 2b |
 | Экран TFT | `Src/TFT/LCD_platform.[ch]`, `TFT.[ch]`, `TFT_indicator.[ch]` | `LCD_platform` переведён с AT32 на HAL (SPI2 + GPDMA1 Ch8, имена функций сохранены), ST7789P3 172×320, `lcd_status`; `TFT_indicator` (2783 строки индикации Avis) пока выключен — нужны `SNS_CFG_Type`/`CALIB_CFG`/`COUNT_CHAN` |
-| Датчики I2C1 | `Src/lis3dh.c` + `Src/Lis3dh_reg/`, `Src/bme280_com.c` + `Src/BME280/`, `Src/MAX17048.c`, чтение — в `Src/Vector_main.c` | обмен через макросы `I2C_Master_Transmit/I2C_OK` (main.h), HAL внутри библиотек нет; `sensors_init()/sensors_read()` в Measure Task; в `sensors_status` — оси `Accel_x/y/z`, копия `Orientation/Screen_rotation`, статусы падения (free-fall, генератор INT2 LIS3DH) и счётчики диагностики; поворот экрана по `ACCEL_INT` |
+| Датчики I2C1 | `Src/lis3dh.c` + `Src/Lis3dh_reg/`, `Src/bme280_com.c` + `Src/BME280/`, `Src/MAX17048.c`, чтение — в `Src/main_vector.c` | обмен через макросы `I2C_Master_Transmit/I2C_OK` (main.h), HAL внутри библиотек нет; `sensors_init()/sensors_read()` в Measure Task; в `sensors_status` — оси `Accel_x/y/z`, копия `Orientation/Screen_rotation`, статусы падения (free-fall, генератор INT2 LIS3DH) и счётчики диагностики; поворот экрана по `ACCEL_INT` |
 | Графика LVGL | `Drivers/lvgl` (9.2) + UI SquareLine Studio, `Core/ui/lv_i18n`, `Core/translations/*.yml` | LVGL и UI в git **не лежат**; описание и чек-лист — `docs/LVGL.md`; поток `LVGL Task` пока заглушка |
 | Макросы и хелперы | `Inc/shared_macros.h`, `Inc/vector_macros.h` + `Src/Common/Src/vector_macros.c`, `Core/Inc/main.h` (USER CODE EM) | HAL спрятан в макросы `main.h` (`I2C_*`, `SPI_*`, `GPIO_*`, `Uart_*`, `usart_init`), общие функции перенесённого кода (`Delay/DelayInt/GetTick/Search_text`, `TIME_DEL_1/TIME_OUT_LORA`) — в одном `vector_macros.[ch]`; биты статусов — в вашем `shared_macros.h` |
 | Кнопки | `stm32u5xx_it.c` (EXTI), `Src/Test/Src/audio_demo.c` | два слоя: продуктовые флаги `button1/2/3/button_sos` и тестовое демо плеера |
 | LoRa S7678S | `Src/Lora_S7678S.c` (2094 строки) | реализация автора: AT-обмен, классы A/C, регионы, GPS-трек, `SNS_CFG` |
 | Конфигурация прибора | `Inc/config_device.h`, `Inc/shared_types.h` | флаги сборки `CONFIG_*`, структура `SNS_CFG`, биты статусов `ST_COMMON` |
 | Конфиг/журнал (сохранение) | `Src/Config_save_read.c`, `Inc/Config_save_read.h` | переработан под этот проект — `SNS_CFG` и журнал во внешней flash (`cfg_save/cfg_load`, `log_append` extstore), заводские данные (калибровка/бренд/AppKey) во внутренней странице 0x080FE000; загрузка при старте в `Vector_Run_Pre_Init()`, запись — только из `Vector_RunFlashMemory()`. области с явным `addr` — рабочий конфиг 0x400000 (`SaveConfig`), заводской 0x401000 (`SaveConfigDefault` пишет текущий, `ReadConfigDefault` — сброс к заводским в рабочий `Sns_Cfg_struct`), журнал с 0x402000. журнал ПЕРЕНЕСЁН из extstore сюда — кольцо слотов 64 Б (0x7FFF), `log_read(ptr)` + `log_find_by_time()`; `EVENT_LOG.Reserve[19]` добивает слот до 64 Б |
-| Общие включения | `Inc/Vector_main.h` | агрегатор заголовков (см. раздел 6, решение про инклуды) |
+| Общие включения | `Inc/main_vector.h` | агрегатор заголовков (см. раздел 6, решение про инклуды) |
 
 UART-роли (как задумано):
 
@@ -132,7 +132,7 @@ UART-роли (как задумано):
 ```
 COM (UART4)  --байты--> ISR --> InputBuffer[TYPE_USART]   ---\
 LoRa (UART4!) --байты--> ISR --> InputBuffer[TYPE_LORA]     ---+--> Receiver Task
-BLE (USART3) --байты--> ISR --> InputBuffer[TYPE_BLE]      ---+   (Vector_main.c)
+BLE (USART3) --байты--> ISR --> InputBuffer[TYPE_BLE]      ---+   (main_vector.c)
 LTE (USART2) --байты--> ISR --> InputBuffer[TYPE_LTE]      ---/
 GPS (USART1) --байты--> ISR --> Gps_Data_Verification(): свой буфер в Gps.c
                (мимо колец; разбор - Gps_Receive() в Receiver Task, CONFIG_GPS 1)
@@ -268,7 +268,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
       событие при всплеске); program (1–6 мс) разрешён ПОД ЗВУКОМ, erase ждёт
       «окно тишины» (пауза повтора 500 мс есть у каждого цикла сирены);
       LOG_PTR — один раз на пачку записей
-* [ ] код `Config_save_read.c/h` + `Vector_main.c`: `EVENT_LOG` 40 Б +
+* [ ] код `Config_save_read.c/h` + `main_vector.c`: `EVENT_LOG` 40 Б +
       структуры payload'ов, адресация 102/сектор (`addr = base + (phys/102)×4096
       + (phys%102)×40`), очередь + писатель, событийные триггеры (пороги AVIS
       из BLE-опроса, маска СИЗ, питание), снятие сплошного гейта
@@ -296,7 +296,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 * [x] `Uart_Gps_Set_Baudrate()`: AT32 `usart_init()` → `HAL_UART_Init()` + возврат прерываний RXNE/ERR
 * [x] общие хелперы `Delay()` / `DelayInt()` / `GetTick()` / `Search_text()` — `vector_macros.c` (время только тик RTOS, до планировщика busy-wait); они же нужны LoRa-драйверу
 * [x] `Uart_Gps_Receive_Timer_Inc()` вызывается из `HAL_TIM_PeriodElapsedCallback(TIM3)` (1 кГц) в `main.c`
-* [x] `Gps_Run()` в `Vector_main.c` (weak): `Gps_Init()` → `Gps_Init_Nav_Sys()` по секундному таймеру прибора (`TIMER_RTC_GPS_DATA_INIT`), `Gps_DeInit()` при снятом статусе, ошибка приёма → `ST_COMMON_BIT_ERR_GPS`
+* [x] `Gps_Run()` в `main_vector.c` (weak): `Gps_Init()` → `Gps_Init_Nav_Sys()` по секундному таймеру прибора (`TIMER_RTC_GPS_DATA_INIT`), `Gps_DeInit()` при снятом статусе, ошибка приёма → `ST_COMMON_BIT_ERR_GPS`
 * [ ] подтвердить по схеме полярность и длительность сброса `GNSS_RST` (PB5), режим `GNSS_MODE` (PB4) — пока пины не дёргаем
 * [ ] проверить приём NMEA на живом модуле: `tasks_status.mod[TASK_MOD_GPS]`, `Latitude/Longitude`, `Gps_flag_err`
 
@@ -384,7 +384,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 
 | Тема | Решение |
 |---|---|
-| Общие типы vs структуры модулей | **Правило слоёв (решение автора)**: `shared_types.h` — ЕДИНСТВЕННОЕ место **межмодульных** типов (данные, читаемые через границы модулей): `ble_beacon_t` (= проводная запись LoRa v4 блока `BLEBeacons`, байт-в-байт), `ble_ppe_item_t`, `BLE_TELEMETRY`, `SNS_CFG`, `SNS_Dev_Type` — вне `CONFIG_*`. Заголовки модулей (`Lora_S7678S.h`, `Ble_vector.h`) — только **wire-структуры своего протокола** (блоки LoRa-кадров; кадры BLE `msd_slot_rec_t`/`ble_beacon_norm_t`/`ble_mac_entry_t`/payload'ы реклам) — другие модули их НЕ инклюдят. Направления включений: модуль → `shared_types.h`; `shared_types.h` → никто; модуль → модуль — запрещено. Wire-структура и структура кэша совпадают байт-в-байт → одно определение (в `shared_types.h`). **Исправлено**: дубль typedef `ble_beacon_t` (`Lora_S7678S.h` ↔ `shared_types.h`) удалён — ошибка redefinition возникла бы при первом `CONFIG_LORA=1` (`Vector_main.h` включает оба заголовка); `Lora_S7678S.h` теперь включает `shared_types.h`. Осталось: локальная копия `channel_cfg_t` в `TFT_indicator.c` (файл выведен из сборки) — при переносе индикации убрать в пользу общего типа. Побочно: комментарии кода вычищены от маркеров ранних правок v11–v29 (25 файлов), шапка `Ble_vector.h` прямо говорит, что код реализует ПРЕЖНЮЮ редакцию BLE-протокола (действующая спека — `docs/Mirax-Ble-protocol-v1.md`) |
+| Общие типы vs структуры модулей | **Правило слоёв (решение автора)**: `shared_types.h` — ЕДИНСТВЕННОЕ место **межмодульных** типов (данные, читаемые через границы модулей): `ble_beacon_t` (= проводная запись LoRa v4 блока `BLEBeacons`, байт-в-байт), `ble_ppe_item_t`, `BLE_TELEMETRY`, `SNS_CFG`, `SNS_Dev_Type` — вне `CONFIG_*`. Заголовки модулей (`Lora_S7678S.h`, `Ble_vector.h`) — только **wire-структуры своего протокола** (блоки LoRa-кадров; кадры BLE `msd_slot_rec_t`/`ble_beacon_norm_t`/`ble_mac_entry_t`/payload'ы реклам) — другие модули их НЕ инклюдят. Направления включений: модуль → `shared_types.h`; `shared_types.h` → никто; модуль → модуль — запрещено. Wire-структура и структура кэша совпадают байт-в-байт → одно определение (в `shared_types.h`). **Исправлено**: дубль typedef `ble_beacon_t` (`Lora_S7678S.h` ↔ `shared_types.h`) удалён — ошибка redefinition возникла бы при первом `CONFIG_LORA=1` (`main_vector.h` включает оба заголовка); `Lora_S7678S.h` теперь включает `shared_types.h`. Осталось: локальная копия `channel_cfg_t` в `TFT_indicator.c` (файл выведен из сборки) — при переносе индикации убрать в пользу общего типа. Побочно: комментарии кода вычищены от маркеров ранних правок v11–v29 (25 файлов), шапка `Ble_vector.h` прямо говорит, что код реализует ПРЕЖНЮЮ редакцию BLE-протокола (действующая спека — `docs/Mirax-Ble-protocol-v1.md`) |
 | Протоколы и журнал (ДОКУМЕНТЫ согласованы, код не правили) | **BLE** (`docs/Mirax-Ble-protocol-v1.md`; файл прежней редакции удалён, v2 переименован в v1 — «не плодим протоколы, пока не доделан конечный результат»): MAC-фильтр по слотам вместо UUID; в payload нет ни MAC, ни Header (тип — из таблицы MCU, контроль по длине); заводские идентификаторы 1 байт; маяки вещают **Eddystone-UID+TLM** (решение автора: совместимость со сторонними маяками), **модуль сам парсит Eddystone и упаковывает в наш формат** — {ShortID u16, Vbatt u16 мВ} 4 Б (0xFFFF = часть не принята, MCU мержит; Vbatt→0/1/2 по порогам конфига MCU; ShortID = BID[4..5] у наших / назначается конфигуратором у сторонних; поля Eddystone BE; собственный 3-Б эфирный формат маяка отменён); AVIS — `active_sensors`+`sensors[8]` с `SensorIndex` (6 Б/канал, макс. 54; `dev_id` = номер модели, НЕ серийник); AT-набор §4 = спека прошивки MK01 («как сделаем — так и будет», внешней информации не будет): ОДНА `MACSET=<N>,<mac>,<тип>,...` — **тип привязан к индексу слота** (модулю нужен для нормализации Eddystone; пустой слот = `000000000000,0`), кэш слота самоочищается при чтении (live-поток отклонён: ~80 кадров/с не нужны при опросе), **bulk `MSDGETALL` каждые 5 с** (≈612 hex-символов, буфер приёма 640) + `MSDGET=<i>` для разной периодичности по устройствам, мост конфигуратора **Modbus RTU** — URC `+MBUS:<len>` / `AT+MBUSRSP=<len>`+`>` (свои кадры 0xA5/CRC16 отменены — у Modbus свои рамки; карта регистров вне рамок BLE-протокола); таблица MCU `MAC+DevType+Param+ShortID` = 10 Б × 32 в CONFIG; скан непрерывный; **правило LoRa: не обновились / не готовы / не отвечает → блока-секции НЕТ в пакете** (TTL 5 мин, `last_seen` per-slot). **Журнал** (новый `docs/LOG_FORMAT.md`): слот **40 Б** (заголовок 12 Б: `working_hours`@+4 + `CurrentAddrFile`@+8 — номер в каждой записи, восстановление после любых переполнений; payload 28 Б по типу), все записи одной длины; 102 записи/сектор, кольцо 2 МБ = 52224; периодика **10–15 мин** (`Archiveinterval` = (мин<<8)|сек, ОДИН период на набор SNAPSHOT+READINGS+PPE) → 4–6 месяцев; события мгновенно (GAS-порог с антидребезгом 10 с, маска СИЗ, питание/прошивка); маяки в журнале выключены; `altitude`/`activity` убраны (активность = MOTION_BIT_INACTIVE), `aqi` — задел под будущую микросхему; `Firmware_version` — только в записях питания; **RAM-очередь 16×40 Б со снимком на момент события** (лечит время-в-момент-записи и потерю всплесков однослотовым `SaveEvent`); миграции нет. **Звук/flash**: вторая микросхема НЕ нужна (шина занята звуком ~4 %: 8 КБ/93 мс ≈ 3–4 мс; program 1–6 мс идёт под звуком, erase ждёт окно тишины ≤500 мс) — при ревизии платы возможен футпринт второй flash на ТОЙ ЖЕ SPI1 (отдельный CS, не отдельный SPI); если понадобится erase под звуком — `VECTOR_AUDIO_STREAM_CHUNK 8192` (окно 186 мс) или erase-suspend 0xB0/0x30 |
 | Кварц | HSE = **8 МГц**; `HSE_VALUE` и `RCC.HSE_VALUE` обязаны совпадать с реальным, иначе все UART/таймеры/тик идут в N раз медленнее |
 | Такты | PLL1 M=1 N=20 R=1 → VCO1 160 МГц → SYSCLK 160 МГц; APB 1/2/3 = /1 |
@@ -395,17 +395,17 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 | Шумные строки | `VECTOR_SPI_LOG_READS 0` — чтения flash в DEBUG; `VECTOR_AUDIO_SELFTEST N` — N писков до RTOS для проверки тракта |
 | Время | только тик ThreadX (`vector_tick.h`, 10 мс); HAL-тик (TIM6) — лишь внутренние таймауты HAL |
 | Скрипты Windows | `*.bat` хранятся побайтово (`-text` в `.gitattributes`), переводы строк CRLF |
-| Инклуды | каждый `.c` включает то, что использует сам; `Vector_main.h` остаётся тонким агрегатором конфигурации и модулей приложения, без CubeMX-заголовков периферии |
+| Инклуды | каждый `.c` включает то, что использует сам; `main_vector.h` остаётся тонким агрегатором конфигурации и модулей приложения, без CubeMX-заголовков периферии |
 | Патчи | правки передаются как `git apply --binary <file>.diff` (не `git am`: он срезает CRLF у `.bat`); коммиты делает автор проекта |
 | Состояние плеера | ОДНА volatile-структура `audio_status` (вместо 14 переменных `audio_dbg_*`): состояние — enum'ы `audio_output_t` (`AUDIO_OUT_SILENT/_SOUND/_ALARM_BEEP`), `audio_boot_t`, `audio_cmd_t`, `audio_err_t`; счётчики — `cnt_*`. Дубли состояния убраны: `ap_playing_idx`, `ap_loop_*`, `ap_img_ok` удалены. То же для кнопок — `demo_status` |
 | Потоки прибора | Два потока по образцу `Avis_main.c`: `Receiver Task` (приоритет 12, стек 2 КБ) — приём и парсинг по каждому UART (`command_message`, `Lora_Receive`, `Ble_Receive`, `Lte_Receive`, `Gps_Receive`, `Uart_Channel_Receive`); `Measure Task` (13 / 4 КБ) — `Vector_Run_Pre_Init()` один раз и `Vector_Run_Measure()` + `Vector_RunFlashMemory()` по флагу `timer.flag_1s` (такт 1 с от TIM3) (внутри `Ble_Run/Lora_Run/Lte_Run/Gps_Run`). Модули закрыты `CONFIG_*` из `config_device.h`, заглушки — `__attribute__((weak))`. Выключатель всего: `VECTOR_TASKS_ENABLE` |
 | Перенос с AT32 | **HAL внутри библиотек не используем**: весь HAL спрятан в макросы `main.h` (USER CODE EM) — `I2C_Master_Transmit/Receive/Mem_*`, `I2C_OK`, `i2c_status_type`, `I2C_IsBusy/I2C_ReConfig`, `SPI_Transmit[_DMA]/SPI_Abort/SPI_OK`, `GPIO_WritePin/PIN_SET/PIN_RESET`, `usart_init → Uart_SetBaudrate`. Поэтому `lis3dh.c`, `bme280_com.c`, `MAX17048.c`, `Gps.c` остались вашими (отличаются только строкой include); HAL виден лишь в `vector_macros.c`, в колбэках (`HAL_SPI_TxCpltCallback` в `LCD_platform.c`) и в сгенерированном кубом коде. `EXINT->polcfg1/2` → `LL_EXTI_*Trig_0_31` |
 | Экран | ST7789P3 **172×320** (`CONFIG_MODEL_LCD 0`), SPI2 8 бит + GPDMA1 Ch8 (Normal), кадр уходит `LCD_writeBulk()` → колбэк DMA → `lv_display_flush_ready`. Байты RGB565 меняются местами (`VECTOR_LCD_SWAP_RGB565`). `HAL_SPI_ErrorCallback` не занимаем (он уже у `spiflash.c`) — залипание порта лечим таймаутом ожидания, всё видно в `lcd_status` |
-| Датчики | I2C1: BME280 (0x76), LIS3DH (0x19), MAX17048 (0x36). Владелец шины — `Measure Task` (`Vector_main.c`), чтение раз в секунду (`timer.flag_1s`). Значения → только `Sns_Cfg_struct.Config_common` (в `sensors_status` — счётчики диагностики). Поворот экрана: `ACCEL_INT` (PC11) → только флаг → `lis3dh_update_all()` в потоке → `TFT_Rotation()` |
-| Данные прибора | Экземпляры `Sns_Cfg_struct`, `Cfg_structdef_read`, `tempsensor_calib`, `device_turn` определены в `Vector_main.c` (как в Avis_main.c). Калибровка температуры выключена (`VECTOR_BME_CALIBRATION 0`): `flash_write_calibration_safe()` в проекте нет |
+| Датчики | I2C1: BME280 (0x76), LIS3DH (0x19), MAX17048 (0x36). Владелец шины — `Measure Task` (`main_vector.c`), чтение раз в секунду (`timer.flag_1s`). Значения → только `Sns_Cfg_struct.Config_common` (в `sensors_status` — счётчики диагностики). Поворот экрана: `ACCEL_INT` (PC11) → только флаг → `lis3dh_update_all()` в потоке → `TFT_Rotation()` |
+| Данные прибора | Экземпляры `Sns_Cfg_struct`, `Cfg_structdef_read`, `tempsensor_calib`, `device_turn` определены в `main_vector.c` (как в Avis_main.c). Калибровка температуры выключена (`VECTOR_BME_CALIBRATION 0`): `flash_write_calibration_safe()` в проекте нет |
 | i18n | Переводы в `Core/translations/*.yml` (ru-RU, en-GB), генерация `Core/update_lang.bat` → `Core/ui/lv_i18n/*`; в UI текст через `_("ключ")`. Описание — `docs/LVGL.md` |
-| Таймеры прибора | Схема автора из Avis оставлена — она рабочая и одинаковая на всех приборах, переводить на `tx_timer` смысла нет: TIM3 1 кГц → `Timer_Tick_1ms()` (декремент `countdown_time[]`, флаги `timer.flag_1ms/10ms/100ms/1s`, счётчики кнопок, таймауты кадров UART), RTC wakeup 1 с → `Timer_Tick_1s()` (декремент `countdown_time_rtc[]`, `working_hours`). Всё обслуживание переехало из `main.c`/`stm32u5xx_it.c` в `Vector_main.c` — в CubeMX-файлах осталось по одной строке вызова. Экземпляры `volatile` (пишет ISR, читают потоки). Макросы `START/TEST/RESET/END_TIMER[_RTC]` прежние, из `shared_macros.h` |
-| Борд-инит | `vector_board.[ch]` удалён: тело (`SRAM4`, заморозка `TIM6` под отладчиком, `SD_MODE`, `sf_probe`, `audio_selftest`) переехало в `Vector_Run_Board_Init()` в `Vector_main.c` — вне `#if VECTOR_TASKS_ENABLE`, чтобы работало всегда |
+| Таймеры прибора | Схема автора из Avis оставлена — она рабочая и одинаковая на всех приборах, переводить на `tx_timer` смысла нет: TIM3 1 кГц → `Timer_Tick_1ms()` (декремент `countdown_time[]`, флаги `timer.flag_1ms/10ms/100ms/1s`, счётчики кнопок, таймауты кадров UART), RTC wakeup 1 с → `Timer_Tick_1s()` (декремент `countdown_time_rtc[]`, `working_hours`). Всё обслуживание переехало из `main.c`/`stm32u5xx_it.c` в `main_vector.c` — в CubeMX-файлах осталось по одной строке вызова. Экземпляры `volatile` (пишет ISR, читают потоки). Макросы `START/TEST/RESET/END_TIMER[_RTC]` прежние, из `shared_macros.h` |
+| Борд-инит | `vector_board.[ch]` удалён: тело (`SRAM4`, заморозка `TIM6` под отладчиком, `SD_MODE`, `sf_probe`, `audio_selftest`) переехало в `Vector_Run_Board_Init()` в `main_vector.c` — вне `#if VECTOR_TASKS_ENABLE`, чтобы работало всегда |
 | Данные датчиков | Конфигурационные измерения (T/H/P, батарея, `Orientation`, `Screen_rotation`, маска `Sensors_ok`) — в `Sns_Cfg_struct.Config_common`. Runtime-данные (оси `Accel_x/y/z`, `fall_detected`/`cnt_fall_events`, копия ориентации/поворота) и счётчики диагностики шины I2C1 — в `sensors_status` (решение автора, оси во flash не сохраняются) |
 | Хранение конфига/журнала | `SNS_CFG` и журнал — ВО ВНЕШНЕЙ flash через `extstore` (`cfg_save/cfg_load` — два слота с CRC, `log_append` — кольцо LOG); заводские данные (калибровка T, бренд, AppKey) — во ВНУТРЕННЕЙ flash, страница 0x080FE000 (`.ld` ограничен 1016K). Адресация Avis (`reg_mem`, AT45/W25) не переносилась. Часы (уточнение автора): `working_hours` — САМО ВРЕМЯ в секундах (`volatile`, +1 каждый такт `Timer_Tick_1s()` от RTC 1 Гц), `working_hours_offset` — СМЕЩЕНИЕ (не часы); в журнал `save_event()` пишет сумму offset + working_hours. (С  области и адреса — в строке «Области конфига » ниже) |
 | Шина flash и звук | «Окно тишины» вместо `TX_WAIT_FOREVER` (решение автора): `Vector_RunFlashMemory()` заходит во внешнюю flash только когда звук молчит (`audio_is_busy()==0` — доигран или пауза повтора 500 мс), иначе флаги живут и повторяются каждый проход (50 мс); звук всегда доигрывает до конца, форс-стирания сквозь звук нет. В `extstore`: чтения ждут шину ограниченно (`VECTOR_EXT_LOCK_READ_MS`=250 мс), записи — try-lock (`VECTOR_EXT_LOCK_WRITE_MS`=0) с кодом `EXT_BUSY (-2)`; стирания под звук не стартуют и изнутри `extstore` (защита гонки старта с кнопки), счётчики `ext_dbg_busy`/`ext_dbg_erase_defer`; `ext_mtx` с `TX_INHERIT` (Audio 10 не ждёт, пока Receiver 12 вытесняет Measure 13). Записи последовательные (опрос, без DMA). `save_param/save_event` → `int`, флаги гасятся только по успеху, жёсткая ошибка → `cnt_flash_errors`; `compare_param` пишет журнал отложенно через `SaveEvent` (поток приёма flash не трогает) |
@@ -417,7 +417,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
 | Часы в RTC BKP0 и сервис (позже заменены календарным RTC — см. строку «LoRa v4 + BLE-протокол + календарный RTC») | Автор заменил зеркало BKP0 из ISR на Avis-функции `RTC_ReadTime()/RTC_WriteTime()` (реализованы в `vector_macros.c` поверх HAL_RTCEx_BKGet/SetRegister(BKP0) — на U5 нет 32-битного счётчика RTC как на AT32): `Timer_Tick_1s()` только `+1`, сверку и запись раз в секунду делает `Vector_Options_System()` (Receiver Task, `flag_start_work_bat_sys`), чтение при старте — `Pre_Init` после конфига; DBP открыт в `Board_Init`. Там же: `SoftResetProgram` (+ `TIMER_RTC_SOFT_RESET_PROGRAM`) → `save_event_type_2(TYPE_FW_UPDATE)` (пока = `save_event` + bounded-ретрай; второй формат журнала — после переноса каналов) → стоп TIM3 → `NVIC_SystemReset()`; `Avis_Battery_System()` — weak-заглушка (перенести из Avis). Блок-схема проекта — `docs/ARCHITECTURE.md` + `architecture.svg` |
 | Часы и сброс к заводским | Уточнение автора: `working_hours_offset` — СМЕЩЕНИЕ, а не часы; ВРЕМЯ — `Config_common.working_hours` (`volatile`, +1 каждую секунду из `Timer_Tick_1s()`, RTC wakeup 1 Гц; сохраняется/грузится вместе с `SNS_CFG`). Сброс к заводским (`ReadConfigDefault`) ЧАСЫ СОХРАНЯЕТ: `working_hours` переносится при копировании структуры, остальное (включая offset) заменяется заводским; потеря ≤1 с из-за гонки с RTC-ISR допустима. Журнал: `Event_log.working_hours` = offset + working_hours |
 | Подсветка экрана | ШИМ: TIM8_CH1 (PC6, AF3), куб — PSC 159 / ARR 39 → 25 кГц. `backlight_set(%)` масштабирует скважность от фактического ARR (`__HAL_TIM_GET_AUTORELOAD`), `VECTOR_LCD_PWM_PERIOD` больше не используется |
-| Заголовки | Один `vector_macros.h` на все макросы/хелперы проекта вместо `vector_status.h` + `vector_compat.h`; API и состояние датчиков (`sensors_status`) живут в `Vector_main.h`, реализация — в `Vector_main.c` (как `Ble_Run`/`Lora_Run` в `Avis_main.c`). Биты статусов — в `shared_macros.h` автора. Новых `vector_*.h` без нужды не заводим |
+| Заголовки | Один `vector_macros.h` на все макросы/хелперы проекта вместо `vector_status.h` + `vector_compat.h`; API и состояние датчиков (`sensors_status`) живут в `main_vector.h`, реализация — в `main_vector.c` (как `Ble_Run`/`Lora_Run` в `Avis_main.c`). Биты статусов — в `shared_macros.h` автора. Новых `vector_*.h` без нужды не заводим |
 | Порядок работ (решение автора) | Сначала **база**: модули прикладываем к проекту (`Gps.c`, потоки, кольца `TYPE_*`, флаги `CONFIG_* = 0`), периферию не трогаем. UART/куб/NVIC (`USART1_IRQn`, `USART_GPS`, `USART_BLE`/`USART_RF` в `main.h`) и значения `CONFIG_*` **пока не настраиваем и не включаем** — вернёмся к этому отдельным этапом |
 
 ---
@@ -530,8 +530,8 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     `USART_RF` в `main.h` не определены (п.13) — `transmit_buffer()` без них
     не передаст ничего.
 25. `CONFIG_LORA 1` / `CONFIG_BLE 1`: прежние блокеры сняты (–) —
-    `shared_types.h` включён в `Vector_main.h`, экземпляры `Sns_Cfg_struct` и
-    `device_turn` определены в `Vector_main.c`, `COUNT_CHAN` = 10
+    `shared_types.h` включён в `main_vector.h`, экземпляры `Sns_Cfg_struct` и
+    `device_turn` определены в `main_vector.c`, `COUNT_CHAN` = 10
     (`shared_types.h`, решение автора), макросы статусов/таймеров есть в
     `shared_macros.h`, `FIRMWARE_VERSION` для `Dev1` задан. Осталось до
     включения:
@@ -571,9 +571,9 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
  |---|---|---|
  | `Countdown_Timer_Chan()` в `main.c` | обращалась к `COUNT_CHAN`, `COUNT_TIMERS_CHAN`, `countdown_time_chan[]`, `END_TIMER_CH` — их автор удалил из `shared_types.h` вместе с каналами | функция удалена: каналов измерения на этом приборе нет |
  | `button.button_flag` | экземпляр называется `button1` (`stm32u5xx_it.c`) | `button1` в `Timer_Tick_1ms()` |
- | `Uart_Command_Receive_Timer_Inc()` | реализации нет (модуль `command_message` ещё не перенесён) | `__attribute__((weak))` заглушка в `Vector_main.c` |
+ | `Uart_Command_Receive_Timer_Inc()` | реализации нет (модуль `command_message` ещё не перенесён) | `__attribute__((weak))` заглушка в `main_vector.c` |
  | `timer`, `countdown_time`, `countdown_time_rtc` без `volatile` | пишет прерывание, читают потоки: на `-O2` флаги кэшируются в регистрах и такты теряются | `volatile` в объявлениях и определениях |
- | `Timer_variables` объявлен в `stm32u5xx_it.h` | тип жил в заголовке прерываний, экземпляры и обслуживание — в двух разных файлах | тип и `extern` — в `shared_types.h`, экземпляры и `Timer_Tick_*` — в `Vector_main.c` |
+ | `Timer_variables` объявлен в `stm32u5xx_it.h` | тип жил в заголовке прерываний, экземпляры и обслуживание — в двух разных файлах | тип и `extern` — в `shared_types.h`, экземпляры и `Timer_Tick_*` — в `main_vector.c` |
  | `TIMER_RTC_GPS_DATA_INIT`, `TIMER_RTC_LORA_DATA_SET_ALARM`, `TIME_RTC_*` | используются в `Gps_Run`/`Lora_Run`, но нигде не определены | добавлены в `shared_types.h` (длительности стартовые — подобрать под модули) |
  | `Lora_Run()` вставлен вариантом `Lora_g_*` | драйвер `Lora_g` (`CONFIG_LORA_G`) в этом проекте отсутствует | переписан под имеющийся `Lora_S7678S.c` (`Lora_Init/Lora_DataSet/Lora_DeInit/Lora_IsTxBusy/get_state_*_lora`) по образцу `Lora_Run()` из `Avis_main.c`; джиттер периода через `rand()` |
  | `COUNT_CHAN` не определён | `Lora_S7678S.h`: `#define COUNT_CHAN_LORA (COUNT_CHAN)` → с `CONFIG_LORA 1` не собиралось | `#define COUNT_CHAN (10)` в `shared_types.h` (решение автора) |
@@ -645,7 +645,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     не помещается — молчаливое обрезание до 0 = область SOUNDS), в
     `Config_save_read.h` — расхождение с определением (`uint32_t`);
     `save_param/read_param` не передавали `addr` в `cfg_save/cfg_load`;
-    `Vector_main.c` использовал `SF_CONFIG_BASE/DEFAULT` без `#include
+    `main_vector.c` использовал `SF_CONFIG_BASE/DEFAULT` без `#include
     "sfmap.h"`; `read_param(..., 0)` в `Pre_Init`/`compare_param` читал
     область SOUNDS; `DefaultConfig()` обращался к удалённым полям
     `TimeLimit/TimeLimitRST/Type_lcd`. `ReadConfigDefault` — семантика автора
@@ -670,7 +670,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     `Config_common.working_hours`; сброс к заводским (`ReadConfigDefault`)
     затирал часы значением из заводской области. часы сохраняются при
     сбросе (переносятся через копию), терминология исправлена в
-    `shared_types.h`, `Config_save_read.h`, `Vector_main.c`, SYSTEM.md,
+    `shared_types.h`, `Config_save_read.h`, `main_vector.c`, SYSTEM.md,
     PLAN.md. На железе: набрать `working_hours` (или выставить отладчиком),
     `ReadConfigDefault=1` → лог "factory defaults restored (wh=N s kept)",
     N не сбрасывается; `SaveConfigDefault=1` записывает в 0x401000 ТЕКУЩИЙ
@@ -680,7 +680,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     (до этого сборка падала раньше — на `ui.h`):
     (а) `undefined reference to tasks_status` — определение экземпляра
     `volatile tasks_status_t tasks_status = {...}` было случайно удалено из
-    `Vector_main.c` в коммите 6b3df8b (08.10); все потоки и `Vector_Run*`
+    `main_vector.c` в коммите 6b3df8b (08.10); все потоки и `Vector_Run*`
     ссылаются на extern из `vector_tasks.h` — восстановлено ранее ;
     (б) `undefined reference to LCD_writeCommand8Bit/LCD_writeData8Bit` —
     `LCD_platform.c` ранее НЕ КОМПИЛИРОВАЛСЯ: guard `#if (CONFIG_TYPE_LCD_TFT)`
@@ -702,7 +702,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     `log_find_by_time(t_from,t_to,&ptr_from,&ptr_to)` (бинпоиск по
     `Event_log.working_hours`); измеренные данные перенесены автором из
     `SNS_CFG` в `sensors_status` — все обращения по коду перенаправлены
-    (Vector_main/bme280_com/Lora_S7678S/TFT_indicator); часы при включении —
+    (main_vector/bme280_com/Lora_S7678S/TFT_indicator); часы при включении —
     из RTC BKP0 после чтения конфига, `Timer_Tick_1s()` зеркалит счётчик в
     BKP0 (DBP открыт в `Board_Init`); попутно: `Battery_Init()` вызывается из
     `Pre_Init` (guard исправлен CONFIG_BME→CONFIG_MAX17048), дубль полей
@@ -731,7 +731,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     над `save_event` с bounded-ретраем (зовётся перед NVIC_SystemReset из
     потока приёма — осознанное исключение из правила «flash пишет только
     Measure Task»), `Avis_Battery_System` — weak-заглушка, `SoftResetProgram`
-    — экземпляр в `Vector_main.c` (взводить будет COM/BLE-модуль ВМЕСТЕ с
+    — экземпляр в `main_vector.c` (взводить будет COM/BLE-модуль ВМЕСТЕ с
     `START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, N)`). На железе: выставить
     `SoftResetProgram=1` + таймер → перезагрузка с записью TYPE_FW_UPDATE;
     часы переживают NVIC_Reset и питание при живой VBAT (BKP0).
@@ -826,7 +826,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     добавлен временный тест совместной работы звука и записи журнала
     (`VECTOR_SND_LOG_TEST=1` в `vector_config.h`, код
     `Core/VectorLib/Src/Test/*/snd_log_test.*`, хуки помечены
-    «[ВРЕМЕННЫЙ ТЕСТ]» в `Vector_main.h`/`Vector_main.c`): громкость 0%,
+    «[ВРЕМЕННЫЙ ТЕСТ]» в `main_vector.h`/`main_vector.c`): громкость 0%,
     `SND_ZVONOK_1` зациклен с паузой 1 с, каждую секунду взводится
     `TYPE_LOG_PARAM_NOP -> SaveEvent` (запись штатным
     `Vector_RunFlashMemory` в окно тишины), раз в 5 с отчёт в терминал
@@ -837,13 +837,13 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     `last rc=0`, `rearm=0` (цикл плеера жив), `erase_def` растёт при
     стираниях во время звука. Итоги прогона 1 и найденный дефект плеера —
     п.54. **ПОСЛЕ ПРОВЕРКИ УДАЛИТЬ**: макроблок в `vector_config.h`,
-    include в `Vector_main.h`, вызов в `Vector_main.c`, оба файла теста
+    include в `main_vector.h`, вызов в `main_vector.c`, оба файла теста
     (и этот пункт).
 
 53. **Модуль LoRa не перенесён на модель данных VECTOR** (выявлено сборкой
     2026-10-20 после включения автором `CONFIG_LORA=1`, коммит `bca28ad`:
     `Lora_S7678S.c` перенесён из Avis механически, `Avis_main.h` заменён на
-    `Vector_main.h`, но код написан под старую модель). 26 ошибок сборки:
+    `main_vector.h`, но код написан под старую модель). 26 ошибок сборки:
     - `Cfg_struct->Sensor[chan]` (13 мест) — `SNS_CFG` в VECTOR не содержит
       массива каналов (в Avis — локальные газовые каналы);
     - `Config_common.working_hours` (6 мест) — в VECTOR часы перенесены в
@@ -1245,7 +1245,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     - `DEVICE_TURNED` (shared_types.h, редакция автора): ON=0 / OFF /
       **OFF_PRE_INIT (добавлен)** / ON_1 (включён без индикации — прогрев и
       авто-выкл) / SAVE_BATTERY_POWER — в комментарии-заделе. Старт
-      `device_turn = DEVICE_TURNED_OFF_PRE_INIT` (Vector_main.c);
+      `device_turn = DEVICE_TURNED_OFF_PRE_INIT` (main_vector.c);
       `DEVICE_TURNED_ON` — В КОНЦЕ Vector_Run_Pre_Init() (после инициализации
       часов и log_post(TYPE_TURN_ON)).
     - Receiver Task: гейт на входе — `while (device_turn ==
@@ -1333,8 +1333,8 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
       переживает перезапуски (переинициализация была один раз, в прогоне 5).
 
 62. **Тест «звук + журнал» ВЫКЛЮЧЕН (решение автора): `VECTOR_SND_LOG_TEST=0`
-    (v13); файлы snd_log_test.* и оба хука (include в Vector_main.h, вызов в
-    Vector_main.c) оставлены ПОД DEFINE — включить обратно = 1. Задача п.54
+    (v13); файлы snd_log_test.* и оба хука (include в main_vector.h, вызов в
+    main_vector.c) оставлены ПОД DEFINE — включить обратно = 1. Задача п.54
     закрыта прогоном 6 (п.61)**:
     - Продуктовый функционал не задет: плеер, журнал v2, RAM-очередь, писатель,
       LOG_PTR живут вне define теста; при 0 тестовый код не компилируется вовсе
@@ -1546,7 +1546,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
       структуры + биты) выполняются под ним; будущий конфигуратор COM/BLE и
       меню обязаны брать его же. Одиночные чтения выровненных u16/u32 на
       Cortex-M33 атомарны — читатели не блокируются (правило задокументировано
-      в Vector_main.h). Порядок замков: cfg → ext (flash) — обратного нет.
+      в main_vector.h). Порядок замков: cfg → ext (flash) — обратного нет.
       (2) `Connected_device`/`Ble_telemetry`: писатель (BLE-поток,
       Ble_Apply*) и читатель (LoRa-поток, мост) обмениваются ЦЕЛЫМИ снимками
       под TX_DISABLE (копия ~300 Б ≈ единицы мкс на 160 МГц, раз в секунду —
@@ -1593,7 +1593,7 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
     - **StateErr — единая блокировка (аудит п.4 автора)**: слово
       Config_common.StateErr пишут ЧЕТЫРЕ потока (BLE: ERR_BLE; LoRa:
       ERR_LORA в weak Lora_Run; receiver: ERR_GPS в Gps_Run; measure:
-      ERR_STS4 в Vector_main.c и bme280_com.c) — все RMW, кроме BLE-моста,
+      ERR_STS4 в main_vector.c и bme280_com.c) — все RMW, кроме BLE-моста,
       были голыми (потеря обновления при пересечении). Все поточные точки
       обёрнуты в Sys_Cfg_Lock/Unlock; точка в Pre_Init (bme280_init_com
       fail) оставлена как есть — до потоков писатель один.

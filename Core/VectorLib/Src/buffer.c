@@ -15,7 +15,7 @@
   *          USART_BLE/USART_RF в main.h - PLAN.md п.13).
   ******************************************************************************
   */
-#include "Vector_main.h"
+#include "main_vector.h"
 
 #include <string.h>   /* memcpy: каждый .c несёт свои include сам */
 

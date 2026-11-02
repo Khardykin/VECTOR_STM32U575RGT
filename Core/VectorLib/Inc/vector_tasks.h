@@ -121,14 +121,14 @@ void Vector_Options_System(void);
 
 /* Реакция на серию ошибок BME280 (в Avis - Avis_Search_Temp_Start):
    переинициализация/поиск температурного датчика. Зовётся из bme280_com.c,
-   weak-заглушка определена в Vector_main.c. data - код причины (2 = ошибка
+   weak-заглушка определена в main_vector.c. data - код причины (2 = ошибка
    инициализации, 0 = 10 незавершённых измерений подряд).                 */
 void Vector_Search_Temp_Start(uint16_t data);
 
 /* --- МОДУЛИ: приём (поток receiver_task) ------------------------------------
- * Слабые (__attribute__((weak))) заглушки в Vector_main.c: когда перенесёте
+ * Слабые (__attribute__((weak))) заглушки в main_vector.c: когда перенесёте
  * свою реализацию в файл модуля, она автоматически заменит заглушку, править
- * Vector_main.c не придётся. Lora_Receive() уже есть в Lora_S7678S.c - она
+ * main_vector.c не придётся. Lora_Receive() уже есть в Lora_S7678S.c - она
  * вызывается в receiver_task напрямую под #if CONFIG_LORA. Ble_Receive() -
  * заглушка: кольцо TYPE_BLE читает Ble_TransmitReceive в потоке BLE Task.    */
 void command_message(void);        /* COM/UART4: разбор команд обмена         */

@@ -30,7 +30,7 @@ enum TYPE_USART
  TYPE_DEBUG	,
  TYPE_LORA	,
  TYPE_BLE	,
- TYPE_LTE	,	//LTE-модем: кольцо приёма для потока Receiver Task (Vector_main.c)
+ TYPE_LTE	,	//LTE-модем: кольцо приёма для потока Receiver Task (main_vector.c)
  TYPE_GPS	,	//GPS/GNSS-модуль: кольцо приёма и тип передачи (Gps.c)
  TYPE_SENSOR,
  TYPE_USART_COUNT,

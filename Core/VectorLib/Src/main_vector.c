@@ -1,6 +1,6 @@
 /**
   ******************************************************************************
-  * @file    Vector_main.c
+  * @file    main_vector.c
   * @brief   Потоки прибора (аналог Avis_main.c): приём/парсинг UART и периодика
   *
   *          КАРТА ФАЙЛА
@@ -50,13 +50,161 @@
   *          блокироваться (мьютексы, сон, лог). Из ISR сюда не заходить.
   ******************************************************************************
   */
-/* Инклуды проекта - В ОДНОМ МЕСТЕ: Vector_main.h (агрегатор) содержит всё -
+/* Инклуды проекта - В ОДНОМ МЕСТЕ: main_vector.h (агрегатор) содержит всё -
    CubeMX/HAL, конфигурацию, стандарт, ядро (shared_ и vector_ заголовки,
    tx_api), модули, память/журнал, звук, потоки и экран (TFT.h и
    TFT_indicator.h при CONFIG_TYPE_LCD_TFT). Здесь использовались: rand()
    (stdlib), sf_probe/SF_CONFIG_BASE (spiflash/sfmap), TFT_Rotation (TFT.h),
    button1..3 (stm32u5xx_it.h), TX_DISABLE (tx_api) - всё из агрегатора.   */
-#include "Vector_main.h"
+#include "main_vector.h"
+
+/* ============================================================================
+ *                                 МАКРОСЫ
+ * Своих макросов у main_vector.c нет: приоритеты/стеки/задержки потоков -
+ * vector_config.h (VECTOR_TASKS_*), типы и макросы состояния прибора -
+ * shared_types.h/shared_macros.h, инклуды - main_vector.h (агрегатор).
+ * Новый макрос ЭТОГО файла добавлять СЮДА - до блока переменных.
+ * Порядок в файле (указание автора): МАКРОСЫ -> ПЕРЕМЕННЫЕ -> ФУНКЦИИ.
+ * ============================================================================ */
+
+/* ============================================================================
+ *                                ПЕРЕМЕННЫЕ
+ * ВСЕ определения файла - в одном месте (раньше были разбросаны по разделам:
+ * такты в начале, данные прибора и потоки в середине, датчики в конце).
+ * Порядок блоков: такты/таймеры -> данные прибора -> потоки (дескрипторы,
+ * стеки, мьютекс конфига, состояние) -> датчики -> объявления функций.
+ * Внешние объявления: shared_types.h (Sns_Cfg_struct, device_turn, ...),
+ * vector_tasks.h (tasks_status), main_vector.h (sensors_status).
+ * ============================================================================ */
+
+/* -------------------------------------------------- такты и таймеры прибора ---
+ * Три источника времени и назначение каждого - в баннере у функций
+ * Countdown_Timer()/Timer_Tick_1ms()/Timer_Tick_1s() ниже.                   */
+volatile Timer_variables timer = {0};
+volatile DOWN_TIMER      countdown_time = {0};
+volatile DOWN_TIMER_RTC  countdown_time_rtc = {0};
+/* Текущий экран (IS_STATE_SCREEN/TO_GO_STATE_SCREEN - shared_macros.h):
+   зеркало menu_status.screen для слоя индикации (LCD_Fill_Template). Пишет
+   меню (Menu_Init/Menu_GoTo в Menu_vector.c); экземпляр здесь, чтобы символ
+   линковался при любой конфигурации.                                        */
+volatile uint8_t state_screen = 0;
+
+#if VECTOR_TASKS_ENABLE
+
+/* ------------------------------------------------------- данные прибора ---
+ * Экземпляры структур, которые объявляет shared_types.h (в Avis они жили в
+ * Avis_main.c). Определены ЗДЕСЬ, в файле приложения: если заведёте отдельный
+ * модуль конфигурации прибора - перенесите определения туда и удалите эти.
+ *
+ *   Sns_Cfg_struct      рабочий конфиг и состояние: Status/StateErr, данные
+ *                       датчиков (Temperature/Humidity/Pressure), батарея,
+ *                       серийный номер, параметры LoRa. Сюда пишет
+ *                       bme280_measure(), отсюда читают модули обмена.
+ *   tempsensor_calib    калибровка температуры BME280 (VECTOR_BME_CALIBRATION 0
+ *                       -> пока не используется).
+ *   device_turn         прибор включён/выключен (DEVICE_TURNED).
+ *
+ * ВАЖНО: до Vector_Run_Pre_Init() Sns_Cfg_struct zero-init (статусы сброшены).
+ * Pre_Init грузит конфиг из внешней flash (read_param, CRC) либо пишет
+ * заводской (DefaultConfig + save_param); биты включения модулей обмена
+ * дополнительно выставляются по флагам сборки CONFIG_*.                   */
+SNS_CFG          Sns_Cfg_struct;
+SNS_CFG          Cfg_structdef_read;
+TEMPSENSOR_CALIB tempsensor_calib;
+DEVICE_TURNED    device_turn = DEVICE_TURNED_OFF_PRE_INIT;
+uint8_t          SoftResetProgram = 0;   /* 1 = команда мягкой перезагрузки прошивки: */
+SNS_Dev_Type     Connected_device;   /* свод подключённого под-устройства AVIS*/
+BLE_TELEMETRY    Ble_telemetry;      /* телеметрия BLE-окружения (маяки/СИЗ/признак AVIS)*/
+uint8_t          deveui_com[8];      /* копия DevEUI для модулей COM/LTE*/
+
+/* --------------------------------------------------------------- потоки ----
+ * Приоритеты (в ThreadX МЕНЬШЕ = выше): Audio Player = 10, Receiver = 12,
+ * Measure = 13, LVGL = 15. Обмен данными не должен обгонять звук.
+ * Стек - в БАЙТАХ (в FreeRTOS xTaskCreate считает слова: 512 слов там =
+ * 2048 байт здесь).                                                          */
+static TX_THREAD receiver_task_handler;
+static TX_THREAD measure_task_handler;
+static uint8_t   receiver_task_stack[VECTOR_TASKS_RECEIVER_STACK] __attribute__((aligned(8)));
+static uint8_t   measure_task_stack[VECTOR_TASKS_MEASURE_STACK]   __attribute__((aligned(8)));
+#if CONFIG_BLE                          /* п.65: отдельные потоки BLE и LoRa  */
+static TX_THREAD ble_task_handler;
+static uint8_t   ble_task_stack[VECTOR_TASKS_BLE_STACK]           __attribute__((aligned(8)));
+#endif
+#if CONFIG_LORA
+static TX_THREAD lora_task_handler;
+static uint8_t   lora_task_stack[VECTOR_TASKS_LORA_STACK]         __attribute__((aligned(8)));
+#endif
+#if CONFIG_G4                           /* «для Lte_Run тоже нужен свой поток» (автор); NB-IoT - аналогично */
+static TX_THREAD lte_task_handler;
+static uint8_t   lte_task_stack[VECTOR_TASKS_LTE_STACK]           __attribute__((aligned(8)));
+#endif
+/* LVGL Task (дисплей/индикация): создавался отдельно в app_azure_rtos.c -
+   перенесён сюда, в общий ряд потоков прибора (вопрос автора п.1).           */
+static TX_THREAD lvgl_task_handler;
+static uint8_t   lvgl_task_stack[VECTOR_TASKS_LVGL_STACK]         __attribute__((aligned(8)));
+
+static void receiver_task_function(ULONG thread_input);
+static void measure_task_function(ULONG thread_input);
+static void lvgl_task_function(ULONG thread_input);
+#if CONFIG_BLE
+static void ble_task_function(ULONG thread_input);
+#endif
+#if CONFIG_LORA
+static void lora_task_function(ULONG thread_input);
+#endif
+#if CONFIG_G4
+static void lte_task_function(ULONG thread_input);
+#endif
+
+/* Функции модулей обмена зовутся из потоковых функций НИЖЕ, а определены ещё
+   ниже (weak-заглушки ~1000) либо в файлах модулей при CONFIG_*=1 (их
+   заголовки включены в main_vector.h ПОД ТЕМИ ЖЕ гейтами). Объявления здесь -
+   иначе при CONFIG_BLE=0/CONFIG_LORA=0 компилятор даст implicit-declaration:
+   заголовки модулей выключены, а weak-заглушка ещё не объявлена.
+   (Lora_Receive объявлен в Lora_S7678S.h - вызов в receiver_task закрыт
+   гейтом CONFIG_LORA, заголовок включён тем же гейтом; Ble_Receive/
+   Lte_Receive/Lte_Run - в vector_tasks.h.)                                  */
+void Ble_Run(void);
+void Ble_Receive(void);
+void Lora_Run(void);
+
+/* Блокировка конфигурации (п.65): Sns_Cfg_struct пишут НЕСКОЛЬКО потоков
+   (LoRa-downlink, будущий конфигуратор COM/BLE, меню/LVGL, сброс к заводским
+   в receiver). Под мьютексом выполняются только RMW-секции (биты State,
+   PeriodTimeLora/флаги, копирование структуры); одиночные чтения выровненных
+   u16/u32 на Cortex-M33 атомарны - читатели блокировку не берут. Создан в
+   vector_tasks_init() ДО потоков; до создания (Pre-SMP старт) - no-op.   */
+static TX_MUTEX cfg_mtx;
+static volatile uint8_t cfg_mtx_ok = 0;
+
+/* ------------------------------------------------------------- состояние ---
+ * ВСЁ состояние потоков и счётчики модулей - в ОДНОЙ структуре tasks_status
+ * (в отладчике достаточно одной строки `tasks_status`). Начальные значения
+ * задаются здесь, дальше поля правят потоки и заглушки модулей.
+ * ВНИМАНИЕ: определение было случайно удалено в коммите 6b3df8b - сборка
+ * теряла линковку (undefined reference to `tasks_status` во всех потоках);
+ * восстановлено ранее. Экземпляр объявляет vector_tasks.h (extern).         */
+volatile tasks_status_t tasks_status =
+{
+  .receiver_running   = 0u,
+  .measure_running    = 0u,
+  .cnt_pre_init       = 0u
+};
+
+/* ---------------------------------------------------------- датчики (I2C1) ---
+ * BME280 / LIS3DH / MAX17048: как устроен опрос и поворот экрана - в баннере
+ * у sensors_init()/sensors_read() ниже.                                     */
+volatile sensors_status_t sensors_status = {0};
+
+/* Флаг "ориентация изменилась, поворот не применён": ставится в sensors_read(),
+   снимается в sensors_rotation_changed().                                    */
+static volatile uint8_t rotation_pending = 0u;
+
+#endif /* VECTOR_TASKS_ENABLE */
+
+/* ============================================================================
+ *                                 ФУНКЦИИ
+ * ============================================================================ */
 
 /* ============================================================================
  *  ТАКТЫ ПРИБОРА И БОРД-ИНИЦИАЛИЗАЦИЯ
@@ -72,14 +220,6 @@
  *        (периоды передачи LoRa/BLE, часы working_hours - время в секундах).
  *  Макросы START/TEST/RESET/END_TIMER[_RTC] - в shared_macros.h.
  * ============================================================================ */
-volatile Timer_variables timer = {0};
-volatile DOWN_TIMER      countdown_time = {0};
-volatile DOWN_TIMER_RTC  countdown_time_rtc = {0};
-/* Текущий экран (IS_STATE_SCREEN/TO_GO_STATE_SCREEN - shared_macros.h):
-   зеркало menu_status.screen для слоя индикации (LCD_Fill_Template). Пишет
-   меню (Menu_Init/Menu_GoTo в Menu_vector.c); экземпляр здесь, чтобы символ
-   линковался при любой конфигурации.                                        */
-volatile uint8_t state_screen = 0;
 
 /* Декремент миллисекундных таймеров. КОНТЕКСТ: прерывание TIM3. */
 static void Countdown_Timer(void)
@@ -279,37 +419,6 @@ void Vector_Run_Board_Init(void)
 
 #if VECTOR_TASKS_ENABLE
 
-/* --------------------------------------------------------------- потоки ----
- * Приоритеты (в ThreadX МЕНЬШЕ = выше): Audio Player = 10, Receiver = 12,
- * Measure = 13, LVGL = 15. Обмен данными не должен обгонять звук.
- * Стек - в БАЙТАХ (в FreeRTOS xTaskCreate считает слова: 512 слов там =
- * 2048 байт здесь).                                                          */
-/* ------------------------------------------------------- данные прибора ---
- * Экземпляры структур, которые объявляет shared_types.h (в Avis они жили в
- * Avis_main.c). Определены ЗДЕСЬ, в файле приложения: если заведёте отдельный
- * модуль конфигурации прибора - перенесите определения туда и удалите эти.
- *
- *   Sns_Cfg_struct      рабочий конфиг и состояние: Status/StateErr, данные
- *                       датчиков (Temperature/Humidity/Pressure), батарея,
- *                       серийный номер, параметры LoRa. Сюда пишет
- *                       bme280_measure(), отсюда читают модули обмена.
- *   tempsensor_calib    калибровка температуры BME280 (VECTOR_BME_CALIBRATION 0
- *                       -> пока не используется).
- *   device_turn         прибор включён/выключен (DEVICE_TURNED).
- *
- * ВАЖНО: до Vector_Run_Pre_Init() Sns_Cfg_struct zero-init (статусы сброшены).
- * Pre_Init грузит конфиг из внешней flash (read_param, CRC) либо пишет
- * заводской (DefaultConfig + save_param); биты включения модулей обмена
- * дополнительно выставляются по флагам сборки CONFIG_*.                   */
-SNS_CFG          Sns_Cfg_struct;
-SNS_CFG          Cfg_structdef_read;
-TEMPSENSOR_CALIB tempsensor_calib;
-DEVICE_TURNED    device_turn = DEVICE_TURNED_OFF_PRE_INIT;
-uint8_t          SoftResetProgram = 0;   /* 1 = команда мягкой перезагрузки прошивки: */
-SNS_Dev_Type     Connected_device;   /* свод подключённого под-устройства AVIS*/
-BLE_TELEMETRY 	 Ble_telemetry;      /* телеметрия BLE-окружения (маяки/СИЗ/признак AVIS)*/
-uint8_t 		 deveui_com[8];      /* копия DevEUI для модулей COM/LTE*/
-
 /* коэффициент пересчёта концентрации для RF-пакетов (LoRa/BLE). В Avis -
    таблица conversion_factor_rf[] из Avis_Menu_Functionality.c (пересчёт
    мг/м³ <-> PPM <-> %НКПР по настройкам канала); порт таблицы - за автором.
@@ -322,56 +431,6 @@ __attribute__((weak)) float Get_Conversion_factor_rf(uint8_t chan)
   (void)chan;
   return 1.0f;
 }
-
-static TX_THREAD receiver_task_handler;
-static TX_THREAD measure_task_handler;
-static uint8_t   receiver_task_stack[VECTOR_TASKS_RECEIVER_STACK] __attribute__((aligned(8)));
-static uint8_t   measure_task_stack[VECTOR_TASKS_MEASURE_STACK]   __attribute__((aligned(8)));
-#if CONFIG_BLE                          /* п.65: отдельные потоки BLE и LoRa  */
-static TX_THREAD ble_task_handler;
-static uint8_t   ble_task_stack[VECTOR_TASKS_BLE_STACK]           __attribute__((aligned(8)));
-#endif
-#if CONFIG_LORA
-static TX_THREAD lora_task_handler;
-static uint8_t   lora_task_stack[VECTOR_TASKS_LORA_STACK]         __attribute__((aligned(8)));
-#endif
-#if CONFIG_G4                           /* «для Lte_Run тоже нужен свой поток» (автор); NB-IoT - аналогично */
-static TX_THREAD lte_task_handler;
-static uint8_t   lte_task_stack[VECTOR_TASKS_LTE_STACK]           __attribute__((aligned(8)));
-#endif
-
-static void receiver_task_function(ULONG thread_input);
-static void measure_task_function(ULONG thread_input);
-#if CONFIG_BLE
-static void ble_task_function(ULONG thread_input);
-#endif
-#if CONFIG_LORA
-static void lora_task_function(ULONG thread_input);
-#endif
-#if CONFIG_G4
-static void lte_task_function(ULONG thread_input);
-#endif
-
-/* Функции модулей обмена зовутся из потоковых функций НИЖЕ, а определены ещё
-   ниже (weak-заглушки ~1000) либо в файлах модулей при CONFIG_*=1 (их
-   заголовки включены в Vector_main.h ПОД ТЕМИ ЖЕ гейтами). Объявления здесь -
-   иначе при CONFIG_BLE=0/CONFIG_LORA=0 компилятор даст implicit-declaration:
-   заголовки модулей выключены, а weak-заглушка ещё не объявлена.
-   (Lora_Receive объявлен в Lora_S7678S.h - вызов в receiver_task закрыт
-   гейтом CONFIG_LORA, заголовок включён тем же гейтом; Ble_Receive/
-   Lte_Receive/Lte_Run - в vector_tasks.h.)                                  */
-void Ble_Run(void);
-void Ble_Receive(void);
-void Lora_Run(void);
-
-/* Блокировка конфигурации (п.65): Sns_Cfg_struct пишут НЕСКОЛЬКО потоков
-   (LoRa-downlink, будущий конфигуратор COM/BLE, меню/LVGL, сброс к заводским
-   в receiver). Под мьютексом выполняются только RMW-секции (биты State,
-   PeriodTimeLora/флаги, копирование структуры); одиночные чтения выровненных
-   u16/u32 на Cortex-M33 атомарны - читатели блокировку не берут. Создан в
-   vector_tasks_init() ДО потоков; до создания (Pre-SMP старт) - no-op.   */
-static TX_MUTEX cfg_mtx;
-static volatile uint8_t cfg_mtx_ok = 0;
 
 void Sys_Cfg_Lock(void)
 {
@@ -388,20 +447,6 @@ void Sys_Cfg_Unlock(void)
     (void)tx_mutex_put(&cfg_mtx);
   }
 }
-
-/* ------------------------------------------------------------- состояние ---
- * ВСЁ состояние потоков и счётчики модулей - в ОДНОЙ структуре tasks_status
- * (в отладчике достаточно одной строки `tasks_status`). Начальные значения
- * задаются здесь, дальше поля правят потоки и заглушки модулей.
- * ВНИМАНИЕ: определение было случайно удалено в коммите 6b3df8b - сборка
- * теряла линковку (undefined reference to `tasks_status` во всех потоках);
- * восстановлено ранее. Экземпляр объявляет vector_tasks.h (extern).         */
-volatile tasks_status_t tasks_status =
-{
-  .receiver_running   = 0u,
-  .measure_running    = 0u,
-  .cnt_pre_init       = 0u
-};
 
 /* Отметить вызов приёма/обмена модуля: счётчик + метка времени (тик RTOS).
    КОНТЕКСТ: потоки прибора.                                                   */
@@ -547,7 +592,7 @@ static void measure_task_function(ULONG thread_input)
     /*  (замечание автора п.5): меню/индикация здесь НЕ живут - они в
        потоке LVGL Task по образцу indication_task_function из Avis_main.c
        (timer.flag_100ms -> Vector_Run_Indication(), затем lv_timer_handler).
-       См. app_azure_rtos.c и Menu_vector.c.                               */
+       См. lvgl_task_function (этот файл) и Menu_vector.c.                               */
 
     VTICK_SLEEP_MS(VECTOR_TASKS_MEASURE_DELAY_MS);
   }
@@ -643,6 +688,53 @@ static void lte_task_function(ULONG thread_input)
   }
 }
 #endif /* CONFIG_G4 */
+
+/* ============================================================================
+ * ПОТОК ДИСПЛЕЯ/ИНДИКАЦИИ (LVGL Task) - перенесён из app_azure_rtos.c:
+ * создание потоков теперь ЕДИНООБРАЗНО в vector_tasks_init() (вопрос автора
+ * п.1: «у остальных модулей - внутри их файлов, а у LVGL прямо в
+ * tx_application_define»). Тело прежнее (app_azure_rtos.c lvgl_thread_entry):
+ *   100 мс (timer.flag_100ms от TIM3) - Vector_Run_Indication() (CONFIG_DISPLAY);
+ *   каждый цикл (~10 мс)              - Notify_Tick(): секвенсор фаз
+ *                                       свет/звук/вибро (и при выключенном
+ *                                       приборе - сценарий включения);
+ *   TFT+LVGL                          - lv_timer_handler() под гейтом
+ *                                       TFT_Initialized == 1 (панель поднята
+ *                                       ui_lv_init по нажатию кнопки питания).
+ * Работает только после Vector_Run_Pre_Init (cnt_pre_init != 0) - до него
+ * конфиг/журнал не готовы, индикацию рисовать нечем.
+ * КОНТЕКСТ: поток "LVGL Task".
+ * ============================================================================ */
+static void lvgl_task_function(ULONG thread_input)
+{
+  (void)thread_input;
+
+  while (1)
+  {
+    if (tasks_status.cnt_pre_init != 0u)    /* Pre_Init завершён */
+    {
+      if (timer.flag_100ms != 0u)
+      {
+        timer.flag_100ms = 0u;
+#if CONFIG_DISPLAY
+        Vector_Run_Indication();
+#endif
+      }
+      /* Секвенсор оповещений (Notify_vector): тик движка ~каждые 10 мс.
+         Вне гейта flag_100ms и вне CONFIG_DISPLAY: работает и при выключенном
+         приборе - сценарий включения (Button_Run_Start -> NotifySeq_PowerOn)
+         стартует как раз в состоянии OFF. */
+      Notify_Tick();
+#if (CONFIG_TYPE_LCD_TFT && VECTOR_LCD_USE_LVGL)
+      if (TFT_Initialized == 1u)
+      {
+        lv_timer_handler();
+      }
+#endif
+    }
+    VTICK_SLEEP_MS(VECTOR_TASKS_LVGL_DELAY_MS);              /* 10 мс = 1 тик RTOS */
+  }
+}
 
 /* ============================================================================
  *                               НАПОЛНЕНИЕ ПРИБОРА
@@ -1059,7 +1151,7 @@ void Battery_Init(void)
  *                          МОДУЛИ: ПРИЁМ (поток receiver_task)
  * Слабые (__attribute__((weak))) заглушки. Когда перенесёте реализацию в свой
  * файл модуля (Ble.c, Lte.c, Uart_Channel.c), сильное определение заменит
- * заглушку при линковке - править Vector_main.c не придётся.
+ * заглушку при линковке - править main_vector.c не придётся.
  * Внутри каждой заглулки тело закрыто #if CONFIG_* - как в Avis_main.c:
  * модуль выключен конфигурацией, вызов остаётся, тело пустое.
  * ============================================================================ */
@@ -1282,11 +1374,6 @@ __attribute__((weak)) void Gps_Run(void)
  * ориентацию -> Vector_Run_Measure() зовёт TFT_Rotation(). I2C из ISR не
  * читается никогда.
  * ============================================================================ */
-volatile sensors_status_t sensors_status = {0};
-
-/* Флаг "ориентация изменилась, поворот не применён": ставится в sensors_read(),
-   снимается в sensors_rotation_changed().                                    */
-static volatile uint8_t rotation_pending = 0u;
 
 /* Поднять все включённые конфигурацией датчики. Результат - биты
    sensors_status.Sensors_ok, счётчик sensors_status.cnt_init_ok и лог.
@@ -1485,11 +1572,14 @@ const char *task_module_name(task_module_t mod)
   }
 }
 
-/* Создать потоки прибора: receiver/measure - ВСЕГДА; потоки модулей обмена -
-   только при включённых CONFIG_* (решение автора: «в vector_tasks_init
+/* Создать потоки прибора: receiver/measure/LVGL - ВСЕГДА; потоки модулей
+   обмена - только при включённых CONFIG_* (решение автора: «в vector_tasks_init
    запускай потоки в зависимости от CONFIG_BLE / CONFIG_G4 / CONFIG_LORA»;
    NB-IoT добавится аналогично). Выключенный модуль не тратит RAM на стек
-   и не создаёт поток.
+   и не создаёт поток. LVGL Task перенесён сюда из app_azure_rtos.c (вопрос
+   автора п.1): tx_application_define теперь только зовёт инициализации
+   модулей, все потоки создаются единообразно - в своих init-функциях
+   (audio_init, vector_tasks_init).
    КОНТЕКСТ: tx_application_define() (стек MSP, планировщик ещё не запущен) -
    как audio_init(): TX_AUTO_START означает, что потоки реально побегут после
    tx_kernel_enter().                                                         */
@@ -1561,10 +1651,23 @@ void vector_tasks_init(void)
           (uint32_t)VECTOR_TASKS_MEASURE_STACK, (uint32_t)VECTOR_TASKS_MEASURE_PRIORITY);
   }
 
+  /* LVGL Task (дисплей/индикация): создан ЗДЕСЬ, а не в tx_application_define
+     (вопрос автора п.1 - единообразно с остальными потоками прибора). */
+  if (tx_thread_create(&lvgl_task_handler, "LVGL Task", lvgl_task_function, 0,
+                       lvgl_task_stack, (ULONG)VECTOR_TASKS_LVGL_STACK,
+                       (UINT)VECTOR_TASKS_LVGL_PRIORITY,
+                       (UINT)VECTOR_TASKS_LVGL_PRIORITY,
+                       TX_NO_TIME_SLICE, TX_AUTO_START) != TX_SUCCESS)
+  {
+    LOG_E(VLOG_M_TASKS, "lvgl task create FAIL (stack=%u prio=%u)",
+          (uint32_t)VECTOR_TASKS_LVGL_STACK, (uint32_t)VECTOR_TASKS_LVGL_PRIORITY);
+  }
+
   /* Приоритет/стек базовых потоков + какие модульные потоки включены. */
-  LOG_I(VLOG_M_TASKS, "tasks init: rcv(%u/%u) meas(%u/%u) ble=%u lora=%u lte=%u",
+  LOG_I(VLOG_M_TASKS, "tasks init: rcv(%u/%u) meas(%u/%u) lvgl(%u/%u) ble=%u lora=%u lte=%u",
         (uint32_t)VECTOR_TASKS_RECEIVER_PRIORITY, (uint32_t)VECTOR_TASKS_RECEIVER_STACK,
         (uint32_t)VECTOR_TASKS_MEASURE_PRIORITY, (uint32_t)VECTOR_TASKS_MEASURE_STACK,
+        (uint32_t)VECTOR_TASKS_LVGL_PRIORITY, (uint32_t)VECTOR_TASKS_LVGL_STACK,
         (uint32_t)CONFIG_BLE, (uint32_t)CONFIG_LORA, (uint32_t)CONFIG_G4);
 }
 

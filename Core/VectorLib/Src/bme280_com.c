@@ -9,14 +9,14 @@
   *          <0 = ошибка; Calib_bme280_Temp() - калибровка температуры (при
   *          VECTOR_BME_CALIBRATION 0 выключена). Владелец шины - Measure Task:
   *          init из sensors_init(), измерение раз в секунду из sensors_read()
-  *          (Vector_main.c); серия ошибок -> Vector_Search_Temp_Start()
+  *          (main_vector.c); серия ошибок -> Vector_Search_Temp_Start()
   *          (weak-заглушка). Живость чипа - бит SENSORS_OK_BME.
   ******************************************************************************
   */
-/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): bme280_com.h
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор main_vector.h): bme280_com.h
    (при CONFIG_BME), string (memcpy). Vendor-заголовок драйвера Bosch остаётся
    локальным - он нужен только этому модулю.                                 */
-#include "Vector_main.h"
+#include "main_vector.h"
 #include "BME280/bme280.h"
 
 #if (CONFIG_BME)

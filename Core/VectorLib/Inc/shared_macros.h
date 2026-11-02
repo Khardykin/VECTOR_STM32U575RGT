@@ -11,7 +11,7 @@
   *          (countdown_time[], обслуживание Timer_Tick_1ms() от TIM3 1 кГц)
   *          и секундные *_TIMER_RTC (countdown_time_rtc[], Timer_Tick_1s()
   *          от RTC wakeup 1 Гц). ID таймеров и экземпляры (volatile) -
-  *          shared_types.h, обслуживание - Vector_main.c.
+  *          shared_types.h, обслуживание - main_vector.c.
   ******************************************************************************
   */
 #ifndef SHARED_MACROS_H

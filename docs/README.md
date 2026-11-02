@@ -99,7 +99,7 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 | `VECTOR_EXT_LOCK_READ_MS` / `_WRITE_MS` | `250` / `0` | ожидание мьютекса внешней flash: чтения (ограниченно) / записи (0 = try-lock, занято → `EXT_BUSY`, повтор позже). Стирания под звук откладываются — «окно тишины» |
 | `VECTOR_DBG_FREEZE_TICK` | `1` | замораживать тайм-базу HAL (TIM6), пока ядро стоит под отладчиком |
 
-### Потоки прибора (`Core/VectorLib/Src/Vector_main.c`)
+### Потоки прибора (`Core/VectorLib/Src/main_vector.c`)
 
 | Макрос | По умолчанию | Смысл |
 |---|---|---|
@@ -145,7 +145,7 @@ Factory-переключателей (`VECTOR_AUDIO_FACTORY_*`) больше н�
 | `START_TIMER_RTC` / `TEST_TIMER_RTC` / `RESET_TIMER_RTC` | 1 с | то, что должно идти и во сне: период передачи LoRa/BLE, мото-часы (`countdown_time_rtc[]`, ID — `TIMER_RTC_*`, длительности — `TIME_RTC_*`) |
 | `RTC wakeup` | 1 с | источник секундного такта: `HAL_RTCEx_WakeUpTimerEventCallback` → `Timer_Tick_1s()` |
 
-Обслуживание таймеров целиком в `Vector_main.c`: `Timer_Tick_1ms()` зовётся из
+Обслуживание таймеров целиком в `main_vector.c`: `Timer_Tick_1ms()` зовётся из
 `main.c` (`HAL_TIM_PeriodElapsedCallback`, ветка TIM3), `Timer_Tick_1s()` — из
 `stm32u5xx_it.c` (колбэк RTC); в CubeMX-файлах по одной строке. Экземпляры
 `timer`, `countdown_time`, `countdown_time_rtc` — `volatile`, объявления в

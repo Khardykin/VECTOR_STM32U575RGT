@@ -22,7 +22,7 @@
 #include "stm32u5xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "Vector_main.h"
+#include "main_vector.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -83,7 +83,7 @@ extern TIM_HandleTypeDef htim6;
 //===========================================================================================================================
 /* Такты прибора (timer, countdown_time, countdown_time_rtc) и их обслуживание
    (Countdown_Timer, Countdown_Timer_Rtc, Clear_Timer_Rtc, Timer_Tick_1ms/1s)
-   живут в Vector_main.c - здесь только вызов из колбэка RTC.                    */
+   живут в main_vector.c - здесь только вызов из колбэка RTC.                    */
 //===========================================================================================================================
 // Callback RTC (wakeup, 1 с)
 void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc)

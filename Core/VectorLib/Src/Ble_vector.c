@@ -27,7 +27,7 @@
  *    запрос -> ответ hex-строкой -> str_ble_data_set_t -> Ble_ApplyConnectedDevice()
  *    -> отметка в ble_stg; публикация в Connected_device (SNS_Dev_Type, включая
  *    per-канальные поля и OR ошибок) - Ble_Control_States_Update (п.66);
- *  - транспорт: ring InputBuffer[TYPE_BLE] (USART3 ISR, Vector_main.c) вместо
+ *  - транспорт: ring InputBuffer[TYPE_BLE] (USART3 ISR, main_vector.c) вместо
  *    прямого UART; время/паузы — GetTick()/Delay() (vector_macros);
  *    пин RESET_BLE Avis -> BLE_RESET (PC12); BLE_UART_Init -> Uart_SetBaudrate;
  *  - публичный Ble_Receive() (вызов из BLE Task, п.65) — ПУСТОЙ: ring
@@ -72,12 +72,12 @@
  * (п.65); мосты Ble_UpdateInputData/Ble_Control_States_Update, приём в
  * промежуточный ble_stg, ERR_BLE под Sys_Cfg_Lock (п.66).
  */
-/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор Vector_main.h): config_device.h
+/* Инклуды проекта - В ОДНОМ МЕСТЕ (агрегатор main_vector.h): config_device.h
    (CONFIG_BLE определён ДО Ble_vector.h - порядок в агрегаторе соблюдён),
    buffer.h (InputBuffer/check_buffer/receive_buffer), GetTick/Delay, лог,
    tx_api.h (TX_DISABLE: целые снимки Connected_device/Ble_telemetry, п.65),
    stdio/string.                                                            */
-#include "Vector_main.h"
+#include "main_vector.h"
 
 #if CONFIG_BLE
 
@@ -142,7 +142,7 @@ static buffer_uart_ble_t buffer_uart_ble = {{0}, 0, 0};
 // State) и current_build_type в ble_in; остальной код модуля внешние
 // структуры НЕ читает. Зовётся из Ble_Run() (BLE-поток) каждый проход ПЕРЕД
 // остальными вызовами модуля. Одиночные чтения выровненных u16/u32 на
-// Cortex-M33 атомарны - блокировка не нужна (правило п.65, Vector_main.h).
+// Cortex-M33 атомарны - блокировка не нужна (правило п.65, main_vector.h).
 typedef struct {
 	uint32_t serial;		/* (SerialHi<<16)|SerialLo - имя модуля (ADVBLENAMESET)   */
 	uint8_t  label;			/* метка сборки: 0 = MIRAX ("VEC"), 1 = BACS (не задана) */
@@ -1023,7 +1023,7 @@ uint8_t get_state_init_flag_ble(void)
  * В Avis Receiver Task BLE не обслуживает: обмен с модулем синхронный внутри
  * Ble_TransmitReceive (BLE Task), он и есть ЕДИНСТВЕННЫЙ читатель ring
  * InputBuffer[TYPE_BLE]. Пустое сильное определение замещает weak-заглушку
- * Vector_main.c (которая дренировала бы ring и съедала ответы модуля).
+ * main_vector.c (которая дренировала бы ring и съедала ответы модуля).
  */
 void Ble_Receive(void)
 {
@@ -1033,7 +1033,7 @@ void Ble_Receive(void)
 /**
  * @brief  Периодика BLE (порт Ble_Run из Avis_main.c) — BLE Task, каждый
  *         проход (VECTOR_TASKS_BLE_DELAY_MS = 5 мс, п.65); переопределяет
- *         weak-заглушку Vector_main.c.
+ *         weak-заглушку main_vector.c.
  * @param  Нет. @retval Нет.
  * Скелет Avis: ST_COMMON_BIT_TURN_ON_BLE -> INIT-таймер (DeInit(1)+2 с ->
  * Ble_Init(serial)) -> SET-таймер (60 с): Ble_MsdDataGet() (вместо DataSet)

@@ -95,9 +95,11 @@ components, images, fonts). Ниже — что где лежит, чего в g
 
 ## 4. Интеграция с ThreadX: поток `LVGL Task`
 
-Поток уже создан в `AZURE_RTOS/App/app_azure_rtos.c` (`lvgl_thread_entry`,
-приоритет 15, стек `LVGL_STACK_SIZE` = 4096) и пока просто спит. Шаблон
-наполнения — вставить в `USER CODE` этого файла (или в свой `lv_port.c`):
+Поток создан в `Core/VectorLib/Src/main_vector.c` (`lvgl_task_function`,
+приоритет `VECTOR_TASKS_LVGL_PRIORITY` = 15, стек `VECTOR_TASKS_LVGL_STACK` =
+4096; создаёт `vector_tasks_init()` — единообразно с остальными потоками
+прибора, раньше жил прямо в `tx_application_define` `app_azure_rtos.c`).
+Шаблон наполнения — вставить в `lvgl_task_function` (или в свой `lv_port.c`):
 
 ```c
 #include "lvgl.h"
@@ -145,7 +147,7 @@ void lv_port_init(void)
 и тело потока:
 
 ```c
-void lvgl_thread_entry(ULONG thread_input)
+static void lvgl_task_function(ULONG thread_input)   /* main_vector.c */
 {
   lv_port_init();
   while (1)
@@ -159,8 +161,8 @@ void lvgl_thread_entry(ULONG thread_input)
 
 Три момента, на которых обычно спотыкаются:
 
-1. **Стек потока.** 4096 байт для LVGL 9 мало: поднимите `LVGL_STACK_SIZE` до
-   8192–16384 (`app_azure_rtos.c`, `USER CODE PD`).
+1. **Стек потока.** 4096 байт для LVGL 9 мало: поднимите
+   `VECTOR_TASKS_LVGL_STACK` до 8192–16384 (`vector_config.h`).
 2. **Кто владеет экраном.** `TFT_Rotation()` из `Vector_Run_Measure()` (Measure
    Task) и `lv_timer_handler()` (LVGL Task) трогают один SPI2. Поворот экрана
    безопасен, потому что `LCD_platform.c` сериализует доступ флагом
@@ -236,7 +238,7 @@ ST7789P3 принимает **старший байт пикселя первы�
 * [ ] `lv_conf.h` в include path (раздел 3) и в git
 * [ ] LVGL 9.2 в `Drivers/lvgl` (тег зафиксировать в README/PLAN)
 * [ ] UI, экспортированный из SquareLine Studio, в include path (`../Drivers/ui`)
-* [ ] порт дисплея и тело потока `LVGL Task` (раздел 4) + `LVGL_STACK_SIZE` 8–16 КБ
+* [ ] порт дисплея и тело потока `LVGL Task` (раздел 4) + `VECTOR_TASKS_LVGL_STACK` 8–16 КБ
 * [ ] тик LVGL: `lv_tick_set_cb(VTICK_MS)` или `lv_tick_inc(1)` из TIM3
 * [ ] `lv_i18n_init()` + `lv_i18n_set_locale()` до `ui_init()`
 * [ ] SPI2 prescaler /4 или /8 в кубе (раздел 7)

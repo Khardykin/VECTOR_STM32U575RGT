@@ -9,7 +9,7 @@
   *          попадает и ничего не ломает - это база под включение.
   *
   *          ПОРЯДОК ВКЛЮЧЕНИЯ (что нужно довести до конца при CONFIG_GPS 1):
-  *            1. Vector_main.h: раскомментировать `#include "shared_types.h"`
+  *            1. main_vector.h: раскомментировать `#include "shared_types.h"`
   *               - нужен тип SNS_CFG (Gps_Init/Gps_Init_Nav_Sys).
   *            2. Перенести сюда из вашего Gps.h типы и константы модуля:
   *               GNSS_CHIP_TYPE (CHIP_ALLYSTAR_OLD, CHIP_LOCOSYS_AIROHA_NEW,
@@ -37,7 +37,7 @@
   *               buffer.h уже добавлен).
   *
   *          КУДА ПОДКЛЮЧЕНО В ПРОЕКТЕ:
-  *            Gps_Receive() - поток "Receiver Task" (Vector_main.c),
+  *            Gps_Receive() - поток "Receiver Task" (main_vector.c),
   *            Gps_Run()     - поток "Measure Task" из Vector_Run_Measure().
   ******************************************************************************
   */
