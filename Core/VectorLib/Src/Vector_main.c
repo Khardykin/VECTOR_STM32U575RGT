@@ -751,6 +751,10 @@ void Vector_Run_Pre_Init(void)
   Menu_Init();
 #endif
 
+#if (CONFIG_TYPE_LCD_TFT != 0) && VECTOR_LCD_USE_LVGL
+  ui_lv_init();
+#endif
+
   /* TODO: по образцу Avis_Run_Pre_Init():
      - включить питание/сброс модулей: LTE_EN, LTE_RESET, BLE_RESET, GNSS_RST;
      - инициализировать модули: Lora_Init(&Sns_Cfg_struct), Ble_Init(serial);
@@ -768,8 +772,8 @@ void Vector_Run_Pre_Init(void)
      Прибор ВЫКЛЮЧЕН (указание автора к SCREEN_START): включение - долгое
      нажатие Button1, его обрабатывает Button_Run_Start() (Menu_vector.c) из
      Vector_Run_Indication() при device_turn == DEVICE_TURNED_OFF - там же
-     инициализируются панель и LVGL (LCD_Init/ui_lv_init), звучит
-     NotifySeq_PowerOn и взводится TIMER_RTC_WARM (TIME_RTC_START, 60 с).
+     инициализируется ПАНЕЛЬ (LCD_Init; сам LVGL/UI создан выше, до потоков),
+     звучит NotifySeq_PowerOn и взводится TIMER_RTC_WARM (TIME_RTC_START, 60 с).
      До конца прогрева device_turn = DEVICE_TURNED_ON_1 и экран SCREEN_START,
      по истечении Menu_Run() ставит DEVICE_TURNED_ON и SCREEN_MEASURE.
      Прежнее DEVICE_TURNED_ON здесь означало бы «включён без инициализации

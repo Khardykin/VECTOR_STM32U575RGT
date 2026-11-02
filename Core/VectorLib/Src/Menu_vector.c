@@ -67,16 +67,18 @@ static uint8_t state_flashing_system = 0;
    LONG, поэтому SOS не спорит с жестами меню (Avis: BUTTON_PRESS_LONG_SOS). */
 #define BUTTON_PRESS_SOS    ((uint32_t)VECTOR_MENU_PRESS_SOS_MS)
 
-/* ui_lv_init() выполняется ОДИН РАЗ за время работы прошивки (см.
-   Button_Run_Start): lv_init() в LVGL 9 от повтора защищён, а
-   lv_display_create()/ui_init() создали бы второй дисплей и второй комплект
-   экранов. Программное выключение (Menu_TurnOff -> LCD_DeInit) гасит только
-   панель - объекты LVGL живут в RAM, поэтому при следующем включении
-   достаточно TFT_Init + полная перерисовка. Флаг нужен только при живом
-   экране/LVGL - иначе -Wall дал бы «defined but not used».                */
-#if (CONFIG_TYPE_LCD_TFT != 0) && VECTOR_LCD_USE_LVGL
-static uint8_t lvgl_ui_inited = 0u;
-#endif
+/* ui_lv_init() (lv_init + lv_display_create + lv_i18n + ui_init + экраны
+   SquareLine) выполняется ОДИН РАЗ и ДО ПОТОКОВ - в конце
+   Vector_Run_Pre_Init() (Vector_main.c). Порядок как в Avis (указание
+   автора): «сначала инициализация ui, потом потоки, а инициализация экрана -
+   во время включения по кнопке». Иначе TFT_Init() -> TFT_Rotation() ->
+   lv_obj_invalidate(lv_scr_act()) отрабатывал по NULL (дисплей LVGL ещё не
+   создан) и давал hard fault. Повторно звать ui_lv_init() нельзя: lv_init()
+   в LVGL 9 от повтора защищён, а lv_display_create()/ui_init() создали бы
+   второй дисплей и второй комплект экранов. Программное выключение
+   (Menu_TurnOff -> LCD_DeInit) гасит только панель - объекты LVGL живут в
+   RAM, поэтому при следующем включении достаточно TFT_Init + полная
+   перерисовка (см. Button_Run_Start).                                     */
 
 /* Скролл пунктов меню: заглушка на VECTOR_MENU_ITEMS пунктов. Когда автор
    определит состав меню - заменить длину на фактическую для каждого экрана
@@ -719,29 +721,29 @@ void Button_Run_Start(void)
 		//------------------------------------------------------------------------
 //		SET_ON(POWER_ON_MCU);
 		//------------------------------------------------------------------------
-		// Инициализация LCD: панель + LVGL/SquareLine UI. Один раз: TFT_Init
-		// само-guard'ится флагом TFT_Initialized, а ui_lv_init повторно звать
-		// нельзя (lv_init/ui_init пересоздадут объекты). КОНТЕКСТ: поток LVGL
-		// Task - тот же поток позже крутит lv_timer_handler (LVGL однопоточен).
+		// Инициализация ЭКРАНА (панели) - при включении по кнопке. LVGL и UI
+		// SquareLine к этому моменту уже созданы: ui_lv_init() вызывается ДО
+		// потоков в конце Vector_Run_Pre_Init() (порядок из Avis, указание
+		// автора: «сначала инициализация ui, потом потоки и инициализация
+		// экрана во время включения по кнопке»). Это обязательно: TFT_Init()
+		// внутри зовёт TFT_Rotation(), а там lv_obj_invalidate(lv_scr_act()) -
+		// без созданного дисплея lv_scr_act() == NULL, и lv_obj_invalidate(NULL)
+		// давал hard fault. TFT_Init само-guard'ится флагом TFT_Initialized,
+		// повторно ui_lv_init() здесь звать НЕЛЬЗЯ (пересоздаст объекты).
+		// КОНТЕКСТ: поток LVGL Task - тот же поток позже крутит lv_timer_handler
+		// (LVGL однопоточен).
 #if (CONFIG_TYPE_LCD_TFT != 0)
 		if (LCD_Get_flag_init() == 0u){
 			LCD_Init();
 #if VECTOR_LCD_USE_LVGL
-			/* ui_lv_init() - только ПЕРВЫЙ раз (см. lvgl_ui_inited): повтор
-			   создал бы второй lv_display и второй комплект экранов SquareLine.
-			   После программного выключения (Menu_TurnOff -> LCD_DeInit) панель
-			   поднимается TFT_Init'ом, а LVGL/UI уже живы - содержимое RAM
-			   панели потеряно, поэтому помечаем активный экран и верхний слой
-			   (там PanelHead/ImageMirax) грязными: ближайший lv_timer_handler()
-			   перерисует кадр целиком.                                     */
-			if (lvgl_ui_inited == 0u){
-				ui_lv_init();
-				lvgl_ui_inited = 1u;
-			}
-			else{
-				lv_obj_invalidate(lv_screen_active());
-				lv_obj_invalidate(lv_layer_top());
-			}
+			/* RAM панели после включения (и после программного выключения
+			   Menu_TurnOff -> LCD_DeInit) содержит мусор, а объекты LVGL живут
+			   в RAM и не пересоздаются: помечаем активный экран и верхний слой
+			   (там PanelHead/ImageMirax) грязными - ближайший lv_timer_handler()
+			   (гейт TFT_Initialized == 1 в lvgl_thread_entry) перерисует кадр
+			   целиком.                                                      */
+			lv_obj_invalidate(lv_screen_active());
+			lv_obj_invalidate(lv_layer_top());
 #endif
 		}
 #endif

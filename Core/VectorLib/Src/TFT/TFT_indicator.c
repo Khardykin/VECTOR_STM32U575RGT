@@ -938,6 +938,21 @@ void my_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
 void ui_lv_init(void)
 {
 	lv_init();
+
+	/* ИСТОЧНИК ВРЕМЕНИ LVGL - скрытая ошибка, всплыла при переносе ui_lv_init()
+	   до потоков (правку применить отдельно от v3_init_order.patch, по
+	   согласованию с автором). lv_tick_get() берёт время либо из колбэка
+	   lv_tick_set_cb(), либо из sys_time, который увеличивает lv_tick_inc();
+	   в проекте не подключено ни то, ни другое -> lv_tick_get() всегда 0,
+	   lv_tick_elaps(last_run) = 0 < LV_DEF_REFR_PERIOD (33 мс в lv_conf.h) ->
+	   lv_timer_handler() не считает таймер перерисовки созревшим, и кадр не
+	   рисуется ВООБЩЕ (панель остаётся с мусором в RAM).
+	   HAL_GetTick() - миллисекунды от SysTick, сигнатура uint32_t (void)
+	   совпадает с lv_tick_get_cb_t. Альтернатива: lv_tick_inc(1) из
+	   Timer_Tick_1ms() (TIM3 1 кГц).
+	   КОНТЕКСТ: Measure Task (Vector_Run_Pre_Init, до старта потоков).      */
+	lv_tick_set_cb(HAL_GetTick);
+
 	disp = lv_display_create(TFT_WIDTH, TFT_HEIGHT); /* Basic initialization with horizontal and vertical resolution in pixels */
 	lv_display_set_flush_cb(disp, my_flush_cb); /* Set a flush callback to draw to the display */
 	uint32_t buf_size = BUF_SIZE * lv_color_format_get_size(lv_display_get_color_format(disp));
@@ -1237,10 +1252,13 @@ void ui_apply_visibility(void)
 // State в SNS_CFG_Type_common».
 //   КАРТИНКА - по конфигурации сборки (config_device.h), приоритет по порядку
 //   #if (иконка одна, хотя конфигов может быть включено несколько):
-//     CONFIG_LORA  -> ui_img_imagehead_lora_png  (assets/ImageHead/Lora.png, 19x13);
-//     CONFIG_G4    -> ui_img_imagemenu_3g_png    (assets/ImageMenu/3G.png, 14x13) -
+//     CONFIG_LORA  -> ui_img_imagehead_lora_png   (assets/ImageHead/Lora.png, 19x13);
+//     CONFIG_G4    -> ui_img_imagehead_3g_png     (assets/ImageHead/3G.png, 14x13) -
 //                     автор: «CONFIG_G4 (это и 3g тоже)», поэтому иконка 3G;
-//     CONFIG_NBIOT -> ui_img_1350761353          (assets/ImageMenu/NB-IoT.png, 32x13).
+//     CONFIG_NBIOT -> ui_img_imagehead_nb_iot_png (assets/ImageHead/NB_IoT.png, 32x13).
+//   Имена картинок - по актуальному экспорту SquareLine (ui.h): раньше 3G и
+//   NB-IoT лежали в ImageMenu, а NB-IoT звалась ui_img_1350761353; после
+//   перегенерации проекта обе переехали в ImageHead (переименование автора).
 //   ВИДИМОСТЬ - по State (Config_common.State): бит включения модуля, который
 //   выставляет Vector_Run_Pre_Init() по тем же CONFIG_* -
 //   ST_COMMON_BIT_TURN_ON_LORA для LoRa и ST_COMMON_BIT_TURN_ON_GSM для
@@ -1265,7 +1283,7 @@ void LCD_RadioIcon(void)
 	src = &ui_img_imagehead_lora_png;
 	on  = (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_LORA) != 0u) ? 1u : 0u;
 #elif CONFIG_G4
-	src = &ui_img_imagemenu_3g_png;
+	src = &ui_img_imagehead_3g_png;
 	on  = (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GSM) != 0u) ? 1u : 0u;
 #elif CONFIG_NBIOT
 	src = &ui_img_imagehead_nb_iot_png;

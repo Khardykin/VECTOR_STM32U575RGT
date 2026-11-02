@@ -298,7 +298,16 @@ void TFT_Rotation(uint8_t state)
     }
 #endif
 #if VECTOR_LCD_USE_LVGL
-    lv_obj_invalidate(lv_scr_act());
+    /* Защита от hard fault (замечание автора): lv_scr_act() возвращает NULL,
+       если LVGL ещё не инициализирован, а lv_obj_invalidate(NULL) уходит в
+       разыменование NULL. Штатно UI создаётся ДО потоков (ui_lv_init в конце
+       Vector_Run_Pre_Init), поэтому экран здесь уже есть; страховка нужна,
+       потому что TFT_Rotation() зовут и из TFT_Init() (поднятие панели по
+       кнопке в Button_Run_Start), и из LCD_SubMenuSetting().               */
+    lv_obj_t *scr = lv_scr_act();
+    if (scr != NULL) {
+        lv_obj_invalidate(scr);
+    }
 #endif
 }
 
