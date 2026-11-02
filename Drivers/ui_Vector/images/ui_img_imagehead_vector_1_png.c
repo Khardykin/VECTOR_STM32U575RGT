@@ -17,11 +17,11 @@
 #define LV_ATTRIBUTE_MEM_ALIGN
 #endif
 
-#ifndef LV_ATTRIBUTE_IMAGE_UI_IMG_1573358376
-#define LV_ATTRIBUTE_IMAGE_UI_IMG_1573358376
+#ifndef LV_ATTRIBUTE_IMAGE_UI_IMG_IMAGEHEAD_VECTOR_1_PNG
+#define LV_ATTRIBUTE_IMAGE_UI_IMG_IMAGEHEAD_VECTOR_1_PNG
 #endif
 
-const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMAGE_UI_IMG_1573358376 uint8_t ui_img_1573358376_map[] = {
+const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMAGE_UI_IMG_IMAGEHEAD_VECTOR_1_PNG uint8_t ui_img_imagehead_vector_1_png_map[] = {
   0x91, 0xce, 0x43, 0xdf, 0x91, 0xcd, 0x43, 0xff, 0x8f, 0xca, 0x40, 0x30, 0x92, 0xce, 0x41, 0x3f, 0x90, 0xcc, 0x42, 0xcf, 0x90, 0xcd, 0x43, 0xdf, 0x8f, 0xc7, 0x40, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
   0x01, 0x20, 
   0x11, 0x30, 
@@ -35,11 +35,11 @@ const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMAGE_UI_IMG_
   0x45, 0x60, 
 };
 
-const lv_image_dsc_t ui_img_1573358376 = {
+const lv_image_dsc_t ui_img_imagehead_vector_1_png = {
   .header.cf = LV_COLOR_FORMAT_I4,
   .header.magic = LV_IMAGE_HEADER_MAGIC,
   .header.w = 3,
   .header.h = 10,
   .data_size = 84,
-  .data = ui_img_1573358376_map,
+  .data = ui_img_imagehead_vector_1_png_map,
 };

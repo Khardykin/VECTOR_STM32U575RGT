@@ -7,7 +7,7 @@ SET(SOURCES screens/ui_ScreenStart.c
     ui.c
     components/ui_comp_hook.c
     ui_helpers.c
-    images/ui_img_imagehead_lora_png.c
+    images/ui_img_imagehead_nb_iot_png.c
     images/ui_img_imagehead_ble_png.c
     images/ui_img_imagehead_loramesh_png.c
     images/ui_img_imagehead_gps_png.c
@@ -16,28 +16,28 @@ SET(SOURCES screens/ui_ScreenStart.c
     images/ui_img_imagehead_battery_png.c
     images/ui_img_imagehead_group_png.c
     images/ui_img_imagehead_vector_png.c
-    images/ui_img_1573358376.c
-    images/ui_img_671170217.c
-    images/ui_img_590099982.c
+    images/ui_img_imagehead_vector_1_png.c
+    images/ui_img_imagehead_vector_2_png.c
+    images/ui_img_imagehead_vector_3_png.c
     images/ui_img_imagehead_mirax_png.c
     images/ui_img_imagemenu_arrow_png.c
     images/ui_img_imagemenu_arrow_down_png.c
     images/ui_img_imagemenu_humidity_png.c
+    images/ui_img_imagehead_lora_png.c
     images/ui_img_imagehead_lte_png.c
     images/ui_img_imagehead_volume_mute_on_png.c
     images/ui_img_imagemenu_chat_png.c
     images/ui_img_imagemenu_heart_png.c
+    images/ui_img_imagemenu_ltebig_png.c
     images/ui_img_imagemenu_pressure_png.c
+    images/ui_img_imagemenu_satellite_png.c
     images/ui_img_imagemenu_temp_png.c
     images/ui_img_imagemenu_voice_png.c
-    images/ui_img_imagemenu_ltebig_png.c
-    images/ui_img_1350761353.c
-    images/ui_img_imagemenu_3g_png.c
-    images/ui_img_imagemenu_satellite_png.c
+    images/ui_img_imagehead_3g_png.c
+    fonts/ui_font_number14.c
     fonts/ui_font_number21.c
-    fonts/ui_font_number85.c
-    fonts/ui_font_number9.c
     fonts/ui_font_number36.c
-    fonts/ui_font_number14.c)
+    fonts/ui_font_number85.c
+    fonts/ui_font_number9.c)
 
 add_library(ui ${SOURCES})

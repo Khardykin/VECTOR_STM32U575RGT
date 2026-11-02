@@ -17,11 +17,11 @@
 #define LV_ATTRIBUTE_MEM_ALIGN
 #endif
 
-#ifndef LV_ATTRIBUTE_IMAGE_UI_IMG_671170217
-#define LV_ATTRIBUTE_IMAGE_UI_IMG_671170217
+#ifndef LV_ATTRIBUTE_IMAGE_UI_IMG_IMAGEHEAD_VECTOR_2_PNG
+#define LV_ATTRIBUTE_IMAGE_UI_IMG_IMAGEHEAD_VECTOR_2_PNG
 #endif
 
-const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMAGE_UI_IMG_671170217 uint8_t ui_img_671170217_map[] = {
+const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMAGE_UI_IMG_IMAGEHEAD_VECTOR_2_PNG uint8_t ui_img_imagehead_vector_2_png_map[] = {
   0x92, 0x46, 0x72, 0x46, 0x72, 0x46, 
   0x72, 0x46, 0x72, 0x46, 0x92, 0x46, 
   0x72, 0x46, 0x72, 0x46, 0x92, 0x46, 
@@ -39,11 +39,11 @@ const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMAGE_UI_IMG_
   0xcf, 0xdf, 0x2f, 
 };
 
-const lv_image_dsc_t ui_img_671170217 = {
+const lv_image_dsc_t ui_img_imagehead_vector_2_png = {
   .header.cf = LV_COLOR_FORMAT_RGB565A8,
   .header.magic = LV_IMAGE_HEADER_MAGIC,
   .header.w = 3,
   .header.h = 7,
   .data_size = 21 * 3,
-  .data = ui_img_671170217_map,
+  .data = ui_img_imagehead_vector_2_png_map,
 };

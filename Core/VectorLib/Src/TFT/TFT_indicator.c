@@ -1268,7 +1268,7 @@ void LCD_RadioIcon(void)
 	src = &ui_img_imagemenu_3g_png;
 	on  = (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GSM) != 0u) ? 1u : 0u;
 #elif CONFIG_NBIOT
-	src = &ui_img_1350761353;
+	src = &ui_img_imagehead_nb_iot_png;
 	on  = (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GSM) != 0u) ? 1u : 0u;
 #endif
 

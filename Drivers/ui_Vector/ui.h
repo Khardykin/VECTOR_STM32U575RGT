@@ -34,7 +34,7 @@ extern "C" {
 extern lv_obj_t * ui____initial_actions0;
 
 // IMAGES AND IMAGE SETS
-LV_IMG_DECLARE(ui_img_imagehead_lora_png);    // assets/ImageHead/Lora.png
+LV_IMG_DECLARE(ui_img_imagehead_nb_iot_png);    // assets/ImageHead/NB_IoT.png
 LV_IMG_DECLARE(ui_img_imagehead_ble_png);    // assets/ImageHead/Ble.png
 LV_IMG_DECLARE(ui_img_imagehead_loramesh_png);    // assets/ImageHead/LoraMesh.png
 LV_IMG_DECLARE(ui_img_imagehead_gps_png);    // assets/ImageHead/Gps.png
@@ -43,31 +43,31 @@ LV_IMG_DECLARE(ui_img_imagehead_transmit_png);    // assets/ImageHead/transmit.p
 LV_IMG_DECLARE(ui_img_imagehead_battery_png);    // assets/ImageHead/Battery.png
 LV_IMG_DECLARE(ui_img_imagehead_group_png);    // assets/ImageHead/Group.png
 LV_IMG_DECLARE(ui_img_imagehead_vector_png);    // assets/ImageHead/Vector.png
-LV_IMG_DECLARE(ui_img_1573358376);    // assets/ImageHead/Vector (1).png
-LV_IMG_DECLARE(ui_img_671170217);    // assets/ImageHead/Vector (2).png
-LV_IMG_DECLARE(ui_img_590099982);    // assets/ImageHead/Vector (3).png
+LV_IMG_DECLARE(ui_img_imagehead_vector_1_png);    // assets/ImageHead/Vector_1.png
+LV_IMG_DECLARE(ui_img_imagehead_vector_2_png);    // assets/ImageHead/Vector_2.png
+LV_IMG_DECLARE(ui_img_imagehead_vector_3_png);    // assets/ImageHead/Vector_3.png
 LV_IMG_DECLARE(ui_img_imagehead_mirax_png);    // assets/ImageHead/Mirax.png
 LV_IMG_DECLARE(ui_img_imagemenu_arrow_png);    // assets/ImageMenu/Arrow.png
 LV_IMG_DECLARE(ui_img_imagemenu_arrow_down_png);    // assets/ImageMenu/Arrow_down.png
 LV_IMG_DECLARE(ui_img_imagemenu_humidity_png);    // assets/ImageMenu/Humidity.png
+LV_IMG_DECLARE(ui_img_imagehead_lora_png);    // assets/ImageHead/Lora.png
 LV_IMG_DECLARE(ui_img_imagehead_lte_png);    // assets/ImageHead/LTE.png
 LV_IMG_DECLARE(ui_img_imagehead_volume_mute_on_png);    // assets/ImageHead/volume_mute_on.png
 LV_IMG_DECLARE(ui_img_imagemenu_chat_png);    // assets/ImageMenu/Chat.png
 LV_IMG_DECLARE(ui_img_imagemenu_heart_png);    // assets/ImageMenu/Heart.png
+LV_IMG_DECLARE(ui_img_imagemenu_ltebig_png);    // assets/ImageMenu/LTEbig.png
 LV_IMG_DECLARE(ui_img_imagemenu_pressure_png);    // assets/ImageMenu/Pressure.png
+LV_IMG_DECLARE(ui_img_imagemenu_satellite_png);    // assets/ImageMenu/Satellite.png
 LV_IMG_DECLARE(ui_img_imagemenu_temp_png);    // assets/ImageMenu/Temp.png
 LV_IMG_DECLARE(ui_img_imagemenu_voice_png);    // assets/ImageMenu/Voice.png
-LV_IMG_DECLARE(ui_img_imagemenu_ltebig_png);    // assets/ImageMenu/LTEbig.png
-LV_IMG_DECLARE(ui_img_1350761353);    // assets/ImageMenu/NB-IoT.png
-LV_IMG_DECLARE(ui_img_imagemenu_3g_png);    // assets/ImageMenu/3G.png
-LV_IMG_DECLARE(ui_img_imagemenu_satellite_png);    // assets/ImageMenu/Satellite.png
+LV_IMG_DECLARE(ui_img_imagehead_3g_png);    // assets/ImageHead/3G.png
 
 // FONTS
+LV_FONT_DECLARE(ui_font_number14);
 LV_FONT_DECLARE(ui_font_number21);
+LV_FONT_DECLARE(ui_font_number36);
 LV_FONT_DECLARE(ui_font_number85);
 LV_FONT_DECLARE(ui_font_number9);
-LV_FONT_DECLARE(ui_font_number36);
-LV_FONT_DECLARE(ui_font_number14);
 
 // UI INIT
 void ui_init(void);

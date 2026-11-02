@@ -53,10 +53,10 @@ void ui_ScreenHeadMain_screen_init(void)
     lv_obj_set_style_border_width(ui_PanelHead, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_ImageLora = lv_image_create(ui_PanelHead);
-    lv_image_set_src(ui_ImageLora, &ui_img_imagehead_lora_png);
+    lv_image_set_src(ui_ImageLora, &ui_img_imagehead_nb_iot_png);
     lv_obj_set_width(ui_ImageLora, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_ImageLora, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_ImageLora, -145);
+    lv_obj_set_x(ui_ImageLora, -138);
     lv_obj_set_y(ui_ImageLora, 0);
     lv_obj_set_align(ui_ImageLora, LV_ALIGN_CENTER);
     lv_obj_add_flag(ui_ImageLora, LV_OBJ_FLAG_CLICKABLE);     /// Flags
@@ -66,7 +66,7 @@ void ui_ScreenHeadMain_screen_init(void)
     lv_image_set_src(ui_ImageBLE, &ui_img_imagehead_ble_png);
     lv_obj_set_width(ui_ImageBLE, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_ImageBLE, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_ImageBLE, -108);
+    lv_obj_set_x(ui_ImageBLE, -105);
     lv_obj_set_y(ui_ImageBLE, 0);
     lv_obj_set_align(ui_ImageBLE, LV_ALIGN_CENTER);
     lv_obj_add_flag(ui_ImageBLE, LV_OBJ_FLAG_CLICKABLE);     /// Flags
@@ -155,7 +155,7 @@ void ui_ScreenHeadMain_screen_init(void)
     lv_obj_remove_flag(ui_ImageLTE1, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
 
     ui_ImageLTE2 = lv_image_create(ui_PanelHead);
-    lv_image_set_src(ui_ImageLTE2, &ui_img_1573358376);
+    lv_image_set_src(ui_ImageLTE2, &ui_img_imagehead_vector_1_png);
     lv_obj_set_width(ui_ImageLTE2, 2);
     lv_obj_set_height(ui_ImageLTE2, LV_SIZE_CONTENT);    /// 1
     lv_obj_set_x(ui_ImageLTE2, 108);
@@ -165,7 +165,7 @@ void ui_ScreenHeadMain_screen_init(void)
     lv_obj_remove_flag(ui_ImageLTE2, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
 
     ui_ImageLTE3 = lv_image_create(ui_PanelHead);
-    lv_image_set_src(ui_ImageLTE3, &ui_img_671170217);
+    lv_image_set_src(ui_ImageLTE3, &ui_img_imagehead_vector_2_png);
     lv_obj_set_width(ui_ImageLTE3, 2);
     lv_obj_set_height(ui_ImageLTE3, LV_SIZE_CONTENT);    /// 1
     lv_obj_set_x(ui_ImageLTE3, 105);
@@ -175,7 +175,7 @@ void ui_ScreenHeadMain_screen_init(void)
     lv_obj_remove_flag(ui_ImageLTE3, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
 
     ui_ImageLTE4 = lv_image_create(ui_PanelHead);
-    lv_image_set_src(ui_ImageLTE4, &ui_img_590099982);
+    lv_image_set_src(ui_ImageLTE4, &ui_img_imagehead_vector_3_png);
     lv_obj_set_width(ui_ImageLTE4, 2);
     lv_obj_set_height(ui_ImageLTE4, LV_SIZE_CONTENT);    /// 1
     lv_obj_set_x(ui_ImageLTE4, 102);
