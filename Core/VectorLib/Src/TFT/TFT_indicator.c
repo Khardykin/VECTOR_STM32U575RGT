@@ -144,18 +144,16 @@ const char * num_channel[2] = {
 //    "Ошибка сенсора",     // 6 - ST_BIT_SENSOR_FAILED
 //};
 
-const char* const error_keys_sys[12] = {
-    "Низкий заряд АКБ",       // 2 - ST_COMMON_BIT_CRITICAL_LOW_BATTERY
-    "Ошибка МЕМ",             // 3 - ST_COMMON_BIT_ERR_AT45
-    "Ошибка ТЕМП",            // 4 - ST_COMMON_BIT_ERR_STS4
-    "Ошибка BLE",             // 5 - ST_COMMON_BIT_ERR_BLE
-    "Ошибка GPS",             // 6 - ST_COMMON_BIT_ERR_GPS
-    "Ошибка GSM",             // 7 - ST_COMMON_BIT_ERR_GSM
-    "Ошибка LORA",            // 8 - ST_COMMON_BIT_ERR_LORA
-    "Ошибка LCD",             // 9 - ST_COMMON_BIT_ERR_LCD
-    "Крит. разряд батареи",   // 10 - ST_COMMON_BIT_CRITICAL_BATTERY
-    "Ошибка БАТ"              // 11 - ST_COMMON_BIT_ERR_MAX17
-};
+/* Таблица error_keys_sys[] УДАЛЕНА: имена ошибок прибора теперь ЕДИНЫМ
+   источником живёт в Alert_vector.c (s_syserr_name[] + Alert_SysErrName(bit))
+   и используются и экраном, и логом/статусом ALERT_DEVICE_ERROR.
+   Прежняя таблица была расставлена по НОМЕРАМ БИТОВ Avis, а не по значениям
+   enum ST_COMMON_ERR (shared_types.h): из-за этого «Ошибка ТЕМП» (бит 1)
+   показывалась как «Ошибка МЕМ», а «Ошибка NB-IoT» (бит 2) - как «Ошибка ТЕМП».
+   Alert_SysErrName() задаётся инициализаторами с обозначениями
+   ([ST_COMMON_BIT_ERR_STS4] = ...), поэтому рассинхрон с enum невозможен.
+   «Ошибка МЕМ» (AT45) и «Ошибка БАТ» (MAX17048) вернутся на экран, когда автор
+   добавит эти биты в enum ST_COMMON_ERR.                                     */
 
 const char* const lora_status_keys[8] = {
     "Группа",             // 0 - ST_LORA_BIT_GROUP
@@ -739,9 +737,13 @@ static void LCD_FormatErrorText(char *out_buf, uint8_t buf_size,
 //    }
 //    else
     	if (item->category == 1) {
-        // Системная ошибка
-        if (item->error_bit < 12) {
-            snprintf(out_buf, buf_size, "%s", _(error_keys_sys[item->error_bit]));
+        /* Системная ошибка: error_bit = номер бита Config_common.StateErr
+           (enum ST_COMMON_ERR), имя берём из Alert_vector.c. Пустое имя =
+           бит в enum не назван (бит 9 маски ERROR_MASK_ST_2) - строку не
+           показываем (в очередь такие биты тоже не попадают, см. ниже).     */
+        const char *nm = Alert_SysErrName(item->error_bit);
+        if (nm[0] != '\0') {
+            snprintf(out_buf, buf_size, "%s", _(nm));
         }
     }
     else if (item->category == 2) {
@@ -822,9 +824,12 @@ static uint32_t LCD_CalculateErrorHash(SNS_CFG *pSnsCfg)
     }
     #endif
 
-    /* 4. Статусы/тревоги (Alert_vector): маска активных статусов (биты 1..7 по
-          alert_id_t) + параметр газовой тревоги в старших разрядах - ID
-          трекера-источника может смениться, пока маска та же.                */
+    /* 4. Статусы/тревоги (Alert_vector): маска активных статусов (биты 1..9 по
+          alert_id_t, ALERT_ID_COUNT = 10) + параметр газовой тревоги в старших
+          разрядах - ID трекера-источника может смениться, пока маска та же.
+          Смена конкретного бита ошибки прибора (param у ALERT_DEVICE_ERROR)
+          здесь не нужна: её ловит детектор curr_sys (StateErr) выше - биты
+          батареи Alert_vector зеркалит туда же.                              */
     {
         static uint32_t prev_alert = 0;
         uint32_t curr_alert = 0;
@@ -871,6 +876,14 @@ void LCD_BuildErrorQueue(SNS_CFG *pSnsCfg)
           эвакуация) и неподвижность важнее «Ошибка МЕМ». Перебор по alert_id_t
           = по приоритету модуля (GAS_ALARM -> MESSAGE).                       */
     for (uint8_t id = 1u; id < (uint8_t)ALERT_ID_COUNT; id++) {
+        /* Ошибки прибора и батарею ЗДЕСЬ не показываем: они видны в категории 1
+           (Alert_vector зеркалит биты CRITICAL_LOW_BATTERY / CRITICAL_BATTERY
+           и биты модулей в Config_common.StateErr), иначе одна неисправность
+           попала бы в очередь дважды - «Ошибка прибора» и «Ошибка ТЕМП».     */
+        if ((id == (uint8_t)ALERT_DEVICE_ERROR) || (id == (uint8_t)ALERT_BATTERY_LOW) ||
+            (id == (uint8_t)ALERT_BATTERY_CRIT)) {
+            continue;
+        }
         if ((Alert_IsActive((alert_id_t)id) != 0u) && (error_queue_count < MAX_ERROR_QUEUE)) {
             error_queue[error_queue_count].channel = 0xFD;
             error_queue[error_queue_count].category = 3;
@@ -883,7 +896,10 @@ void LCD_BuildErrorQueue(SNS_CFG *pSnsCfg)
     // 2. Системные ошибки
     uint32_t sys_err_mask = pSnsCfg->Config_common.StateErr & ERROR_MASK_ST_2;
     for (uint8_t bit = 0; bit < 12; bit++) {
-        if ((TESTBIT(sys_err_mask, bit)) && (error_queue_count < MAX_ERROR_QUEUE)) {
+        /* Биты без имени в enum ST_COMMON_ERR (бит 9) в очередь не берём:
+           строка ошибки была бы пустой.                                      */
+        if ((TESTBIT(sys_err_mask, bit)) && (Alert_SysErrName(bit)[0] != '\0') &&
+            (error_queue_count < MAX_ERROR_QUEUE)) {
             error_queue[error_queue_count].channel = 0xFF;
             error_queue[error_queue_count].category = 1;
             error_queue[error_queue_count].error_bit = bit;

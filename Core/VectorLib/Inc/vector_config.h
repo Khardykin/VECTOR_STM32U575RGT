@@ -364,7 +364,7 @@
  *  Макросы - в общем ряду VECTOR_TASKS_*; стек в БАЙТАХ (ThreadX), приоритет
  *  по прежней схеме: audio=10 > BLE=11 > rcv=LoRa=LTE=12 > measure=13 > LVGL=15
  *  (индикация уступает обмену, 15 - средний приоритет, как было в ST-шаблоне).
- *  DELAY - период сна потока: 10 мс, тик секвенсора Notify_Tick().            */
+ *  DELAY - период сна потока: 10 мс, тик движка индикации Alert_IndicationTick(). */
 #ifndef VECTOR_TASKS_LVGL_PRIORITY
 #define VECTOR_TASKS_LVGL_PRIORITY       15u
 #endif
@@ -475,7 +475,7 @@
  *         #define ALERT_SND_RING       SND_ALERT_RING
  *    4. прошить новый sounds.bin во внешнюю flash (иначе плеер сыграет клип с
  *       прошлым содержимым образа - номера разъедутся).
- *  Никаких правок Alert_vector.c/Notify_vector.c не требуется: таблица статусов
+ *  Никаких правок Alert_vector.c не требуется: таблица статусов
  *  s_desc[] уже ссылается на эти макросы.                                    */
 #define ALERT_SND_NONE                   (0xFFFFu)
 #ifndef ALERT_SND_GAS
@@ -533,6 +533,45 @@
 #define ALERT_PAUSE_MSG_MS               700u
 #endif
 
+/* ОДНОКРАТНЫЕ пачки индикации (колонка burst таблицы s_desc, Alert_vector.c).
+   Решение автора по ошибкам прибора и батарее: «ошибки не снимаются, но свет,
+   звук и вибро не индицируют - остаются только записи на экране; при повторном
+   срабатывании любой из ошибок всё снова звучит и светит». Поэтому:
+     burst = 0 - индикация НЕПРЕРЫВНАЯ (газ, эвакуация, неподвижность,
+                 «нет СИЗ/ГА/браслета», сообщение): идёт, пока статус активен
+                 и не квитирован зелёной кнопкой;
+     burst = N - ОДНА пачка из N повторов фазы на факте ПОЯВЛЕНИЯ условия,
+                 затем статус молчит и остаётся записью на экране. Новое
+                 срабатывание (новый бит ошибки, новый провал напряжения ниже
+                 порога) снова даёт пачку.                                    */
+#ifndef ALERT_BURST_ERR
+#define ALERT_BURST_ERR                  2u    /* ошибка прибора: 2 пика      */
+#endif
+#ifndef ALERT_BURST_BATLOW
+#define ALERT_BURST_BATLOW               2u    /* низкий заряд                */
+#endif
+#ifndef ALERT_BURST_BATCRIT
+#define ALERT_BURST_BATCRIT              3u    /* критический разряд - чаще   */
+#endif
+#ifndef ALERT_PERIOD_ERR_MS
+#define ALERT_PERIOD_ERR_MS              1000u /* ошибка прибора (Avis 10/5)  */
+#endif
+#ifndef ALERT_PAUSE_ERR_MS
+#define ALERT_PAUSE_ERR_MS               500u
+#endif
+#ifndef ALERT_PERIOD_BATLOW_MS
+#define ALERT_PERIOD_BATLOW_MS           200u  /* низкий заряд (Avis 2/3)     */
+#endif
+#ifndef ALERT_PAUSE_BATLOW_MS
+#define ALERT_PAUSE_BATLOW_MS            300u
+#endif
+#ifndef ALERT_PERIOD_BATCRIT_MS
+#define ALERT_PERIOD_BATCRIT_MS          200u  /* критический разряд          */
+#endif
+#ifndef ALERT_PAUSE_BATCRIT_MS
+#define ALERT_PAUSE_BATCRIT_MS           200u
+#endif
+
 /* Локальная газовая тревога ПО ПОРОГАМ подключённого газоанализатора Avis
    (автор: «где-то по порогам с Ависа, где-то от сервера»): маска битов
    Connected_device.StateErr, которые считаются загазованностью. По умолчанию
@@ -568,6 +607,22 @@
    CP1251 -> до 2 байт на символ). LORA_MESSAGE_MAX_LEN протокола = 237.    */
 #ifndef ALERT_MSG_UTF8_LEN
 #define ALERT_MSG_UTF8_LEN               96u
+#endif
+
+/* --- БАТАРЕЯ: статусы низкого и критического заряда -----------------------
+ * Решение автора: Alert_vector.c сам считает уровни по напряжению MAX17048
+ * (sensors_status.battery_charge_volt, мВ) и порогам конфига BAT_LIM_1 (низкий)
+ * / BAT_LIM_2 (критический) - машина состояний батареи Avis_Battery_System()
+ * в main_vector.c пока weak-заглушка, и биты StateErr никто не взводил. Alert
+ * заодно ЗЕРКАЛИТ биты CRITICAL_LOW_BATTERY / CRITICAL_BATTERY в
+ * Config_common.StateErr (под Sys_Cfg_Lock/Unlock), чтобы их видели экран
+ * (категория 1 очереди ошибок TFT_indicator.c) и сервер.
+ * Гистерезис: статус снимается, когда напряжение поднялось выше порога на
+ * ALERT_BAT_HYST_MV, иначе на границе порога статус дребезжал бы и каждая
+ * «пилка» звучала новой пачкой. Во время зарядки (ST_COMMON_BIT_BAT_CHARGE)
+ * статусы не взводятся: низкий заряд на зарядке - штатная ситуация.          */
+#ifndef ALERT_BAT_HYST_MV
+#define ALERT_BAT_HYST_MV                50u
 #endif
 
 /* --- BLE: мастерская сторона модуля MK01 (Ble_vector.c) ---------------

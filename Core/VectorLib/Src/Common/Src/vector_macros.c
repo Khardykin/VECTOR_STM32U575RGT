@@ -343,12 +343,12 @@ void HAL_SAI_ErrorCallback(SAI_HandleTypeDef *hsai)
   }
 }
 
-/* --- VIBRO: weak-заглушки вибромотора (секвенсор Notify_vector) -------------
+/* --- VIBRO: weak-заглушки вибромотора (движок индикации Alert_vector) -------
  * Железо пока не разведено - пустые тела, фазы вибро молча пропускаются.
  * Когда мотор будет разведён - переопределите в платформенном файле (или
  * замените тело здесь): пример Avis - tmr_channel_enable(TMR4,
  * TMR_SELECT_CHANNEL_1, TRUE/FALSE), на STM32 - HAL_TIM_PWM_Start/Stop
- * (&htimX, TIM_CHANNEL_Y). КОНТЕКСТ: поток LVGL Task (Notify_Tick).          */
+ * (&htimX, TIM_CHANNEL_Y). КОНТЕКСТ: поток LVGL Task (Alert_IndicationTick). */
 __attribute__((weak)) void Vibro_On(void)
 {
   /* TODO(автор): включить ШИМ/канал вибромотора */

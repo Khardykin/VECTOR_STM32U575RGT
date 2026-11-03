@@ -43,7 +43,7 @@
   */
 /* Инклуды проекта - В ОДНОМ МЕСТЕ (main_vector.h): кнопки button1..3
    (stm32u5xx_it.h), время VTICK_ и GetTick (vector_tick.h/vector_macros.h),
-   лог, Notify_vector.h (NotifySeq_PowerOn), экран LCD_Init/backlight_set/
+   лог, Alert_vector.h (AlertSeq_PowerOn - сценарий включения прибора), экран LCD_Init/backlight_set/
    LCD_* (TFT.h/LCD_platform.h/TFT_indicator.h при CONFIG_TYPE_LCD_TFT).   */
 #include "main_vector.h"
 
@@ -619,8 +619,6 @@ void Menu_Init(void)
 {
   uint8_t i;
 
-  Notify_Init();   /* секвенсор оповещений (Notify_vector): до первого Tick */
-
   menu_status.screen          = (uint8_t)SCREEN_START;
   menu_status.screen_prev     = (uint8_t)SCREEN_START;
   TO_GO_STATE_SCREEN((uint8_t)SCREEN_START);   /* зеркало для LCD_Fill_Template */
@@ -776,14 +774,14 @@ void Button_Run_Start(void)
     Gps_DeInit(0);
 #endif
 		//------------------------------------------------------------------------
-		// Индикация (замечание автора): НЕБЛОКИРУЮЩЕ - через секвенсор
-		// Notify_vector: 3 писка ИЗ ПАМЯТИ МК (audio_beep - клип 240 мс во
+		// Индикация (замечание автора): НЕБЛОКИРУЮЩЕ - через движок индикации
+		// Alert_vector: 3 писка ИЗ ПАМЯТИ МК (audio_beep - клип 240 мс во
 		// внутренней flash, не зависит от внешней SPI-flash), пауза 300 мс.
-		// Delay() здесь нельзя: фазы ведёт Notify_Tick() (~10 мс) из потока
+		// Delay() здесь нельзя: фазы ведёт Alert_IndicationTick() (~10 мс) из потока
 		// LVGL Task. Будущие тревоги - так же: const-таблица фаз "свет ->
-		// звук -> вибро" в любом порядке (примеры в комментариях Notify_vector.c),
-		// голосовое сообщение - одна фаза NOTIFY_CH_SOUND с SND_* из образа.
-		Notify_Start(&NotifySeq_PowerOn);
+		// звук -> вибро" в любом порядке (примеры в комментариях Alert_vector.c),
+		// голосовое сообщение - одна фаза ALERT_CH_SOUND с SND_* из образа.
+		Alert_Start(&AlertSeq_PowerOn);
 	    //------------------------------------------------------------------------
 		button1.button_count = 1;
 		button1.button_flag = 0;

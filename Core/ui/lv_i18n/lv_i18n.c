@@ -76,6 +76,8 @@ static lv_i18n_phrase_t en_gb_singulars[] = {
     {"Ошибка GSM", "GSM error"},
     {"Ошибка LCD", "LCD error"},
     {"Ошибка LORA", "LORA error"},
+    {"Ошибка NB-IoT", "NB-IoT error"},          /* бит ST_COMMON_BIT_ERR_NBIOT (Alert_SysErrName) */
+    {"Ошибка прибора", "Device error"},          /* статус ALERT_DEVICE_ERROR (Alert_vector.c)      */
     {"Ошибка БАТ", "BAT error"},
     {"Ошибка ТЕМП", "TEMP error"},
     {"Ошибка сенсора", "Sensor failed"},
@@ -192,6 +194,8 @@ static lv_i18n_phrase_t ru_ru_singulars[] = {
     {"Ошибка GSM", "Ошибка GSM"},
     {"Ошибка LCD", "Ошибка LCD"},
     {"Ошибка LORA", "Ошибка LORA"},
+    {"Ошибка NB-IoT", "Ошибка NB-IoT"},
+    {"Ошибка прибора", "Ошибка прибора"},
     {"Ошибка БАТ", "Ошибка БАТ"},
     {"Ошибка ТЕМП", "Ошибка ТЕМП"},
     {"Ошибка сенсора", "Ошибка сенсора"},

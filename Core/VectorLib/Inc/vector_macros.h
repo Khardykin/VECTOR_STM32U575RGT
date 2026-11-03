@@ -102,12 +102,12 @@ uint32_t Sai_GetErrorCode(void);    /* ErrorCode SAI - диагностика   
 uint32_t Sai_GetMckdiv(void);       /* Init.Mckdiv (0 трактуется как 1)       */
 int      Sai_DmaIsCircular(void);   /* 1 = DMA circular (linked-list, U5)     */
 
-/* --- VIBRO: вибромотор (платформенный слой секвенсора Notify_vector) -------
+/* --- VIBRO: вибромотор (платформенный слой движка индикации Alert_vector) ---
  * Железо пока не разведено: weak-заглушки в vector_macros.c ничего не делают,
  * фазы вибро в сценариях оповещений просто молчат. Когда мотор будет разведён -
  * заменить тело (пример Avis: ШИМ TMR4 CH1, tmr_channel_enable(TMR4,
  * TMR_SELECT_CHANNEL_1, TRUE/FALSE); на STM32 - HAL_TIM_PWM_Start/Stop).
- * КОНТЕКСТ: поток LVGL Task (Notify_Tick).                                   */
+ * КОНТЕКСТ: поток LVGL Task (Alert_IndicationTick).                          */
 void Vibro_On(void);
 void Vibro_Off(void);
 

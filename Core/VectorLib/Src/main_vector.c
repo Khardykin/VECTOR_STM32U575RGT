@@ -595,7 +595,9 @@ static void measure_task_function(ULONG thread_input)
        6D-ориентацией и free-fall, поэтому движение ловим опросом 10 Гц.
        Alert_Tick() ведёт счёт неподвижности (окно + предаварийный таймер),
        свежесть устройств комплекта (СИЗ/ГА/браслет), забирает downlink LoRa
-       (бит эвакуации + блок Message) и владеет индикацией через Notify.
+       (бит эвакуации + блок Message), считает ошибки прибора/батарею и
+       решает, КАКОЙ статус сейчас оповещает (арбитраж), а сами фазы
+       свет/звук/вибро крутит Alert_IndicationTick() в LVGL Task.
        Из секундного такта это не сделать: снятие статуса движением и отсчёт
        «времени на реакцию» запаздывали бы до 1 с.                          */
     if (VTICK_ELAPSED_MS(alert_tick_ms) >= ALERT_MOTION_POLL_MS)
@@ -719,7 +721,7 @@ static void lte_task_function(ULONG thread_input)
  * п.1: «у остальных модулей - внутри их файлов, а у LVGL прямо в
  * tx_application_define»). Тело прежнее (app_azure_rtos.c lvgl_thread_entry):
  *   100 мс (timer.flag_100ms от TIM3) - Vector_Run_Indication() (CONFIG_DISPLAY);
- *   каждый цикл (~10 мс)              - Notify_Tick(): секвенсор фаз
+ *   каждый цикл (~10 мс)              - Alert_IndicationTick(): движок фаз
  *                                       свет/звук/вибро (и при выключенном
  *                                       приборе - сценарий включения);
  *   TFT+LVGL                          - lv_timer_handler() под гейтом
@@ -744,11 +746,13 @@ static void lvgl_task_function(ULONG thread_input)
         Vector_Run_Indication();
 #endif
       }
-      /* Секвенсор оповещений (Notify_vector): тик движка ~каждые 10 мс.
+      /* Движок индикации (Alert_vector): тик ~каждые 10 мс.
          Вне гейта flag_100ms и вне CONFIG_DISPLAY: работает и при выключенном
-         приборе - сценарий включения (Button_Run_Start -> NotifySeq_PowerOn)
-         стартует как раз в состоянии OFF. */
-      Notify_Tick();
+         приборе - сценарий включения (Button_Run_Start -> AlertSeq_PowerOn)
+         стартует как раз в состоянии OFF. Реестр статусов (Alert_Tick) живёт
+         в Measure Task, а фазы свет/звук/вибро - здесь: владелец аудио-плеера
+         и LVGL именно этот поток. */
+      Alert_IndicationTick();
 #if (CONFIG_TYPE_LCD_TFT && VECTOR_LCD_USE_LVGL)
       if (TFT_Initialized == 1u)
       {
@@ -867,12 +871,14 @@ void Vector_Run_Pre_Init(void)
   Menu_Init();
 #endif
 
-  /* Реестр статусов/тревог (Alert_vector): неподвижность, нет СИЗ/ГА/браслета,
-     «ОСТОРОЖНО! ГАЗ!», «ВСЕМ НА ВЫХОД», сообщение сервера. ПОСЛЕ Menu_Init():
-     там делается Notify_Init(), а Alert владеет секвенсором индикации и при
-     сбросе зовёт Notify_Stop(). Конфиг к этому моменту прочитан, поэтому
-     Alert_Init() сразу применяет порог детектора движения (Immobility_Ths_mg).
-     Дальше движок крутит Alert_Tick() (100 мс) в measure_task_function.     */
+  /* ЕДИНЫЙ модуль индикации (Alert_vector): реестр статусов (неподвижность,
+     нет СИЗ/ГА/браслета, «ОСТОРОЖНО! ГАЗ!», «ВСЕМ НА ВЫХОД», сообщение
+     сервера, ошибки прибора и батарея) + движок свет/звук/вибро. Alert_Init()
+     сбрасывает ОБА: и статусы, и машину фаз (бывший Notify_Init удалён из
+     Menu_Init). Конфиг к этому моменту прочитан, поэтому сразу применяется
+     порог детектора движения (Immobility_Ths_mg). Дальше реестр крутит
+     Alert_Tick() (100 мс) в measure_task_function, а движок -
+     Alert_IndicationTick() (~10 мс) в lvgl_task_function.                    */
   Alert_Init();
 
 #if (CONFIG_TYPE_LCD_TFT != 0) && VECTOR_LCD_USE_LVGL
@@ -897,7 +903,7 @@ void Vector_Run_Pre_Init(void)
      нажатие Button1, его обрабатывает Button_Run_Start() (Menu_vector.c) из
      Vector_Run_Indication() при device_turn == DEVICE_TURNED_OFF - там же
      инициализируется ПАНЕЛЬ (LCD_Init; сам LVGL/UI создан выше, до потоков),
-     звучит NotifySeq_PowerOn и взводится TIMER_RTC_WARM (TIME_RTC_START, 60 с).
+     звучит AlertSeq_PowerOn и взводится TIMER_RTC_WARM (TIME_RTC_START, 60 с).
      До конца прогрева device_turn = DEVICE_TURNED_ON_1 и экран SCREEN_START,
      по истечении Menu_Run() ставит DEVICE_TURNED_ON и SCREEN_MEASURE.
      Прежнее DEVICE_TURNED_ON здесь означало бы «включён без инициализации
