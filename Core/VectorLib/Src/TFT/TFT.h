@@ -31,10 +31,10 @@
    172x320: 34, реже 0 или 68 - зависит от ревизии панели).
    Модель 1 - 320x240 (ILI9341, ландшафт), смещений нет.                     */
 #if (CONFIG_MODEL_LCD == 0)
-	#define TFT_WIDTH       (172)
-	#define TFT_HEIGHT      (320)
-	#define TFT_COL_OFFSET  (34)
-	#define TFT_ROW_OFFSET  (0)
+	#define TFT_WIDTH       (320)
+	#define TFT_HEIGHT      (172)
+	#define TFT_COL_OFFSET  (0)
+	#define TFT_ROW_OFFSET  (34)
 #elif (CONFIG_MODEL_LCD == 1)
 	#define TFT_WIDTH       (320)
 	#define TFT_HEIGHT      (240)

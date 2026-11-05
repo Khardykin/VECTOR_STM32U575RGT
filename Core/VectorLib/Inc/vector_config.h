@@ -702,7 +702,7 @@
  *                           (167 px) и "101.3" (215 px) без подбора обрезались
  *                           бы по границе панели. 0 = всегда number85.        */
 #ifndef VECTOR_MEASURE_PAGES
-#define VECTOR_MEASURE_PAGES        7u
+#define VECTOR_MEASURE_PAGES        8u
 #endif
 #ifndef VECTOR_LCD_MEASURE_AUTOFIT
 #define VECTOR_LCD_MEASURE_AUTOFIT  1

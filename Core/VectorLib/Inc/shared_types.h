@@ -202,7 +202,7 @@ extern volatile uint8_t state_screen;
    Таймер - TIMER_RTC_WARM, взводит Button_Run_Start() при включении прибора
    (Menu_vector.c), проверяет Menu_Run(). В Avis этой паре соответствовал
    TIME_RTC_WARM из Screen_status_flip/Warm_Screen_statuses.               */
-#define TIME_RTC_START				(60u)
+#define TIME_RTC_START				(6u)
 /* Чередование страницы измерений со строкой ошибки (режим MEAS_ERR), с: пока
    error_queue_count != 0, LCD_MeasureScreen() раз в TIME_RTC_DISP_FLASHING_ERR
    секунд показывает вместо текущей страницы ошибку (и обратно). Таймер -

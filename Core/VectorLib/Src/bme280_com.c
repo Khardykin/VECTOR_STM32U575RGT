@@ -4,7 +4,7 @@
   * @brief   BME280 (I2C1, 0x76): температура/влажность/давление (CONFIG_BME)
   *
   *          Обёртка над вендорным Src/BME280/bme280.c (Bosch). API:
-  *          bme280_init_com(), bme280_measure(SNS_CFG*) - 0 = данные обновлены
+  *          bme280_init_com(), bme280_measure(sensors_status_t*) - 0 = данные обновлены
   *          (Temperature/Humidity/Pressure в sensors_status), 1 = не готово,
   *          <0 = ошибка; Calib_bme280_Temp() - калибровка температуры (при
   *          VECTOR_BME_CALIBRATION 0 выключена). Владелец шины - Measure Task:
@@ -133,11 +133,9 @@ static void bme280_interface_selection(struct bme280_dev *dev)
 }
 
 
-int8_t bme280_measure(SNS_CFG *pSnsCfg) /* pSnsCfg не используется - данные в sensors_status */	/* 0 = данные обновлены, 1 = не готово, <0 = ошибка */
+int8_t bme280_measure(void) /* pSnsCfg не используется - данные в sensors_status */	/* 0 = данные обновлены, 1 = не готово, <0 = ошибка */
 {
 	uint8_t status_reg = 0;
-
-	(void)pSnsCfg;   /* измеренные данные пишутся в sensors_status */
 
 	rslt = bme280_get_regs(BME280_REG_STATUS, &status_reg, 1, &dev);
 	if(rslt != BME280_OK){

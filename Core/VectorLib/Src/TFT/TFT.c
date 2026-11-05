@@ -76,7 +76,7 @@ void TFT_Init(void)
 		TFT_WriteByte(0x33);
 
 
-		TFT_Rotation(0);
+		TFT_Rotation(1);
 //		TFT_WriteCommand(TFT_MADCTL); // MADCTL
 //	//    TFT_WriteByte(TFT_MADCTL_MX | TFT_MADCTL_MV | TFT_MADCTL_RGB);
 //		TFT_WriteByte(TFT_MADCTL_RGB);

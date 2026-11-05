@@ -1482,7 +1482,7 @@ void sensors_read(void)
   {
     /* 0 = данные обновлены (модуль сам пишет Temperature/Humidity/Pressure в
        sensors_status), 1 = измерение не готово, <0 = ошибка шины.       */
-    if (bme280_measure(&Sns_Cfg_struct) == 0)
+    if (bme280_measure() == 0)
     {
       sensors_status.cnt_bme_reads++;
       Sys_Cfg_Lock();   /* StateErr RMW из потока measure - под блокировкой (п.66) */

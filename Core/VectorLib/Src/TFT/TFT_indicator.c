@@ -226,8 +226,8 @@ static const meas_layout_t meas_layout[MEAS_MODE_END] = {
 	[MEAS_ERR] = {
 		.full_width = 1, .name_visible = 1,
 		.name_x = 0, .name_y = 15, .name_align = LV_ALIGN_TOP_MID,
-	.val_font = &ui_font_number85, .name_font = &ui_font_number21, .units_font = &ui_font_number21,
-	.name_line = 1, .img_src = NULL
+		.val_font = &ui_font_number85, .name_font = &ui_font_number21, .units_font = &ui_font_number21,
+		.name_line = 1, .img_src = NULL
 	},
 };
 
@@ -287,6 +287,7 @@ static const uint8_t meas_pages[VECTOR_MEASURE_PAGES][2] =
 	{ (uint8_t)MEAS_HEART, (uint8_t)MEAS_NONE  },   /* 4 пульс (весь экран)          */
 	{ (uint8_t)MEAS_VOICE, (uint8_t)MEAS_CHAT  },   /* 5 сообщения: выбраны голосовые */
 	{ (uint8_t)MEAS_VOICE, (uint8_t)MEAS_CHAT  },   /* 6 сообщения: выбран чат        */
+	{ (uint8_t)MEAS_ERR,   (uint8_t)MEAS_NONE  },  	/* 7 Ошибки        */
 };
 typedef char meas_pages_assert[(sizeof(meas_pages) / sizeof(meas_pages[0]) == (size_t)VECTOR_MEASURE_PAGES) ? 1 : -1];
 //------------------------------------------------------------------------------
@@ -543,16 +544,7 @@ static void LCD_FormatErrorText(char *out_buf, uint8_t buf_size,
 {
     out_buf[0] = '\0';
 
-//    if (item->category == 0) {
-//        // Ошибка канала: "Порог 1, CO2"
-//        if ((item->channel < COUNT_CHAN) && (item->error_bit < 10)) {
-//            snprintf(out_buf, buf_size, "%s, %s",
-//                    _(error_keys_chan[item->error_bit]),
-//                    pSnsCfg->Sensor[item->channel].MolecularFormula);
-//        }
-//    }
-//    else
-    	if (item->category == 1) {
+    if (item->category == 1) {
         /* Системная ошибка: error_bit = номер бита Config_common.StateErr
            (enum ST_COMMON_ERR), имя берём из Alert_vector.c. Пустое имя =
            бит в enum не назван (бит 9 маски ERROR_MASK_ST_2) - строку не
@@ -886,7 +878,7 @@ static void ui_set_label_text(lv_obj_t * obj, const char * text)
 static void ui_set_obj_size(lv_obj_t * obj, int32_t w, int32_t h)
 {
     if(obj == NULL) return;
-    if(lv_obj_get_width(obj) != w || lv_obj_get_height(obj) != h) {
+    if((lv_obj_get_width(obj) != w) || (lv_obj_get_height(obj) != h)) {
         lv_obj_set_size(obj, w, h);
     }
 }
@@ -894,7 +886,7 @@ static void ui_set_obj_size(lv_obj_t * obj, int32_t w, int32_t h)
 static void ui_set_obj_pos(lv_obj_t * obj, int32_t x, int32_t y)
 {
     if(obj == NULL) return;
-    if(lv_obj_get_x(obj) != x || lv_obj_get_y(obj) != y) {
+    if((lv_obj_get_x(obj) != x) || (lv_obj_get_y(obj) != y)) {
         lv_obj_set_pos(obj, x, y);
     }
 }
@@ -1447,7 +1439,6 @@ void LCD_Measure(uint8_t panel, uint8_t mode, const char *value, const char *nam
 {
 	const meas_layout_t *L;
 	lv_obj_t *pnl, *img, *val, *nm, *un;
-	uint8_t   layout = 0u;   /* 1 = ставить геометрию/стили (сменился режим или экран пересоздан) */
 	int32_t   panel_w;       /* ширина панели из раскладки (152 или 311)      */
 
 	if ((panel > 1u) || (mode >= (uint8_t)MEAS_MODE_END)) { return; }
@@ -1490,17 +1481,15 @@ void LCD_Measure(uint8_t panel, uint8_t mode, const char *value, const char *nam
 		m_cache.mode[panel]     = mode;
 		m_cache.pnl[panel]      = pnl;
 		m_cache.value[panel][0] = '\0';
-		layout = 1u;
 	}
 
 	ui_set_obj_hidden(pnl, false);
 
-	if (layout != 0u)
 	{
 		/* Панель: половина контейнера или весь экран. */
-		ui_set_obj_size(pnl, panel_w, MEAS_PANEL_H);
 		ui_set_obj_pos(pnl, (L->full_width != 0u) ? MEAS_PANEL_X_FULL
 							: ((panel == 0u) ? MEAS_PANEL_X_LEFT : MEAS_PANEL_X_RIGHT), 0);
+		ui_set_obj_size(pnl, panel_w, MEAS_PANEL_H);
 
 		/* Иконка режима. */
 		if (img != NULL)
@@ -1513,7 +1502,7 @@ void LCD_Measure(uint8_t panel, uint8_t mode, const char *value, const char *nam
 	ui_set_obj_hidden(img, (L->img_visible == 0u));
 
 	/* Значение (LabelMeas). */
-	if ((layout != 0u) && (val != NULL))
+	if (val != NULL)
 	{
 		ui_set_obj_align(val, L->val_align);
 		ui_set_obj_pos(val, L->val_x, L->val_y);
@@ -1533,7 +1522,7 @@ void LCD_Measure(uint8_t panel, uint8_t mode, const char *value, const char *nam
 	}
 
 	/* Подпись (LabelMeasName): имя величины, единицы (RSSI) или строка ошибки. */
-	if ((layout != 0u) && (nm != NULL))
+	if (nm != NULL)
 	{
 		ui_set_obj_align(nm, L->name_align);
 		ui_set_obj_pos(nm, L->name_x, L->name_y);
@@ -1562,7 +1551,7 @@ void LCD_Measure(uint8_t panel, uint8_t mode, const char *value, const char *nam
 	}
 
 	/* Единицы (LabelMeasUnits). */
-	if ((layout != 0u) && (un != NULL))
+	if (un != NULL)
 	{
 		ui_set_obj_align(un, L->units_align);
 		ui_set_obj_pos(un, L->units_x, L->units_y);
@@ -1610,7 +1599,7 @@ static void meas_fill(uint8_t mode, char *value, char *name, char *units)
 		/* °C×100 -> ×10: один знак после точки (решение автора) */
 		if ((sensors_status.Sensors_ok & SENSORS_OK_BME) != 0u)
 		{
-			meas_fmt_x10(value, MEAS_VALUE_SZ, meas_f2i(sensors_status.Temperature / 10.0f));
+			meas_fmt_x10(value, MEAS_VALUE_SZ, meas_f2i(sensors_status.Temperature));
 		}
 		else { snprintf(value, MEAS_VALUE_SZ, "%s", MEAS_NO_DATA); }
 		snprintf(name,  MEAS_NAME_SZ,  "%s", "T");
@@ -1621,7 +1610,7 @@ static void meas_fill(uint8_t mode, char *value, char *name, char *units)
 		/* %×1024 -> целые % */
 		if ((sensors_status.Sensors_ok & SENSORS_OK_BME) != 0u)
 		{
-			meas_fmt_int(value, MEAS_VALUE_SZ, meas_f2i(sensors_status.Humidity / 1024.0f));
+			meas_fmt_int(value, MEAS_VALUE_SZ, meas_f2i(sensors_status.Humidity));
 		}
 		else { snprintf(value, MEAS_VALUE_SZ, "%s", MEAS_NO_DATA); }
 		snprintf(name,  MEAS_NAME_SZ,  "%s", "H");
@@ -1632,7 +1621,7 @@ static void meas_fill(uint8_t mode, char *value, char *name, char *units)
 		/* гПа×10 = кПа×100 -> ×10: "101.3" (единицы кПа, решение автора) */
 		if ((sensors_status.Sensors_ok & SENSORS_OK_BME) != 0u)
 		{
-			meas_fmt_x10(value, MEAS_VALUE_SZ, meas_f2i(sensors_status.Pressure / 10.0f));
+			meas_fmt_x10(value, MEAS_VALUE_SZ, meas_f2i(sensors_status.Pressure));
 		}
 		else { snprintf(value, MEAS_VALUE_SZ, "%s", MEAS_NO_DATA); }
 		/* Подписи T/H/P, «°C», «%», «AQI», «RSSI:» - международные, в таблицы
@@ -1752,36 +1741,36 @@ void LCD_MeasureScreen(uint8_t num)
 	   LCD_UpdateErrorDisplay раз в секунду, поэтому за 3 с ошибки из очереди
 	   успевают смениться. Номера страниц чередование НЕ трогает: ошибки
 	   исчезли - показ продолжается с той же страницы.                      */
-	if (lcd_err.count == 0u)
-	{
-		meas_err_phase = 0u;
-		RESET_TIMER_RTC(TIMER_RTC_DISP_FLASHING_ERR);
-	}
-	else if (TEST_TIMER_RTC(TIMER_RTC_DISP_FLASHING_ERR) != 0)
-	{
-		meas_err_phase = (uint8_t)!meas_err_phase;
-		START_TIMER_RTC(TIMER_RTC_DISP_FLASHING_ERR, TIME_RTC_DISP_FLASHING_ERR);
-	}
-	else if (TEST_TIMER_RUN_RTC(TIMER_RTC_DISP_FLASHING_ERR) == 0u)
-	{
-		START_TIMER_RTC(TIMER_RTC_DISP_FLASHING_ERR, TIME_RTC_DISP_FLASHING_ERR);
-	}
+//	if (lcd_err.count == 0u)
+//	{
+//		meas_err_phase = 0u;
+//		RESET_TIMER_RTC(TIMER_RTC_DISP_FLASHING_ERR);
+//	}
+//	else if (TEST_TIMER_RTC(TIMER_RTC_DISP_FLASHING_ERR) != 0)
+//	{
+//		meas_err_phase = (uint8_t)!meas_err_phase;
+//		START_TIMER_RTC(TIMER_RTC_DISP_FLASHING_ERR, TIME_RTC_DISP_FLASHING_ERR);
+//	}
+//	else if (TEST_TIMER_RUN_RTC(TIMER_RTC_DISP_FLASHING_ERR) == 0u)
+//	{
+//		START_TIMER_RTC(TIMER_RTC_DISP_FLASHING_ERR, TIME_RTC_DISP_FLASHING_ERR);
+//	}
 
-	if (meas_err_phase != 0u)
-	{
-		/* Ошибка вместо страницы: MEAS_ERR - full_width (x=0, w=311), правая
-		   панель гасится (MEAS_NONE). Подсветку выбора «Сообщения» гасим - на
-		   строке ошибки выбирать нечего (обе функции детектят изменение и
-		   лишний раз кадр не инвалидируют).                                */
-		meas_fill((uint8_t)MEAS_ERR, value[0], name[0], units[0]);
-		LCD_Measure(0u, (uint8_t)MEAS_ERR, value[0], name[0], units[0]);
-		LCD_Measure(1u, (uint8_t)MEAS_NONE, NULL, NULL, NULL);
-		ui_menu_item_set_focus(NULL, ui_PanelMeasure,  false, false);
-		ui_menu_item_set_focus(NULL, ui_PanelMeasure1, false, false);
-		ui_menu_item_set_recolor(ui_ImageMeas,  false);
-		ui_menu_item_set_recolor(ui_ImageMeas1, false);
-		return;
-	}
+//	if (meas_err_phase != 0u)
+//	{
+//		/* Ошибка вместо страницы: MEAS_ERR - full_width (x=0, w=311), правая
+//		   панель гасится (MEAS_NONE). Подсветку выбора «Сообщения» гасим - на
+//		   строке ошибки выбирать нечего (обе функции детектят изменение и
+//		   лишний раз кадр не инвалидируют).                                */
+//		meas_fill((uint8_t)MEAS_ERR, value[0], name[0], units[0]);
+//		LCD_Measure(0u, (uint8_t)MEAS_ERR, value[0], name[0], units[0]);
+//		LCD_Measure(1u, (uint8_t)MEAS_NONE, NULL, NULL, NULL);
+//		ui_menu_item_set_focus(NULL, ui_PanelMeasure,  false, false);
+//		ui_menu_item_set_focus(NULL, ui_PanelMeasure1, false, false);
+//		ui_menu_item_set_recolor(ui_ImageMeas,  false);
+//		ui_menu_item_set_recolor(ui_ImageMeas1, false);
+//		return;
+//	}
 
 	for (i = 0u; i < 2u; i++)
 	{

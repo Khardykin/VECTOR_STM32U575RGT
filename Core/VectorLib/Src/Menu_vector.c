@@ -529,20 +529,23 @@ static void menu_navigate(void)
 	    	menu_status.state_menu = scroll_up(menu_status.state_menu, MEASURE_PAGES_COUNT);
 	    }
 	    else if (g3 == (uint8_t)GEST_LONG){
-    	  if(menu_status.state_menu == 5){
-    		  sub = 2;
-    	  }
-    	  else if(menu_status.state_menu == 6){
-    		  sub = 3;
-    	  }
-		  }
-		  else if (g3 == (uint8_t)GEST_DOUBLE){
-			  sub = 1;
-			  menu_status.state_menu = 0;
-		  }
+	    	if(menu_status.state_menu == 5){
+	    		sub = 2;
+	    	}
+	    	else if(menu_status.state_menu == 6){
+	    		sub = 3;
+	    	}
+	    }
+	    else if (g2 == (uint8_t)GEST_DOUBLE){
+	    	menu_status.state_menu = 7;
+	    }
+	    else if (g3 == (uint8_t)GEST_DOUBLE){
+	    	sub = 1;
+	    	menu_status.state_menu = 0;
+	    }
 
-		  Menu_GoTo(setting_screens[sub]);
-		  break;
+	    Menu_GoTo(setting_screens[sub]);
+	    break;
 
     case SCREEN_MENU:
       /* Button1 SHORT - вход в пункт (приоритет Button1, как в Avis
@@ -783,8 +786,12 @@ void Button_Run_Start(void)
 		// голосовое сообщение - одна фаза ALERT_CH_SOUND с SND_* из образа.
 		Alert_Start(&AlertSeq_PowerOn);
 	    //------------------------------------------------------------------------
-		button1.button_count = 1;
-		button1.button_flag = 0;
+		decode_button(0u, &button1);
+		decode_button(1u, &button2);
+		decode_button(2u, &button3);
+		uint8_t g1 = Menu_Gesture(1u);
+		uint8_t g2 = Menu_Gesture(2u);
+		uint8_t g3 = Menu_Gesture(3u);
 		/* SOS-счётчик гасим вместе с button1: включение - это удержание Button1
 		   1.5 с, и если кнопку держат дальше, button_sos досчитал бы до 3 с и
 		   выдал SOS сразу после включения.                                  */
