@@ -44,8 +44,8 @@ uint32_t color_Chan[5] = {0xFFFFFF, 0xFF0000, 0xF9D547, 0x2ECC71, 0xEFEFF4};//б
 uint32_t color_background[3] = {0x215CA2, 0xFFFFFF};//синий белый
 uint32_t color_text[3] = {0xFFFFFF, 0x000000};//белый черный
 //------------------------------------------------------------------------------
-#define INFO_LINE_HEIGHT            (25)    // Страница «Информация»: высота строки, px (TODO автора "Panel1 height y = 25")
-#define LCD_BATTERY_CHARGE_HOLD_MS  (2500u) // Держать анимацию «зарядка» после выдергивания провода, мс (Avis: pdMS_TO_TICKS(2500))
+#define INFO_LINE_HEIGHT            (25)    // Страница «Информация»: высота строки
+#define LCD_BATTERY_CHARGE_HOLD_MS  (1500u) // Держать анимацию «зарядка» после выдергивания провода, мс
 //------------------------------------------------------------------------------
 #if ((DEVICE_NUMBER == Dev1))
     const char Device_Label[2][15] = {
@@ -854,23 +854,6 @@ void LCD_BuildErrorQueue(SNS_CFG *pSnsCfg)
 {
     LCD_ClearErrorQueue();
 
-    // 1. Ошибки каналов todo по каналам не будет , надо убрать
-//    for (uint8_t ch = 0; ch < COUNT_CHAN; ch++) {
-//        if (TESTBIT(pSnsCfg->Sensor[ch].State, ST_BIT_CHANNEL_TURN_OFF)) continue;
-//
-//        uint32_t err_mask = pSnsCfg->Sensor[ch].StateErr & ERROR_MASK_ST_1;
-//
-//        for (uint8_t bit = 0; bit < 10; bit++) {
-//            if ((TESTBIT(err_mask, bit)) && (error_queue_count < MAX_ERROR_QUEUE)) {
-//                error_queue[error_queue_count].channel = ch;
-//                error_queue[error_queue_count].category = 0;
-//                error_queue[error_queue_count].error_bit = bit;
-//                error_queue[error_queue_count].key = (0 << 8) | (ch << 4) | bit;
-//                error_queue_count++;
-//            }
-//        }
-//    }
-
     /* 1. Статусы/тревоги (Alert_vector) - ПЕРЕД системными ошибками: порядок в
           очереди задаёт порядок показа в строке, а угроза жизни (газ,
           эвакуация) и неподвижность важнее «Ошибка МЕМ». Перебор по alert_id_t
@@ -1567,8 +1550,7 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
     }
 
     // --- 7. Отрисовка ---
-    /* TODO автора ("Panel1 сделать height y = 25, у LabelLeft1 и LabelRight1
-       align left top") выполнен в коде: высота строки INFO_LINE_HEIGHT = 25 px,
+    /* выполнен в коде: высота строки INFO_LINE_HEIGHT = 25 px,
        высота Panel1 = число строк страницы × 25; лейблы прижаты к ВЕРХНЕМУ
        краю (имена - слева, значения - справа: оба TOP_LEFT наложились бы
        друг на друга - две колонки). Видимость: в дизайне SquareLine Panel1 и
@@ -1613,14 +1595,6 @@ void LCD_SubMenuSetting(SNS_CFG *pSnsCfg, uint8_t num)
 // подбор шрифта (meas_set_value), режим одной панели LCD_Measure(), наполнение
 // данными meas_fill() и экран целиком LCD_MeasureScreen().
 //===========================================================================================================================
-/* Экран ПЕРЕСОЗДАН: кэши раскладок надо сбросить, иначе LCD_Measure() решит,
-   что геометрия уже выставлена, а объекты на самом деле свежие - со значениями
-   из дизайна SquareLine (панель 152x144, "143"/"H"/"°C", шрифт number85, цвет
-   textcolor2). Сравнения указателя панели для этого НЕДОСТАТОЧНО: уничтоженный
-   объект и созданный на его месте очень часто получают ОДИН И ТОТ ЖЕ адрес
-   (куча LVGL возвращает тот же блок на тот же размер), т.е. указатель «совпадёт».
-   Достоверный признак - смена экрана в LCD_Fill_Template(). Вызов - поток LVGL
-   Task, там же, где и отрисовка. */
 static void meas_reset_cache(void)
 {
 	uint8_t i;
@@ -2261,7 +2235,7 @@ void LCD_CountdownSetTimer(uint32_t data, uint16_t roller)
 	   (char*)-каст (-Wpointer-sign); snprintf возвращает int, len_str uint8_t. */
 	len_str = (uint8_t)snprintf((char*)str_lcd, sizeof(str_lcd), "%u", (unsigned)data);
 	//-------------------------------
-	ui_set_label_text(ui_LabelSetEnter, _(text_labels[roller]));
+	ui_set_label_text(ui_LabelHeadEnter, _(text_labels[roller]));
 	ui_set_label_text(ui_LabelSetEnter, (const char*)str_lcd);
 	memset(str_lcd, 0, sizeof(str_lcd));
 	//-------------------------------
