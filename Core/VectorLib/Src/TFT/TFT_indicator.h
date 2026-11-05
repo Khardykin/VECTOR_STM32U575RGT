@@ -2,21 +2,20 @@
   ******************************************************************************
   * @file    TFT_indicator.h
   * @brief   API слоя индикации (Avis): экраны, меню, LVGL-виджеты
-  *
-  *          Пара к TFT_indicator.c: выключен вместе с ним (CONFIG_TYPE_LCD_TFT == 2,
-  *          ждёт переноса - PLAN.md п.29). Зависит от lvgl.h, shared_macros.h,
-  *          shared_types.h. Из TFT.h намеренно не включается.
   ******************************************************************************
   */
 #ifndef __TFT_IND_H__
 #define __TFT_IND_H__
+
 #include <time.h>
 #include <stdbool.h>
 #include "lvgl.h"
 #include "shared_macros.h"
 #include "shared_types.h"
+
 //===========================================================================================================================
-#define BUF_SIZE ((TFT_WIDTH * TFT_HEIGHT / 4))//todo было 5
+#define BUF_SIZE ((TFT_WIDTH * TFT_HEIGHT / 4))
+#define MAX_ERROR_QUEUE 20
 //===========================================================================================================================
 #define SET_MIRAX(c)      ui_next_state.mirax   = !c
 #define SET_BAT_CHARGE(c) ui_next_state.battery_charge   = !c
@@ -30,10 +29,8 @@
 #define SET_LTE(c)        ui_next_state.lte     = !c
 #define SET_LTE_VEC(c)    ui_next_state.lte_vec = !c
 
-//#define SET_MUTE(c)       ui_next_state.mute    = !c
 //===========================================================================================================================
-//===========================================================================================================================
-enum{
+enum {
 	ROLLER_INFO = 0,
 	ROLLER_SETTING,
 	ROLLER_CONNECT_DEVICE,
@@ -46,74 +43,15 @@ enum{
 	ROLLER_END
 };
 
-
-enum{
+enum {
 	ROLLER_HEAD_NEXT = 0,
 	ROLLER_HEAD_SAVE,
 	ROLLER_HEAD_WAIT,
 	ROLLER_HEAD_LANGUAGE,
 	ROLLER_HEAD_END
 };
-//--------------------------------------------------------------------------------------------------------------
-typedef struct {
-    bool mirax;
-    bool info_str;
 
-    bool head_enter;
-    bool head_out;
-    bool head_timer;
-
-    // Иконки индикации
-    bool lora;
-    bool gps;
-    bool ble;
-//    bool mute;
-    bool exchange;
-    bool lte;
-    bool lte_vec;
-} ui_visibility_state_t;
-//===========================================================================================================================
-// Структура для очереди ошибок (без текста - экономия RAM) todo убрать по кнаалам и оставить системные и статус lora
-typedef struct {
-    uint8_t channel;      // 0..7 для каналов, 0xFF для системных, 0xFE для LORA
-    uint8_t category;     // 0=канал, 1=системная, 2=LORA
-    uint8_t error_bit;    // Номер бита ошибки или статус LORA
-    uint16_t key;         // Уникальный ключ: (category<<8)|(channel<<4)|bit
-} error_queue_item_t;
-
-#define MAX_ERROR_QUEUE 20
-extern error_queue_item_t error_queue[MAX_ERROR_QUEUE];
-extern uint8_t error_queue_count;
-extern uint8_t error_display_index;
-extern uint32_t last_error_hash;
-//===========================================================================================================================
-// Функции работы с очередью ошибок
-extern void LCD_UpdateErrorDisplay(SNS_CFG *pSnsCfg, uint8_t state_flashing);
-extern void LCD_BuildErrorQueue(SNS_CFG *pSnsCfg);
-//===========================================================================================================================
-extern void ui_lv_init(void);
-//===========================================================================================================================
-extern void ui_set_obj_hidden(lv_obj_t * obj, bool hide);
-//===========================================================================================================================
-extern uint16_t LCD_Get_Template(void);
-extern uint16_t LCD_Fill_Template(SNS_CFG *pSnsCfg);
-extern void LCD_Image_SET(uint8_t state);
-extern void ui_reset_visibility_flags(void);
-extern void ui_apply_visibility(void);
-//===========================================================================================================================
-/* Иконка радиомодуля в заголовке (ui_ImageLora): КАРТИНКА - по конфигурации
-   сборки (CONFIG_LORA -> Lora.png, CONFIG_G4 -> 3G.png, CONFIG_NBIOT ->
-   NB-IoT.png), ВИДИМОСТЬ - по битам ST_COMMON_BIT_TURN_ON_LORA /
-   ST_COMMON_BIT_TURN_ON_GSM в Config_common.State (SNS_CFG_Type_common).
-   Вызов - из Menu_Draw() после LCD_Fill_Template() и до ui_apply_visibility()
-   (поток LVGL Task).                                                        */
-extern void LCD_RadioIcon(void);
-//===========================================================================================================================
-/* Режимы панелей экрана измерений (SCREEN_MEASURE -> ui_ScreenMeasurements).
-   Один режим = одна конфигурация панели: какие элементы видны, где стоят, каким
-   шрифтом и цветом (таблица meas_layout[] в TFT_indicator.c) и какие данные туда
-   пишутся (meas_fill()). MEAS_MODE_END - страж размера таблицы, не режим.      */
-enum{
+enum {
 	MEAS_NONE = 0,		/* панель не участвует в этой странице (скрыта)        */
 	MEAS_DEFAULT,		/* первоначальная настройка (раскладка из дизайна)     */
 	MEAS_TEMP,		/* температура воздуха                                 */
@@ -129,52 +67,98 @@ enum{
 	MEAS_ERR,		/* строка текущей ошибки, панель на весь экран         */
 	MEAS_MODE_END
 };
+
+//--------------------------------------------------------------------------------------------------------------
+typedef struct {
+    bool mirax;
+    bool info_str;
+    bool head_enter;
+    bool head_out;
+    bool head_timer;
+    bool battery_charge;
+
+    // Иконки индикации
+    bool lora;
+    bool gps;
+    bool ble;
+    bool exchange;
+    bool lte;
+    bool lte_vec;
+} ui_visibility_state_t;
+
+typedef struct {
+    uint8_t channel;      // 0xFF для системных, 0xFE для LORA, 0xFD для тревог
+    uint8_t category;     // 1=системная, 2=LORA, 3=тревога
+    uint8_t error_bit;    // Номер бита ошибки или статус LORA
+    uint16_t key;         // Уникальный ключ: (category<<8)|(channel<<4)|bit
+} error_queue_item_t;
+
+/* Структуризация глобального контекста индикации */
+typedef struct {
+    error_queue_item_t queue[MAX_ERROR_QUEUE];
+    char current_text[40];
+    uint8_t count;
+    uint8_t display_index;
+    uint32_t last_hash;
+} lcd_error_context_t;
+
+typedef struct {
+    uint8_t last_lang;
+    uint8_t rotation;
+    uint8_t rotation_old;
+    uint8_t total_info_pages;
+} lcd_system_state_t;
+
+typedef struct {
+    uint16_t charge_count;
+    uint16_t charge_flag;
+} lcd_battery_anim_t;
+
+//===========================================================================================================================
+/* Экспорт сгруппированных контекстов */
+extern ui_visibility_state_t ui_next_state;
+extern lcd_error_context_t     lcd_err;
+extern lcd_system_state_t    lcd_sys;
+extern lcd_battery_anim_t   lcd_bat;
+
+//===========================================================================================================================
+// Функции работы с очередью ошибок
+extern void LCD_UpdateErrorDisplay(SNS_CFG *pSnsCfg, uint8_t state_flashing);
+extern void LCD_BuildErrorQueue(SNS_CFG *pSnsCfg);
+//===========================================================================================================================
+extern void ui_lv_init(void);
+extern void ui_set_obj_hidden(lv_obj_t * obj, bool hide);
+extern uint16_t LCD_Fill_Template(SNS_CFG *pSnsCfg);
+extern void LCD_Image_SET(uint8_t state);
+extern void ui_reset_visibility_flags(void);
+extern void ui_apply_visibility(void);
+extern void LCD_RadioIcon(void);
+
 //===========================================================================================================================
 extern void LCD_Menu(uint8_t num);
 extern void LCD_SubMenu_Single(uint8_t num, uint16_t roller);
 extern void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num);
 extern void LCD_SubMenuSetting(SNS_CFG *pSnsCfg, uint8_t num);
-extern void LCD_SubMenuService(SNS_CFG *pSnsCfg, uint8_t num);
-extern void LCD_SubMenuSetting_Panel_Head_Button_1(bool show_roller, int8_t rank, uint16_t enter);
-extern void LCD_SubMenuSetting_Panel_Head_Button_2(bool show_roller, int8_t rank, uint16_t enter);
-extern void LCD_SubMenuSetting_Panel_Head_Button_3(bool show_roller, int8_t rank, uint16_t enter);
-extern void LCD_SubMenuSetting_Panel_Head_Text(bool show_roller, int8_t rank, uint16_t enter);
+
 //===========================================================================================================================
-/* Экран измерений (SCREEN_MEASURE, дизайн ui_ScreenMeasurements).
-   LCD_Measure()       - режим ОДНОЙ панели: panel 0 = ui_PanelMeasure (левая,
-                         x = -79), 1 = ui_PanelMeasure1 (правая, x = +80);
-                         mode = MEAS_* (enum выше); value/name/units - готовые
-                         строки, NULL = текст этого элемента не менять (геометрия
-                         раскладки применяется в любом случае);
-   LCD_MeasureScreen() - экран ЦЕЛИКОМ: num = menu_status.state_menu (страница
-                         0..VECTOR_MEASURE_PAGES-1, таблица meas_pages[]), строки
-                         берутся из данных прибора. Вызов - из Menu_Draw()
-                         (поток LVGL Task); из ISR и других потоков не звать. */
 extern void LCD_Measure(uint8_t panel, uint8_t mode, const char *value, const char *name, const char *units);
 extern void LCD_MeasureScreen(uint8_t num);
-//===========================================================================================================================
 extern void LCD_Battery(uint16_t precent, uint16_t state_flashing);
+
 //===========================================================================================================================
-extern void LCD_DataTime(struct tm*tm_ptr, uint8_t x, uint8_t y);
-extern void LCD_Data(struct tm*tm_ptr, uint8_t x, uint8_t y);
-extern void LCD_Time(struct tm*tm_ptr, uint8_t x, uint8_t y);
-extern void LCD_TimeHead(struct tm*tm_ptr);
+/* Синхронизированные сигнатуры функций ввода */
+extern void LCD_DataTime(struct tm *tm_ptr, uint8_t rank, uint8_t state_flashing);
+extern void LCD_Data(struct tm *tm_ptr, uint8_t rank, uint8_t state_flashing);
+extern void LCD_Time(struct tm *tm_ptr, uint8_t rank, uint8_t state_flashing);
+extern void LCD_TimeHead(struct tm *tm_ptr);
+
 //===========================================================================================================================
-extern void LCD_CoundownSetTimer(uint32_t data, uint16_t roller);
+extern void LCD_CountdownSetTimer(uint32_t data, uint16_t roller);
 extern void LCD_CountdownToSOS(uint32_t data, uint32_t state);
 extern void LCD_CountdownToShutdown(uint32_t data);
 extern void LCD_CountdownToWarm(uint32_t data);
 extern void LCD_ToWarm(SNS_CFG *pSnsCfg, uint16_t num, uint8_t chan);
 extern void LCD_Firmware(void);
-//===========================================================================================================================
 extern void LCD_Digit_int_flashing_password(uint32_t data, uint8_t rank, uint8_t state_flashing);
-//===========================================================================================================================
-extern uint8_t active_channels_map[COUNT_CHAN];
-extern uint8_t active_channels_count;
-extern uint8_t info_total_pages;
-extern ui_visibility_state_t ui_next_state;
-//extern void LCD_Battery_off(uint8_t batery);
-//extern void LCD_TurnOffError(uint16_t num) ;
-//extern void LCD_TurnOn(void);
 
 #endif // __TFT_IND_H__

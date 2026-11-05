@@ -100,7 +100,7 @@ static uint8_t state_flashing_system = 0;
    (TFT_indicator): info_total_pages считает LCD_SubMenuInfo по числу строк,
    строки настроек - Panel1..3 (LCD_SubMenuSetting). Без экрана листать нечего. */
 #if (CONFIG_TYPE_LCD_TFT != 0)
-#define MENU_INFO_PAGES     (info_total_pages)
+#define MENU_INFO_PAGES     (lcd_sys.total_info_pages)
 #define MENU_SETTING_ROWS   (3u)
 #else
 #define MENU_INFO_PAGES     (1u)
