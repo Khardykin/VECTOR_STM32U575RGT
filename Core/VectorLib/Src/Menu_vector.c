@@ -504,7 +504,7 @@ static void menu_navigate(void)
        прогрева (30 с против TIME_RTC_START 60 с) и увёл бы на SCREEN_MEASURE
        раньше времени.                                                   */
     case SCREEN_START:
-      if (g2 == (uint8_t)GEST_LONG){
+      if (g3 == (uint8_t)GEST_LONG){
         Menu_TurnOff();
       }
       break;
@@ -525,6 +525,9 @@ static void menu_navigate(void)
 	    if (g2 == (uint8_t)GEST_SHORT){
 	    	menu_status.state_menu = scroll_down(menu_status.state_menu, MEASURE_PAGES_COUNT);
 	    }
+	    else if (g2 == (uint8_t)GEST_DOUBLE){
+	    	menu_status.state_menu = 7;
+	    }
 	    else if (g3 == (uint8_t)GEST_SHORT){
 	    	menu_status.state_menu = scroll_up(menu_status.state_menu, MEASURE_PAGES_COUNT);
 	    }
@@ -535,9 +538,9 @@ static void menu_navigate(void)
 	    	else if(menu_status.state_menu == 6){
 	    		sub = 3;
 	    	}
-	    }
-	    else if (g2 == (uint8_t)GEST_DOUBLE){
-	    	menu_status.state_menu = 7;
+	    	else{
+	    		Menu_TurnOff();
+	    	}
 	    }
 	    else if (g3 == (uint8_t)GEST_DOUBLE){
 	    	sub = 1;
