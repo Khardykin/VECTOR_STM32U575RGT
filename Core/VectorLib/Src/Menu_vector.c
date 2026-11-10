@@ -525,7 +525,7 @@ static void menu_navigate(void)
 	    if (g2 == (uint8_t)GEST_SHORT){
 	    	menu_status.state_menu = scroll_down(menu_status.state_menu, MEASURE_PAGES_COUNT);
 	    }
-	    else if (g2 == (uint8_t)GEST_DOUBLE){
+	    else if (g2 == (uint8_t)GEST_SHORT_LONG){
 	    	menu_status.state_menu = 7;
 	    }
 	    else if (g3 == (uint8_t)GEST_SHORT){
@@ -542,7 +542,7 @@ static void menu_navigate(void)
 	    		Menu_TurnOff();
 	    	}
 	    }
-	    else if (g3 == (uint8_t)GEST_DOUBLE){
+	    else if (g3 == (uint8_t)GEST_SHORT_LONG){
 	    	sub = 1;
 	    	menu_status.state_menu = 0;
 	    }
@@ -567,10 +567,10 @@ static void menu_navigate(void)
 			}
 			Menu_GoTo(item_screens[item]);
 		  }
-		  else if (g2 == (uint8_t)GEST_SHORT){
+		  else if (g3 == (uint8_t)GEST_SHORT){
 			menu_status.state_menu = scroll_down(menu_status.state_menu, MENU_ITEMS_COUNT);
 		  }
-		  else if (g3 == (uint8_t)GEST_SHORT){
+		  else if (g2 == (uint8_t)GEST_SHORT){
 			menu_status.state_menu = scroll_up(menu_status.state_menu, MENU_ITEMS_COUNT);
 		  }
 		  else if (g2 == (uint8_t)GEST_LONG){
@@ -717,7 +717,7 @@ void Button_Run_Backlight(void)
 		button1.button_pressed = 0;
 	  }
 #else
-//    backlight_set(Sns_Cfg_struct.Config_common.SoundPWM);
+//    backlight_set(Sns_Cfg_struct.Config_common.Reserve[0]);
     if((button1.button_pressed) || (button2.button_pressed) || (button3.button_pressed)){
     	button1.button_pressed = 0;
     	button2.button_pressed = 0;
@@ -792,9 +792,9 @@ void Button_Run_Start(void)
 		decode_button(0u, &button1);
 		decode_button(1u, &button2);
 		decode_button(2u, &button3);
-		uint8_t g1 = Menu_Gesture(1u);
-		uint8_t g2 = Menu_Gesture(2u);
-		uint8_t g3 = Menu_Gesture(3u);
+		Menu_Gesture(1u);
+		Menu_Gesture(2u);
+		Menu_Gesture(3u);
 		/* SOS-счётчик гасим вместе с button1: включение - это удержание Button1
 		   1.5 с, и если кнопку держат дальше, button_sos досчитал бы до 3 с и
 		   выдал SOS сразу после включения.                                  */

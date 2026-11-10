@@ -1635,15 +1635,17 @@ static void meas_fill(uint8_t mode, char *value, char *name, char *units)
 		/* LabelMeas скрыт: широта - в подписи, долгота - в «единицах» (обе
 		   строки шрифтом number36). Нет фикса - заглушка в обеих строках. */
 #if CONFIG_GPS
-		if (gps_nav.navigation != 0u)
+		if (gps_nav.navigation == 1)
 		{
 			meas_fmt_coord(name,  MEAS_NAME_SZ,  gps_nav.lat_scaled, 'N', 'S');
 			meas_fmt_coord(units, MEAS_UNITS_SZ, gps_nav.lon_scaled, 'E', 'W');
-			break;
 		}
+		else
 #endif /* CONFIG_GPS */
-		snprintf(name,  MEAS_NAME_SZ,  "%s", MEAS_NO_DATA);
-		snprintf(units, MEAS_UNITS_SZ, "%s", MEAS_NO_DATA);
+		{
+			snprintf(name,  MEAS_NAME_SZ,  "%s", MEAS_NO_DATA);
+			snprintf(units, MEAS_UNITS_SZ, "%s", MEAS_NO_DATA);
+		}
 		break;
 
 	case MEAS_AQI:
