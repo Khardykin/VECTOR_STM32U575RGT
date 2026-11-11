@@ -524,12 +524,22 @@ static void menu_navigate(void)
 	    uint8_t sub = 0;
 	    if (g2 == (uint8_t)GEST_SHORT){
 	    	menu_status.state_menu = scroll_down(menu_status.state_menu, MEASURE_PAGES_COUNT);
+//#if !CONFIG_G4
+//	    	if(menu_status.state_menu == 5){
+//	    		menu_status.state_menu = 4;
+//	    	}
+//#endif
 	    }
 	    else if (g2 == (uint8_t)GEST_SHORT_LONG){
 	    	menu_status.state_menu = 7;
 	    }
 	    else if (g3 == (uint8_t)GEST_SHORT){
 	    	menu_status.state_menu = scroll_up(menu_status.state_menu, MEASURE_PAGES_COUNT);
+//#if !CONFIG_G4
+//	    	if(menu_status.state_menu == 5){
+//	    		menu_status.state_menu = 6;
+//	    	}
+//#endif
 	    }
 	    else if (g3 == (uint8_t)GEST_LONG){
 	    	if(menu_status.state_menu == 5){
