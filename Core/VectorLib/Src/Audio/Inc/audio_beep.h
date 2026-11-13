@@ -11,6 +11,7 @@
 extern "C" {
 #endif
 extern const int16_t audio_beep_pcm[];
+extern const uint32_t audio_beep_loop_samples;  /* сэмплов в петле (147) */
 extern const uint32_t audio_beep_samples;   /* число сэмплов, НЕ байт */
 #ifdef __cplusplus
 }

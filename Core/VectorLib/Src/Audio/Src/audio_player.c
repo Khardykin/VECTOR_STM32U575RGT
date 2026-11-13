@@ -329,7 +329,26 @@ static void stream_fill(uint8_t half)
     }
     else
     {
-      (void)memcpy(dst, ap_st.src + ap_st.loaded, want * 2u);
+      /* Аварийный писк: короткая бесшовная петля, повторяем по кругу до
+         audio_beep_samples; fade-in/out 4 мс на краях, чтобы не щёлкало. */
+      uint32_t i;
+      uint32_t fade = (AUDIO_SAMPLE_RATE * 4u) / 1000u;
+      for (i = 0; i < want; i++)
+      {
+        uint32_t pos = ap_st.loaded + i;
+        int32_t  s   = (int32_t)ap_st.src[pos % audio_beep_loop_samples];
+        if (pos < fade)
+        {
+          s = (s * (int32_t)pos) / (int32_t)fade;
+        }
+        else if (pos >= (ap_st.total - fade))
+        {
+          int32_t left = (int32_t)ap_st.total - (int32_t)pos;
+          if (left < 0) { left = 0; }
+          s = (s * left) / (int32_t)fade;
+        }
+        dst[i] = (int16_t)s;
+      }
       got = want;
     }
     ap_st.loaded += got;
@@ -1082,10 +1101,16 @@ int audio_selftest(void)
   int sai_rc;
   uint32_t t0 = VTICK_MS();          /* до планировщика = 0 */
   uint32_t guard = 0;
+  uint32_t cnt = 0;
+  uint8_t  dma_ok = 0;
+  /* Писк - короткая петля: circular DMA крутит её по кругу, полная длина
+     audio_beep_samples. Флаг приходит и на половину, и на конец петли,
+     поэтому до полной длины считаем 2 флага на петлю. */
+  uint32_t need = (audio_beep_samples * 2u) / audio_beep_loop_samples;
 
   ap_sai_blk_done = 0;
 
-  sai_rc = Sai_StartDMA((uint8_t *)audio_beep_pcm, audio_beep_samples);
+  sai_rc = Sai_StartDMA((uint8_t *)audio_beep_pcm, audio_beep_loop_samples);
   if (sai_rc != 0)
   {
     audio_status.cnt_errors++;
@@ -1094,21 +1119,24 @@ int audio_selftest(void)
           (int32_t)sai_rc);
     return 1;
   }
-  LOG_I(VLOG_M_AUDIO, "selftest: beep %u samples via SAI DMA (no queue, no ext flash)",
-        audio_beep_samples);
+  LOG_I(VLOG_M_AUDIO, "selftest: beep loop %u samples x %u via SAI DMA (no queue, no ext flash)",
+        audio_beep_loop_samples, need / 2u);
 
-  /* Ждём флаг из ISR завершения блока. В circular-режиме SAI не возвращается
-     в READY сама (HAL её не гасит), поэтому проверять состояние бесполезно -
-     нужен именно флаг. Ограничение по числу проходов (~1 с на 160 МГц), чтобы
-     не зависеть от исправности системного тика. Сразу после флага гасим
-     передачу: иначе circular DMA прокрутит писк по второму кругу.            */
-  while ((ap_sai_blk_done == 0u) && (guard < 40000000u))
+  /* Ждём флаги полублоков до полной длины писка; ограничение по числу
+     проходов (~1 с на 160 МГц). После набора гасим передачу. */
+  while ((cnt < need) && (guard < 40000000u))
   {
+    if (ap_sai_blk_done != 0u)
+    {
+      ap_sai_blk_done = 0u;
+      cnt++;
+      dma_ok = 1u;
+    }
     guard++;
   }
   Sai_StopDMA();
 
-  if (ap_sai_blk_done == 0u)
+  if (dma_ok == 0u)
   {
     audio_status.cnt_errors++;
     LOG_E(VLOG_M_AUDIO, "selftest: DMA started but NOT finished (GPDMA1_Channel11_IRQn?)");
@@ -1116,9 +1144,6 @@ int audio_selftest(void)
   }
 
   audio_status.cnt_played++;
-  /* guard - число проходов ожидания: по нему видно, насколько быстро пришла
-     DMA (selftest выполняется до планировщика, где тика RTOS ещё нет, поэтому
-     длительность оцениваем только так, время в проекте - см. vector_tick.h). */
   LOG_I(VLOG_M_AUDIO, "selftest: done, guard=%u (%u samples, expected ~%u ms)",
         guard, audio_beep_samples,
         (audio_beep_samples * 1000u) / AUDIO_SAMPLE_RATE);
