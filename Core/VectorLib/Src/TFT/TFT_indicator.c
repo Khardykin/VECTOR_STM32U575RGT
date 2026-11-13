@@ -198,11 +198,15 @@ static const meas_layout_t meas_layout[MEAS_MODE_END] = {
 		.val_font = &ui_font_number85, .name_font = &ui_font_number21, .units_font = &ui_font_number21,
 		.img_src = &ui_img_imagemenu_heart_png
 	},
+#if CONFIG_G4
 	[MEAS_VOICE] = {
 		.img_visible = 1, .img_x = 0, .img_y = 0, .img_align = LV_ALIGN_CENTER,
 		.val_font = &ui_font_number85, .name_font = &ui_font_number21, .units_font = &ui_font_number21,
 		.img_src = &ui_img_imagemenu_voice_png
 	},
+#else
+	[MEAS_VOICE] = { .val_font = &ui_font_number85, .name_font = &ui_font_number21, .units_font = &ui_font_number21 },
+#endif
 	[MEAS_CHAT] = {
 		.img_visible = 1, .img_x = 0, .img_y = 0, .img_align = LV_ALIGN_CENTER,
 		.val_font = &ui_font_number85, .name_font = &ui_font_number21, .units_font = &ui_font_number21,
@@ -821,6 +825,7 @@ void ui_lv_init(void)
 
 	ui_ScreenHeadMain_screen_init();
 	lv_obj_set_parent(ui_ImageMirax, lv_layer_top());
+	lv_obj_set_parent(ui_BarLoad, lv_layer_top());
 	lv_obj_set_parent(ui_PanelHead, lv_layer_top());
 	lv_obj_set_parent(ui_PanelHeadEnter, lv_layer_top());
 }
@@ -1067,10 +1072,11 @@ void LCD_Image_SET(uint8_t data)
 {
 	SET_MIRAX(data);
 	SET_LORA(data);
+	SET_LORA_MESH()(data);
+	SET_WIFI(data);
 	SET_GPS(data);
 	SET_BLE(data);
 	SET_EXCHANGE(data);   /* была опечатка SET_EXCHANGE(data;) - лишняя ';' в аргументе */
-	SET_LTE(data);
 	SET_LTE_VEC(data);
 }
 
@@ -1079,8 +1085,7 @@ void ui_reset_visibility_flags(void)
 {
     ui_next_state.info_str   	= true;
     ui_next_state.head_enter 	= true;
-    ui_next_state.head_out   	= true;
-    ui_next_state.head_timer 	= true;
+    ui_next_state.bar_load 		= true;
 }
 
 //===========================================================================================================================
@@ -1089,14 +1094,22 @@ void ui_apply_visibility(void)
     // Благодаря нашей "умной" ui_set_obj_hidden,
     // LVGL дернется только если реальное состояние изменилось.
     ui_set_obj_hidden(ui_ImageMirax,     ui_next_state.mirax);
+    ui_set_obj_hidden(ui_BarLoad,     	 ui_next_state.bar_load);
     ui_set_obj_hidden(ui_PanelHeadEnter, ui_next_state.head_enter);
 
     // Иконки
-    ui_set_obj_hidden(ui_ImageLora,      ui_next_state.lora);
-    ui_set_obj_hidden(ui_ImageGPS,       ui_next_state.gps);
-    ui_set_obj_hidden(ui_ImageBLE,       ui_next_state.ble);
-    ui_set_obj_hidden(ui_ImageExchange,    ui_next_state.exchange);
+    ui_set_obj_hidden(ui_ImageLora,     ui_next_state.lora);
+    ui_set_obj_hidden(ui_ImageGPS,      ui_next_state.gps);
+    ui_set_obj_hidden(ui_ImageBLE,		ui_next_state.ble);
+    ui_set_obj_hidden(ui_ImageExchange,	ui_next_state.exchange);
 
+    ui_set_obj_hidden(ui_ImageWIFI,    	ui_next_state.wifi);
+    ui_set_obj_hidden(ui_ImageLoraMesh, ui_next_state.lora_mesh);
+
+    ui_set_obj_hidden(ui_ImageLTE1,    	ui_next_state.lte_vec);
+    ui_set_obj_hidden(ui_ImageLTE2,    	ui_next_state.lte_vec);
+    ui_set_obj_hidden(ui_ImageLTE3,    	ui_next_state.lte_vec);
+    ui_set_obj_hidden(ui_ImageLTE4,    	ui_next_state.lte_vec);
 }
 
 //===========================================================================================================================
@@ -1140,7 +1153,7 @@ void LCD_RadioIcon(void)
 	on  = (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GSM) != 0u) ? 1u : 0u;
 #elif CONFIG_NBIOT
 	src = &ui_img_imagehead_nb_iot_png;
-	on  = (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_GSM) != 0u) ? 1u : 0u;
+	on  = (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_NBIOT) != 0u) ? 1u : 0u;
 #endif
 
 	if ((src != NULL) && (ui_ImageLora != NULL))
@@ -1230,28 +1243,14 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
     labels[total_count] = _("Время"); values[total_count++] = str_time;
 
     // --- 2. Заводской номер прибора (всегда отображается) ---
-    // Инициализация флага формата на этапе компиляции
-    uint8_t is_7_digits = 0; // 0: %08d, 1: %07d
-    // Бренд - переменная рантайма (flash), в #if её сравнивать нельзя
-    if (current_build_type == MIRAX)
-    {
-    #if ((DEVICE_NUMBER == Device2_Pro) || (DEVICE_NUMBER == Device2_Pro_1) || (DEVICE_NUMBER == Device3_Pro))
-        is_7_digits = 1;
-    #endif
-    }
     uint32_t serial = ((uint32_t)pSnsCfg->Config_common.SerialHi << 16) | pSnsCfg->Config_common.SerialLo;
     char sn_buffer[24];
     strcpy(sn_buffer, (char*)SN_Label_Prefix[MIRAX_BACS_BUILD]);
 
-    /* serial - uint32_t, поэтому %u и (unsigned): с %07d/%08d GCC ругался
-       -Wformat, а номер >= 2^31 напечатался бы отрицательным. snprintf с
-       остатком буфера (strlen считаем один раз) - sn_buffer[24] не переполнится. */
     size_t sn_len = strlen(sn_buffer);
-    if (is_7_digits) {
-        snprintf(sn_buffer + sn_len, sizeof(sn_buffer) - sn_len, "%07u", (unsigned)serial);
-    } else {
-        snprintf(sn_buffer + sn_len, sizeof(sn_buffer) - sn_len, "%08u", (unsigned)serial);
-    }
+
+    snprintf(sn_buffer + sn_len, sizeof(sn_buffer) - sn_len, "%08u", (unsigned)serial);
+
 
     sprintf(str_sn_dev, "%s", sn_buffer);
     labels[total_count] = _("Зав.номер"); values[total_count++] = str_sn_dev;
@@ -1729,7 +1728,7 @@ void LCD_MeasureScreen(uint8_t num)
 	/* Фаза чередования «страница / ошибка» (указание автора: показывать MEAS_ERR
 	   вместе с текущей страницей, например по 3 с). 0 = страница, 1 = ошибка;
 	   сбрасывается в 0, как только очередь ошибок пуста. */
-	static uint8_t meas_err_phase = 0u;
+//	static uint8_t meas_err_phase = 0u;
 	uint8_t page = (num >= (uint8_t)VECTOR_MEASURE_PAGES) ? 0u : num;
 	uint8_t i;
 
@@ -1984,15 +1983,13 @@ void LCD_TimeHead(struct tm*tm_ptr)
 //===========================================================================================================================
 void LCD_CountdownSetTimer(uint32_t data, uint16_t roller)
 {
-	/* data - uint32_t: %u и (unsigned) (-Wformat); snprintf с sizeof и
-	   (char*)-каст (-Wpointer-sign); snprintf возвращает int, len_str uint8_t. */
 	len_str = (uint8_t)snprintf((char*)str_lcd, sizeof(str_lcd), "%u", (unsigned)data);
 	//-------------------------------
 	ui_set_label_text(ui_LabelHeadEnter, _(text_labels[roller]));
 	ui_set_label_text(ui_LabelSetEnter, (const char*)str_lcd);
 	memset(str_lcd, 0, sizeof(str_lcd));
 	//-------------------------------
-	ui_next_state.head_timer = false;
+	ui_next_state.head_enter = false;
 	//-------------------------------
 }
 
@@ -2021,6 +2018,9 @@ void LCD_ToWarm(SNS_CFG *pSnsCfg, uint16_t num, uint8_t chan)
 	{
 	case 0:
 		SET_MIRAX(1);
+		ui_next_state.bar_load = false;
+		float time = 100 - (100.0/TIME_RTC_START) * TEST_TIMER_RUN_RTC(TIMER_RTC_WARM);
+		ui_set_bar_value(ui_BarLoad, time, LV_ANIM_OFF);
 		break;
 	default:
 	break;

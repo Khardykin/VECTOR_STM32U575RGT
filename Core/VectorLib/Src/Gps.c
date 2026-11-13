@@ -186,6 +186,7 @@ void Gps_DeInit(uint8_t init)
 {
 	Gps_Init_flag = 0;
 	Gps_flag_err = 0;
+	HAL_GPIO_WritePin(GPIOB, GNSS_RST_Pin, GPIO_PIN_RESET);
 }
 
 //===========================================================================================================================
@@ -281,6 +282,7 @@ uint8_t Gps_Init(SNS_CFG *Cfg_struct)
 	uint32_t Gps_type_nav = Cfg_struct->Config_common.Gps_type_nav & 0x7FFFF;
 	uint32_t Gps_type_start = (Cfg_struct->Config_common.Gps_type_nav >> 24) & 0x03;
 
+	HAL_GPIO_WritePin(GPIOB, GNSS_RST_Pin, GPIO_PIN_SET);
 	uint8_t detect_status = Gps_Auto_Detect_Chip();
 	// Если вернулся 0 — чип еще не определен, выходим и ждем следующего прохода в Gps_Run
 	if (detect_status == 0){
@@ -1089,6 +1091,7 @@ static void Gps_Reinit_Request(void)
 	Gps_Receive_flag_set(0);
 	buffer_uart_gps.TimeFlagRX    = 0;
 	buffer_uart_gps.count_byter_r = 0;
+	HAL_GPIO_WritePin(GPIOB, GNSS_RST_Pin, GPIO_PIN_RESET);
 }
 
 void Gps_Receive(void)

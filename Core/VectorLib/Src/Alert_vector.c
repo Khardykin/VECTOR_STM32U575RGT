@@ -1451,10 +1451,10 @@ static void battery_tick(void)
   if ((low != s_bat_low) || (crit != s_bat_crit))
   {
     Sys_Cfg_Lock();
-    if (crit != 0u) { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_BATTERY); }
-    else            { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_BATTERY); }
-    if (low  != 0u) { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_LOW_BATTERY); }
-    else            { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_LOW_BATTERY); }
+//    if (crit != 0u) { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_BATTERY); }
+//    else            { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_BATTERY); }
+//    if (low  != 0u) { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_LOW_BATTERY); }
+//    else            { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_LOW_BATTERY); }
     Sys_Cfg_Unlock();
 
     LOG_W(VLOG_M_SYS, "alert: battery %u mV (lim1=%u lim2=%u) -> low=%u crit=%u",

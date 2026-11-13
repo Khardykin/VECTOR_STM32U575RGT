@@ -368,7 +368,8 @@ typedef struct//
 }SNS_Working_Type;
 
 typedef struct//
-{   
+{
+	uint16_t			Build_type;
   uint32_t              State;                                                  // Состояние системы(Общий)
   uint32_t              StateErr;                                               // Ошибки
 

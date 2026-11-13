@@ -301,7 +301,7 @@ static void decode_button(uint8_t idx, volatile Button_variables *pb)
   {
     /* длинное удержание - ещё до отпускания */
     if ((last_short_click_ms[idx] != 0u) &&
-        ((now - last_short_click_ms[idx]) < TIME_DOUBLE_CLICK))
+        ((now - last_short_click_ms[idx]) < (TIME_DOUBLE_CLICK + BUTTON_PRESS_LONG)))
     {
       gest = (uint8_t)GEST_SHORT_LONG;
     }
@@ -320,13 +320,13 @@ static void decode_button(uint8_t idx, volatile Button_variables *pb)
       if ((last_short_click_ms[idx] != 0u) &&
           ((now - last_short_click_ms[idx]) < TIME_DOUBLE_CLICK))
       {
-        gest = (uint8_t)GEST_DOUBLE;
-        last_short_click_ms[idx] = 0u;
+    	  gest = (uint8_t)GEST_DOUBLE;
+    	  last_short_click_ms[idx] = 0u;
       }
       else
       {
-        gest = (uint8_t)GEST_SHORT;
-        last_short_click_ms[idx] = now;
+//    	  gest = (uint8_t)GEST_SHORT;
+    	  last_short_click_ms[idx] = (now == 0u) ? 1u : now;;
       }
       pb->button_count = 0u;
     }
@@ -335,6 +335,13 @@ static void decode_button(uint8_t idx, volatile Button_variables *pb)
   {
     gest = (uint8_t)GEST_FAKE;     /* короче антидребезга */
     pb->button_count = 0u;
+  }
+  else if ((last_short_click_ms[idx] != 0u) &&
+           (pb->button_flag == 0u) &&
+           ((now - last_short_click_ms[idx]) >= TIME_DOUBLE_CLICK))
+  {
+    gest                     = (uint8_t)GEST_SHORT;
+    last_short_click_ms[idx] = 0u;
   }
 
   if (gest != (uint8_t)GEST_NONE)
@@ -523,23 +530,23 @@ static void menu_navigate(void)
 
 	    uint8_t sub = 0;
 	    if (g2 == (uint8_t)GEST_SHORT){
-	    	menu_status.state_menu = scroll_down(menu_status.state_menu, MEASURE_PAGES_COUNT);
-//#if !CONFIG_G4
-//	    	if(menu_status.state_menu == 5){
-//	    		menu_status.state_menu = 4;
-//	    	}
-//#endif
+	    	menu_status.state_menu = scroll_down(menu_status.state_menu, MEASURE_PAGES_COUNT-1);
+#if !CONFIG_G4
+	    	if(menu_status.state_menu == 5){
+	    		menu_status.state_menu = 6;
+	    	}
+#endif
 	    }
 	    else if (g2 == (uint8_t)GEST_SHORT_LONG){
 	    	menu_status.state_menu = 7;
 	    }
 	    else if (g3 == (uint8_t)GEST_SHORT){
-	    	menu_status.state_menu = scroll_up(menu_status.state_menu, MEASURE_PAGES_COUNT);
-//#if !CONFIG_G4
-//	    	if(menu_status.state_menu == 5){
-//	    		menu_status.state_menu = 6;
-//	    	}
-//#endif
+	    	menu_status.state_menu = scroll_up(menu_status.state_menu, MEASURE_PAGES_COUNT-1);
+#if !CONFIG_G4
+	    	if(menu_status.state_menu == 5){
+	    		menu_status.state_menu = 4;
+	    	}
+#endif
 	    }
 	    else if (g3 == (uint8_t)GEST_LONG){
 	    	if(menu_status.state_menu == 5){
@@ -749,7 +756,7 @@ void Button_Run_Backlight(void)
 void Button_Run_Start(void)
 {
 	Button_Run_Backlight();
-	if(button1.button_count >= BUTTON_PRESS_LONG){
+	if(button3.button_count >= BUTTON_PRESS_LONG){
 		//------------------------------------------------------------------------
 //		SET_ON(POWER_ON_MCU);
 		//------------------------------------------------------------------------
@@ -827,8 +834,8 @@ void Button_Run_Start(void)
 	    log_post(TYPE_TURN_ON);
 #endif
 	}
-	else if(button1.button_flag == 0){
-		button1.button_count = 0;
+	else if(button3.button_flag == 0){
+		button3.button_count = 0;
 	}
 }
 

@@ -18,15 +18,13 @@
 #define MAX_ERROR_QUEUE 20
 //===========================================================================================================================
 #define SET_MIRAX(c)      ui_next_state.mirax   = !c
-#define SET_BAT_CHARGE(c) ui_next_state.battery_charge   = !c
 
 #define SET_LORA(c)       ui_next_state.lora    = !c
-#define SET_3G(c)
-#define SET_NBIOT(c)
+#define SET_LORA_MESH(c)  ui_next_state.lora_mesh    = !c
+#define SET_WIFI(c)        ui_next_state.wifi     = !c
 #define SET_GPS(c)        ui_next_state.gps     = !c
 #define SET_BLE(c)        ui_next_state.ble     = !c
 #define SET_EXCHANGE(c)   ui_next_state.exchange   	= !c
-#define SET_LTE(c)        ui_next_state.lte     = !c
 #define SET_LTE_VEC(c)    ui_next_state.lte_vec = !c
 
 //===========================================================================================================================
@@ -71,18 +69,17 @@ enum {
 //--------------------------------------------------------------------------------------------------------------
 typedef struct {
     bool mirax;
+    bool bar_load;
     bool info_str;
     bool head_enter;
-    bool head_out;
-    bool head_timer;
-    bool battery_charge;
 
     // Иконки индикации
     bool lora;
+    bool lora_mesh;
+    bool wifi;
     bool gps;
     bool ble;
     bool exchange;
-    bool lte;
     bool lte_vec;
 } ui_visibility_state_t;
 

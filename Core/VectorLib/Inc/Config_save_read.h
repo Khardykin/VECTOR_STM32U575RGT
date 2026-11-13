@@ -329,7 +329,6 @@ extern void     DefaultConfig(SNS_CFG *pSnsCfg);                                
 // внутренней flash (FLASH_ADDRESS_BUILD_TYPE). КОНТЕКСТ: Measure Task
 // (Vector_Run_Pre_Init). Возврат: нет.
 extern void     Init_Build_Type(void);
-extern uint16_t current_build_type;      // бренд: MIRAX=0 / BACS=1 (рантайм)
 // log_ptr_load(): скан страницы SF_LOG_PTR (свежая запись = max seq c валидным
 // CRC И маркером формата v2 в поле pad; записи прежней прошивки (pad=0xFFFF)
 // игнорируются - «миграции нет», LOG_FORMAT.md §2). apply=1 - перенести

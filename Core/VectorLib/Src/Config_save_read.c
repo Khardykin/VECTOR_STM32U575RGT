@@ -101,8 +101,8 @@ static uint16_t crc16_ptr(const log_ptr_rec_t *r)
 // КОНТЕКСТ: Measure Task (Vector_Run_Pre_Init, первым делом). Возврат: нет.
 void Init_Build_Type(void)
 {
-	uint16_t v = *(volatile uint16_t *)FLASH_ADDRESS_BUILD_TYPE;
-	current_build_type = ((v == (uint16_t)MIRAX) || (v == (uint16_t)BACS))
+	uint16_t v = Sns_Cfg_struct.Config_common.Build_type;
+	Sns_Cfg_struct.Config_common.Build_type = ((v == (uint16_t)MIRAX) || (v == (uint16_t)BACS))
 						 ? v : (uint16_t)MIRAX;
 }
 

@@ -328,7 +328,7 @@ void EXTI1_IRQHandler(void)
   /* USER CODE BEGIN EXTI1_IRQn 0 */
 
   /* USER CODE END EXTI1_IRQn 0 */
-  HAL_GPIO_EXTI_IRQHandler(BUTTON_1_Pin);
+  HAL_GPIO_EXTI_IRQHandler(BUTTON_3_Pin);
   /* USER CODE BEGIN EXTI1_IRQn 1 */
 
   /* USER CODE END EXTI1_IRQn 1 */
@@ -342,7 +342,7 @@ void EXTI2_IRQHandler(void)
   /* USER CODE BEGIN EXTI2_IRQn 0 */
 
   /* USER CODE END EXTI2_IRQn 0 */
-  HAL_GPIO_EXTI_IRQHandler(BUTTON_2_Pin);
+  HAL_GPIO_EXTI_IRQHandler(BUTTON_1_Pin);
   /* USER CODE BEGIN EXTI2_IRQn 1 */
 
   /* USER CODE END EXTI2_IRQn 1 */
@@ -356,10 +356,38 @@ void EXTI3_IRQHandler(void)
   /* USER CODE BEGIN EXTI3_IRQn 0 */
 
   /* USER CODE END EXTI3_IRQn 0 */
-  HAL_GPIO_EXTI_IRQHandler(BUTTON_3_Pin);
+  HAL_GPIO_EXTI_IRQHandler(BUTTON_2_Pin);
   /* USER CODE BEGIN EXTI3_IRQn 1 */
 
   /* USER CODE END EXTI3_IRQn 1 */
+}
+
+/**
+  * @brief This function handles EXTI Line8 interrupt.
+  */
+void EXTI8_IRQHandler(void)
+{
+  /* USER CODE BEGIN EXTI8_IRQn 0 */
+
+  /* USER CODE END EXTI8_IRQn 0 */
+  HAL_GPIO_EXTI_IRQHandler(CHARGE_STATE_Pin);
+  /* USER CODE BEGIN EXTI8_IRQn 1 */
+
+  /* USER CODE END EXTI8_IRQn 1 */
+}
+
+/**
+  * @brief This function handles EXTI Line11 interrupt.
+  */
+void EXTI11_IRQHandler(void)
+{
+  /* USER CODE BEGIN EXTI11_IRQn 0 */
+
+  /* USER CODE END EXTI11_IRQn 0 */
+  HAL_GPIO_EXTI_IRQHandler(ACCEL_INT_Pin);
+  /* USER CODE BEGIN EXTI11_IRQn 1 */
+
+  /* USER CODE END EXTI11_IRQn 1 */
 }
 
 /**

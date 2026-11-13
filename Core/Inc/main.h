@@ -118,9 +118,9 @@ void Uart_SetBaudrate(UART_HandleTypeDef *huart, uint32_t baud);
 #define USART_RF			(huart4)
 
 
-#define BUTTON_1_EXTI_LINE 	LL_EXTI_LINE_1
-#define BUTTON_2_EXTI_LINE 	LL_EXTI_LINE_2
-#define BUTTON_3_EXTI_LINE 	LL_EXTI_LINE_3
+#define BUTTON_1_EXTI_LINE 	LL_EXTI_LINE_2
+#define BUTTON_2_EXTI_LINE 	LL_EXTI_LINE_3
+#define BUTTON_3_EXTI_LINE 	LL_EXTI_LINE_1
 #define ACCEL_INT_EXINT_LINE LL_EXTI_LINE_11
 
 #define error_status 		ErrorStatus
@@ -151,12 +151,12 @@ void Error_Handler(void);
 #define CS_FLASH_GPIO_Port GPIOA
 #define STATE_LED_Pin GPIO_PIN_0
 #define STATE_LED_GPIO_Port GPIOB
-#define BUTTON_1_Pin GPIO_PIN_1
+#define BUTTON_3_Pin GPIO_PIN_1
+#define BUTTON_3_GPIO_Port GPIOB
+#define BUTTON_3_EXTI_IRQn EXTI1_IRQn
+#define BUTTON_1_Pin GPIO_PIN_2
 #define BUTTON_1_GPIO_Port GPIOB
-#define BUTTON_1_EXTI_IRQn EXTI1_IRQn
-#define BUTTON_2_Pin GPIO_PIN_2
-#define BUTTON_2_GPIO_Port GPIOB
-#define BUTTON_2_EXTI_IRQn EXTI2_IRQn
+#define BUTTON_1_EXTI_IRQn EXTI2_IRQn
 #define LCD_DC_Pin GPIO_PIN_10
 #define LCD_DC_GPIO_Port GPIOB
 #define LCD_RST_Pin GPIO_PIN_12
@@ -169,6 +169,7 @@ void Error_Handler(void);
 #define ALRT_GPIO_Port GPIOC
 #define CHARGE_STATE_Pin GPIO_PIN_8
 #define CHARGE_STATE_GPIO_Port GPIOC
+#define CHARGE_STATE_EXTI_IRQn EXTI8_IRQn
 #define SD_MODE_Pin GPIO_PIN_9
 #define SD_MODE_GPIO_Port GPIOC
 #define ALARM_LED_1_Pin GPIO_PIN_11
@@ -181,13 +182,12 @@ void Error_Handler(void);
 #define USART3_TX_BLE_GPIO_Port GPIOC
 #define ACCEL_INT_Pin GPIO_PIN_11
 #define ACCEL_INT_GPIO_Port GPIOC
+#define ACCEL_INT_EXTI_IRQn EXTI11_IRQn
 #define BLE_RESET_Pin GPIO_PIN_12
 #define BLE_RESET_GPIO_Port GPIOC
-#define BUTTON_3_Pin GPIO_PIN_3
-#define BUTTON_3_GPIO_Port GPIOB
-#define BUTTON_3_EXTI_IRQn EXTI3_IRQn
-#define GNSS_MODE_Pin GPIO_PIN_4
-#define GNSS_MODE_GPIO_Port GPIOB
+#define BUTTON_2_Pin GPIO_PIN_3
+#define BUTTON_2_GPIO_Port GPIOB
+#define BUTTON_2_EXTI_IRQn EXTI3_IRQn
 #define GNSS_RST_Pin GPIO_PIN_5
 #define GNSS_RST_GPIO_Port GPIOB
 

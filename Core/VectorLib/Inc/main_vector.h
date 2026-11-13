@@ -201,8 +201,6 @@ void    sensors_read(void);             /* из Vector_Run_Measure (1 с)       
 uint8_t sensors_rotation_changed(void);
 uint8_t sensors_fall_event(void);       /* 1 = было падение, флаг сбрасывается */
 
-void Avis_Battery_System(void);
-
 /* --- такты прибора -------------------------------------------------------- */
 /* Блокировка конфигурации (п.65): RMW-секции Sns_Cfg_struct (биты State,
    PeriodTimeLora, маски, downlink LoRa, сброс к заводским, будущий

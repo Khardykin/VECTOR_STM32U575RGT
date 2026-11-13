@@ -573,41 +573,43 @@ static void measure_task_function(ULONG thread_input)
   {
     tasks_status.cnt_measure_passes++;
 
-    /* Такт 1 с ставит Timer_Tick_1ms() (TIM3); флаг сбрасываем сами - как в
-       measure_task_function на других приборах.                            */
-    if (timer.flag_1s)
-    {
-      timer.flag_1s = 0;
+    if(device_turn != DEVICE_TURNED_OFF){
+		/* Такт 1 с ставит Timer_Tick_1ms() (TIM3); флаг сбрасываем сами - как в
+		   measure_task_function на других приборах.                            */
+		if (timer.flag_1s)
+		{
+		  timer.flag_1s = 0;
 
-      tasks_status.cnt_measure_runs++;
-      tasks_status.last_measure_ms = VTICK_MS();
+		  tasks_status.cnt_measure_runs++;
+		  tasks_status.last_measure_ms = VTICK_MS();
 
-      Vector_Run_Measure();
-#if VECTOR_SND_LOG_TEST
-      SndLogTest_Run1s();   /* [ВРЕМЕННЫЙ ТЕСТ] звук+журнал - удалить после проверки */
-#endif
-    }
-    Vector_RunFlashMemory();
+		  Vector_Run_Measure();
+	#if VECTOR_SND_LOG_TEST
+		  SndLogTest_Run1s();   /* [ВРЕМЕННЫЙ ТЕСТ] звук+журнал - удалить после проверки */
+	#endif
+		}
+		Vector_RunFlashMemory();
 
-    /* --- быстрый ритм 100 мс (ALERT_TICK_MS): детектор движения + статусы ---
-       Опрос акселерометра именно здесь: владелец шины I2C1 - Measure Task
-       (sensors_init/sensors_read), а генераторы INT1/INT2 уже заняты
-       6D-ориентацией и free-fall, поэтому движение ловим опросом 10 Гц.
-       Alert_Tick() ведёт счёт неподвижности (окно + предаварийный таймер),
-       свежесть устройств комплекта (СИЗ/ГА/браслет), забирает downlink LoRa
-       (бит эвакуации + блок Message), считает ошибки прибора/батарею и
-       решает, КАКОЙ статус сейчас оповещает (арбитраж), а сами фазы
-       свет/звук/вибро крутит Alert_IndicationTick() в LVGL Task.
-       Из секундного такта это не сделать: снятие статуса движением и отсчёт
-       «времени на реакцию» запаздывали бы до 1 с.                          */
-    if (VTICK_ELAPSED_MS(alert_tick_ms) >= ALERT_MOTION_POLL_MS)
-    {
-      alert_tick_ms = VTICK_MS();
-#if CONFIG_LIS3DH
-      (void)lis3dh_motion_poll();
-#endif
-      Alert_Tick();
-    }
+		/* --- быстрый ритм 100 мс (ALERT_TICK_MS): детектор движения + статусы ---
+		   Опрос акселерометра именно здесь: владелец шины I2C1 - Measure Task
+		   (sensors_init/sensors_read), а генераторы INT1/INT2 уже заняты
+		   6D-ориентацией и free-fall, поэтому движение ловим опросом 10 Гц.
+		   Alert_Tick() ведёт счёт неподвижности (окно + предаварийный таймер),
+		   свежесть устройств комплекта (СИЗ/ГА/браслет), забирает downlink LoRa
+		   (бит эвакуации + блок Message), считает ошибки прибора/батарею и
+		   решает, КАКОЙ статус сейчас оповещает (арбитраж), а сами фазы
+		   свет/звук/вибро крутит Alert_IndicationTick() в LVGL Task.
+		   Из секундного такта это не сделать: снятие статуса движением и отсчёт
+		   «времени на реакцию» запаздывали бы до 1 с.                          */
+		if (VTICK_ELAPSED_MS(alert_tick_ms) >= ALERT_MOTION_POLL_MS)
+		{
+		  alert_tick_ms = VTICK_MS();
+	#if CONFIG_LIS3DH
+		  (void)lis3dh_motion_poll();
+	#endif
+		  Alert_Tick();
+		}
+  }
 
     /* --- сервис: soft reset, стирание flash, конец режима обмена, батарея и
        сверка часов раз в секунду. Перенесено из receiver_task (решение автора);
@@ -909,7 +911,16 @@ void Vector_Run_Pre_Init(void)
      Прежнее DEVICE_TURNED_ON здесь означало бы «включён без инициализации
      экрана»: LCD_Init() кроме Button_Run_Start не зовёт никто, а Menu_Draw()
      при LCD_Get_flag_init() == 0 выходит сразу - картинки бы не было.     */
+#if 1
   device_turn = DEVICE_TURNED_OFF;
+#else
+  device_turn = DEVICE_TURNED_ON;
+#if (CONFIG_TYPE_LCD_TFT != 0)
+		if (LCD_Get_flag_init() == 0u){
+			LCD_Init();
+		}
+#endif
+#endif
 }
 
 /* Периодика прибора (1 с): измерения, затем модули обмена.
@@ -1079,18 +1090,6 @@ void Vector_RunFlashMemory(void)
 #endif
 }
 
-/* Обслуживание батареи/зарядки (секундный ритм из Vector_Options_System по
-   flag_start_work_bat_sys). WEAK-заглушка: перенесите сюда машину состояний
-   Avis (Battery_System): источник - CHARGE_STATE (PC8, EXTI8 настроен, но
-   IRQ в кубе НЕ включён - SYSTEM.md п.9.7), данные - sensors_status.
-   battery_charge_percent/volt (MAX17048), пороги - BAT_MIN/BAT_MAX/
-   BAT_LIM_1/BAT_LIM_2 (Config_common), биты - ST_COMMON_BIT_BAT_CHARGE /
-   CRITICAL_BATTERY / CRITICAL_LOW_BATTERY, звук/LED - через API плеера и
-   backlight. КОНТЕКСТ: поток measure_task (зовётся из Vector_Options_System). */
-__attribute__((weak)) void Avis_Battery_System(void)
-{
-}
-
 /* Сервисные действия: вызываются из потока измерений каждый проход (50 мс).
    Аналог Avis_Options_System(). КОНТЕКСТ: поток measure_task (перенесено из
    receiver_task решением автора).                                            */
@@ -1123,7 +1122,6 @@ void Vector_Options_System(void)
 	//----------------------------------------------------------------------------
 	if(timer.flag_start_work_bat_sys){
 		timer.flag_start_work_bat_sys = 0;
-		Avis_Battery_System();
 		if(RTC_ReadTime() != Sns_Cfg_struct.Working_data.working_hours){
 			RTC_WriteTime(Sns_Cfg_struct.Working_data.working_hours);
 		}
