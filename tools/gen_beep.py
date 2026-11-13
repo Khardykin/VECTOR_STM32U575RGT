@@ -68,10 +68,10 @@ def main():
     ap.add_argument("--freq", type=float, default=1200.0, help="частота тона, Гц")
     ap.add_argument("--ms", type=int, default=100, help="длительность одного тона, мс")
     ap.add_argument("--gap", type=int, default=40, help="зазор между тонами, мс")
-    ap.add_argument("--ntones", type=int, default=2, help="сколько тонов")
+    ap.add_argument("--ntones", type=int, default=1, help="сколько тонов (1 = писк одной частоты)")
     ap.add_argument("--amp", type=int, default=18000, help="амплитуда (0..32767)")
     ap.add_argument("--out", type=Path,
-                    default=Path("Core/VectorLib/Audio/Src/audio_beep.c"))
+                    default=Path("Core/VectorLib/Src/Audio/Src/audio_beep.c"))
     a = ap.parse_args()
 
     pcm = []
