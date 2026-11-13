@@ -1598,7 +1598,7 @@ static void meas_fill(uint8_t mode, char *value, char *name, char *units)
 		/* °C×100 -> ×10: один знак после точки (решение автора) */
 		if ((sensors_status.Sensors_ok & SENSORS_OK_BME) != 0u)
 		{
-			meas_fmt_x10(value, MEAS_VALUE_SZ, meas_f2i(sensors_status.Temperature));
+			meas_fmt_int(value, MEAS_VALUE_SZ, meas_f2i(sensors_status.Temperature));
 		}
 		else { snprintf(value, MEAS_VALUE_SZ, "%s", MEAS_NO_DATA); }
 		snprintf(name,  MEAS_NAME_SZ,  "%s", "T");
@@ -1620,7 +1620,7 @@ static void meas_fill(uint8_t mode, char *value, char *name, char *units)
 		/* гПа×10 = кПа×100 -> ×10: "101.3" (единицы кПа, решение автора) */
 		if ((sensors_status.Sensors_ok & SENSORS_OK_BME) != 0u)
 		{
-			meas_fmt_x10(value, MEAS_VALUE_SZ, meas_f2i(sensors_status.Pressure));
+			meas_fmt_int(value, MEAS_VALUE_SZ, meas_f2i(sensors_status.Pressure));
 		}
 		else { snprintf(value, MEAS_VALUE_SZ, "%s", MEAS_NO_DATA); }
 		/* Подписи T/H/P, «°C», «%», «AQI», «RSSI:» - международные, в таблицы

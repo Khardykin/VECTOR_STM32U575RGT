@@ -4,10 +4,14 @@
   * @brief ОСНОВА слоя меню: машина экранов + декодер жестов кнопок
   *
   *          Логика кнопок перенесена из Button_1/2/3_Menu (docs/Avis_Menu_2.c)
-  *          один-в-один по смыслу, но БЕЗ блокирующих ожиданий и без графики:
+  *          по смыслу, но БЕЗ блокирующих ожиданий и без графики:
   *            1) декодер жеста из button_count/button_flag (EXTI ставит флаг и
   *               обнуляет счёт, Timer_Tick_1ms() на TIM3 1 кГц инкрементирует -
-  *               единица = 1 мс); LONG срабатывает ДО отпускания (как в Avis);
+  *               единица = 1 мс). LONG и SHORT_LONG срабатывают ПО ТАЙМЕРУ, пока
+  *               кнопка ещё зажата (по ним стартует обратный отсчёт), после них
+  *               отпускание подавляется (long_fired); SHORT выдаётся ОТЛОЖЕННО -
+  *               через VECTOR_MENU_DOUBLE_MS после отпускания, если второй клик
+  *               не пришёл (двойное не должно давать лишнее одиночное);
   *            2) любой жест перезапускает TIMER_RTC_MAIN_RESET - авто-возврат
   *               на SCREEN_MAIN;
   *            3) switch(menu_status.screen) - навигация: Button1 вход/назад,
@@ -15,11 +19,14 @@
   *               экранов и пунктов определит автор - пока каркас на имеющихся
   *               экранах SquareLine (см. menu_screens[]);
   *            3a) SCREEN_START - заставка/прогрев (указание автора): работает
-  *               ТОЛЬКО выключение (LONG Button2 -> Menu_TurnOff, аналог Avis
+  *               ТОЛЬКО выключение (LONG Button3 -> Menu_TurnOff, аналог Avis
   *               TurnOffSystem) и SOS (удержание Button1 3 с, button_sos ->
   *               Button_Sos); выход с экрана - по истечении TIMER_RTC_WARM
   *               (TIME_RTC_START, 60 с): device_turn = DEVICE_TURNED_ON и
-  *               SCREEN_MEASURE. Авто-возврат на этом экране отключён;
+  *               SCREEN_MEASURE. Авто-возврат на этом экране отключён.
+  *               Включение и выключение прибора - ОДНА кнопка Button3:
+  *               выключен -> Button_Run_Start (LONG), включён -> Menu_TurnOff;
+  *            3b) Button3 SHORT_LONG на SCREEN_MEASURE - вход в SCREEN_MENU;
   *            4) Menu_Draw() - аналог DisplayIndication из Avis (не WEAK с
   *               коммита автора «up menu tft»): ЦЕЛИКОМ перерисовывает экран
   *               каждый проход - время, LCD_Fill_Template (поворот/язык/смена
@@ -28,6 +35,12 @@
   *               ui_apply_visibility. Хука «входа на экран» НЕ нужна
   *               (замечание автора п.1) - шаблон грузится внутри
   *               LCD_Fill_Template при смене menu_status.screen.
+  *
+  *          ОДНА ФИЗИЧЕСКАЯ КНОПКА - ДВЕ СТРУКТУРЫ (PB1): button1 (жесты
+  *          навигации) и button_sos (SOS, свой порог 3 с). Декодер гасит только
+  *          button1, button_sos продолжает считать, пока кнопка зажата. При
+  *          включении/выключении и отмене отсчёта обе гасятся
+  *          Menu_ResetButtons(), чтобы не остались «призрачные» жесты/SOS.
   *
   *          КОНТЕКСТ (замечание автора п.5 - по образцу
   *          indication_task_function из Avis_main.c): Menu_Init() - Measure
@@ -62,9 +75,14 @@ static uint8_t state_flashing_system = 0;
 #define BUTTON_PRESS_SHORT  ((uint32_t)VECTOR_MENU_PRESS_SHORT_MS)
 #define BUTTON_PRESS_LONG   ((uint32_t)VECTOR_MENU_PRESS_LONG_MS)
 #define TIME_DOUBLE_CLICK   ((uint32_t)VECTOR_MENU_DOUBLE_MS)
-/* SOS: удержание button_sos (зеркало Button1 - stm32u5xx_it.c ставит его флаги
-   вместе с button1, счётчик инкрементирует Timer_Tick_1ms) дольше обычного
-   LONG, поэтому SOS не спорит с жестами меню (Avis: BUTTON_PRESS_LONG_SOS). */
+/* Период опроса меню (Menu_Run по timer.flag_100ms): компенсирует квантование
+   начала нажатия и окна DOUBLE, иначе настоящий двойной клик с паузой
+   250-400 мс распадался бы на два одиночных. */
+#define MENU_POLL_MS        ((uint32_t)VECTOR_MENU_POLL_MS)
+/* SOS: удержание button_sos (ВТОРАЯ структура на ту же PB1, что и button1:
+   stm32u5xx_it.c ставит его флаги вместе с button1, счётчик инкрементирует
+   Timer_Tick_1ms) дольше обычного LONG, поэтому SOS не спорит с жестами меню
+   (Avis: BUTTON_PRESS_LONG_SOS). */
 #define BUTTON_PRESS_SOS    ((uint32_t)VECTOR_MENU_PRESS_SOS_MS)
 
 /* ui_lv_init() (lv_init + lv_display_create + lv_i18n + ui_init + экраны
@@ -96,6 +114,14 @@ static uint8_t state_flashing_system = 0;
 #define MEASURE_PAGES_COUNT (1u)
 #endif
 
+/* Номера особых страниц meas_pages[] (TFT_indicator.c, порядок задан автором):
+   5 и 6 - ОДНА страница «Сообщения» (голосовые | чат), различаются только
+   подсветкой; 7 - страница ошибок, в КОЛЬЦО СКРОЛЛА НЕ ВХОДИТ (открывается
+   только g2 SHORT_LONG). Кольцо листания - 0..VECTOR_MEASURE_PAGES-2.       */
+#define MEAS_PAGE_VOICE     ((uint8_t)5)
+#define MEAS_PAGE_CHAT      ((uint8_t)6)
+#define MEAS_PAGE_ERR       ((uint8_t)7)
+
 /* Число страниц/строк подэкранов меню определяет слой индикации
    (TFT_indicator): info_total_pages считает LCD_SubMenuInfo по числу строк,
    строки настроек - Panel1..3 (LCD_SubMenuSetting). Без экрана листать нечего. */
@@ -107,10 +133,29 @@ static uint8_t state_flashing_system = 0;
 #define MENU_SETTING_ROWS   (1u)
 #endif
 
-/* Последний момент короткого нажатия по каждой кнопке (для DOUBLE/SHORT_LONG).
-   В Avis это button.last_short_click_time - поле структуры кнопки; у нас
-   Button_variables без него, поэтому держим здесь (владелец - Menu_Run).    */
-static uint32_t last_short_click_ms[3] = {0u, 0u, 0u};
+/* Состояние декодера ОДНОЙ кнопки (владелец - Menu_Run, поток LVGL Task).
+   В Avis аналогичное жило в полях Button_variables (last_short_click_time);
+   у нас структура кнопки общая с ISR, поэтому декодер держит своё состояние
+   отдельно - по индексу кнопки 0..2 (Button1..Button3).
+
+   ПОЧЕМУ ТАК (опрос Menu_Run - раз в 100 мс):
+     button_count идёт 1:1 мс (TIM3), поэтому начало нажатия восстанавливается
+     точно как now - button_count (на отпускании счётчик заморожен и равен
+     длительности); сам now квантуется 100-мс периодом, отсюда MENU_POLL_MS
+     в окне DOUBLE.
+     press_start_ms  - начало текущего/последнего нажатия;
+     pending_short_ms- момент завершения ПЕРВОГО клика: !=0 - ждём второй,
+                       SHORT ещё не выдан (отложенный SHORT);
+     press_active    - фронт нажатия уже обработан (сброс long_fired);
+     double_armed    - второй клик начался внутри окна DOUBLE (его отпускание
+                       даст DOUBLE даже если окно успело истечь, пока он зажат);
+     long_fired      - LONG/SHORT_LONG выдан по таймеру: отпускание этой кнопки
+                       подавляется и НЕ заряжает pending_short_ms.            */
+static uint32_t press_start_ms[3]   = {0u, 0u, 0u};
+static uint32_t pending_short_ms[3] = {0u, 0u, 0u};
+static uint8_t  press_active[3]     = {0u, 0u, 0u};
+static uint8_t  double_armed[3]     = {0u, 0u, 0u};
+static uint8_t  long_fired[3]       = {0u, 0u, 0u};
 
 /* ============================================================================
  *                              служебные
@@ -127,6 +172,66 @@ static uint8_t scroll_up(uint8_t current, uint8_t max)
 {
   if (max == 0u) { return 0u; }
   return (uint8_t)((current == 0u) ? (max - 1u) : (current - 1u));
+}
+
+/* DOUBLE без отдельного спецдействия на текущем экране = обычный SHORT
+   (требование автора): двойное нажатие не должно проглатываться впустую.
+   Когда для экрана появится своё действие DOUBLE, его ветка ставится в
+   menu_navigate() ДО этой нормализации.                                    */
+static uint8_t menu_as_short(uint8_t gest)
+{
+  return (gest == (uint8_t)GEST_DOUBLE) ? (uint8_t)GEST_SHORT : gest;
+}
+
+/* Страница экрана измерений доступна в текущей сборке? Набор зависит от
+   CONFIG_*: голосовые сообщения (стр. 5) есть только с CONFIG_G4, чат
+   (стр. 6) - всегда; страница ошибок (стр. 7) в кольцо скролла не входит
+   (открывается отдельным жестом g2 SHORT_LONG).                            */
+static uint8_t meas_page_enabled(uint8_t page)
+{
+  if (page >= MEASURE_PAGES_COUNT) { return 0u; }
+  if (page == MEAS_PAGE_ERR)       { return 0u; }
+#if !CONFIG_G4
+  if (page == MEAS_PAGE_VOICE)     { return 0u; }
+#endif
+  return 1u;
+}
+
+/* Шаг по кольцу страниц экрана измерений с пропуском недоступных: dir>0 -
+   вниз, dir<0 - вверх. Кольцо - 0..MEASURE_PAGES_COUNT-2 (стр. ошибок не
+   входит); из стр. 7 «вниз» попадаем на 0, «вверх» - на последнюю страницу
+   кольца. Первый/последний элементы обрабатываются как обычно (модуль), при
+   одной доступной странице или отсутствии доступных возвращаем cur - без
+   зацикливания. КОНТЕКСТ: поток LVGL Task (menu_navigate).                  */
+static uint8_t meas_page_step(uint8_t cur, int8_t dir)
+{
+  uint8_t ring;
+  uint8_t p;
+  uint8_t n;
+
+  if (MEASURE_PAGES_COUNT < 2u) { return 0u; }
+  ring = (uint8_t)(MEASURE_PAGES_COUNT - 1u);      /* 0..ring-1 - кольцо      */
+
+  /* из страницы ошибок (вне кольца) - на ближайший край кольца */
+  if (cur < ring)
+  {
+    p = cur;
+  }
+  else
+  {
+    p = (dir > 0) ? (uint8_t)(ring - 1u) : 0u;
+  }
+
+  for (n = 0u; n < ring; n++)
+  {
+    p = (dir > 0) ? (uint8_t)((p + 1u) % ring)
+                  : (uint8_t)((p == 0u) ? (ring - 1u) : (p - 1u));
+    if (meas_page_enabled(p) != 0u)
+    {
+      return p;
+    }
+  }
+  return cur;     /* ни одной доступной страницы - остаёмся на месте */
 }
 
 /* Аналог DisplayIndication из Avis: ЦЕЛИКОМ обновляет экран каждый проход.
@@ -248,8 +353,16 @@ void Menu_GoTo(uint8_t screen)
   menu_status.state_submenu   = 0u;
   menu_status.screen_since_ms = VTICK_MS();
   menu_status.cnt_screens++;
-  if(screen == SCREEN_MEASURE){
-	  menu_status.state_menu = 0;
+  /* state_menu - ОДНО поле на две сущности (экономия памяти, структура для
+     Expressions не меняется): страница измерений и курсор меню. При ЛЮБОМ
+     переходе между SCREEN_MEASURE и SCREEN_MENU сбрасываем его в 0, чтобы
+     номер страницы не наследовался курсором меню и наоборот. Возврат из
+     INFO/SETTING в MENU курсор сохраняет - это не переход MEASURE<->MENU. */
+  if ((screen == (uint8_t)SCREEN_MEASURE) ||
+      ((screen == (uint8_t)SCREEN_MENU) &&
+       (menu_status.screen_prev == (uint8_t)SCREEN_MEASURE)))
+  {
+    menu_status.state_menu = 0u;
   }
   /* Зеркало для слоя индикации: LCD_Fill_Template выбирает экран по
      IS_STATE_SCREEN() (Avis: TO_GO_STATE_SCREEN в Button_*_Menu).       */
@@ -285,71 +398,190 @@ static void set_gesture(uint8_t idx, uint8_t gest)
   menu_status.last_gesture_ms = VTICK_MS();
 }
 
+/* Начало нажатия по счётчику: на отпускании button_count заморожен и равен
+   длительности нажатия, поэтому начало = now - count (погрешность - только
+   квантование now периодом опроса меню). Защита от unsigned-underflow в первые
+   миллисекунды после старта (now < count). КОНТЕКСТ: поток.                   */
+static uint32_t press_start_of(uint32_t now, uint32_t count)
+{
+  return (count <= now) ? (now - count) : 0u;
+}
+
 /* ============================================================================
  *                      ДЕКОДЕР ЖЕСТА ОДНОЙ КНОПКИ
- * Пороги - как в Avis Button_1_Menu(): count >= BUTTON_PRESS_LONG -> LONG
- * (срабатывает ДО отпускания, button_flag гасится, чтобы не повторился);
- * count > BUTTON_PRESS_SHORT и кнопка отпущена (!button_flag) -> SHORT, а
- * если от предыдущего SHORT прошло меньше TIME_DOUBLE_CLICK -> DOUBLE.
- * ============================================================================ */
+ *
+ * Пороги по-прежнему из Avis Button_1/2/3_Menu, но с двумя отличиями:
+ *   - LONG и SHORT_LONG срабатывают ПО ТАЙМЕРУ (count >= BUTTON_PRESS_LONG),
+ *     пока кнопка ещё зажата: по ним сразу запускается обратный отсчёт
+ *     (выключение прибора, SOS). После срабатывания long_fired=1 - отпускание
+ *     этой кнопки подавляется (ни SHORT, ни DOUBLE, ни pending);
+ *   - SHORT выдаётся ОТЛОЖЕННО: сначала отпускание только запоминается
+ *     (pending_short_ms), а сам SHORT формируется, когда окно DOUBLE истекло,
+ *     а второй клик так и не пришёл. Иначе двойное нажатие давало бы лишнее
+ *     одиночное действие (требование автора).
+ *
+ * Окно DOUBLE измеряется от НАЧАЛА второго нажатия (press_start = now - count;
+ * на отпускании count заморожен и равен длительности), а не от момента опроса
+ * отпускания - из-за 100-мс опроса Menu_Run() это иначе теряло бы настоящие
+ * двойные клики с паузой 250-400 мс. MENU_POLL_MS компенсирует квантование.
+ * DOUBLE = короткий+короткий; SHORT_LONG = короткий+длинный (в том же окне).
+ *
+ * Одному вызову соответствует не более одного жеста: ветки взаимоисключающие,
+ * протухшие состояния гасятся в той же ветке, где обрабатываются.
+ * КОНТЕКСТ: поток LVGL Task (Menu_Run каждый проход, 100 мс).                */
 static void decode_button(uint8_t idx, volatile Button_variables *pb)
 {
-  uint32_t now = GetTick();
+  uint32_t now  = GetTick();
   uint8_t  gest = (uint8_t)GEST_NONE;
 
-  if (pb->button_count >= BUTTON_PRESS_LONG)
+  if (pb->button_flag != 0u)
   {
-    /* длинное удержание - ещё до отпускания */
-    if ((last_short_click_ms[idx] != 0u) &&
-        ((now - last_short_click_ms[idx]) < (TIME_DOUBLE_CLICK + BUTTON_PRESS_LONG)))
+    /* ---- кнопка зажата: начало нажатия + взвод двойного + LONG по таймеру */
+    press_start_ms[idx] = press_start_of(now, pb->button_count);
+
+    if (press_active[idx] == 0u)
     {
-      gest = (uint8_t)GEST_SHORT_LONG;
+      press_active[idx] = 1u;
+      long_fired[idx]   = 0u;          /* новый фронт нажатия - новый жест   */
     }
-    else
+
+    /* второй клик начался внутри окна DOUBLE? */
+    if ((pending_short_ms[idx] != 0u) &&
+        ((press_start_ms[idx] - pending_short_ms[idx]) <=
+         (TIME_DOUBLE_CLICK + MENU_POLL_MS)))
     {
-      gest = (uint8_t)GEST_LONG;
+      double_armed[idx] = 1u;
     }
-    pb->button_flag          = 0u;
-    pb->button_count         = 0u;
-    last_short_click_ms[idx] = 0u;
+
+    if (pb->button_count >= BUTTON_PRESS_LONG)
+    {
+      /* длинное удержание фиксируем сразу, не дожидаясь отпускания */
+      gest = (((pending_short_ms[idx] != 0u) || (double_armed[idx] != 0u))
+              ? (uint8_t)GEST_SHORT_LONG : (uint8_t)GEST_LONG);
+      pending_short_ms[idx] = 0u;      /* первый клик вошёл в SHORT_LONG     */
+      double_armed[idx]     = 0u;
+      long_fired[idx]       = 1u;      /* отпускание больше не даст жестов   */
+      press_active[idx]     = 0u;
+      /* гасим флаг и счёт: иначе LONG выстрелит снова на следующем проходе */
+      pb->button_flag       = 0u;
+      pb->button_count      = 0u;
+    }
   }
-  else if (pb->button_count > BUTTON_PRESS_SHORT)
+  else
   {
-    if (pb->button_flag == 0u)     /* отпущена - жест завершён */
+    /* ---- кнопка отпущена (или флаг уже погашен длинным нажатием) */
+    if (pb->button_count > BUTTON_PRESS_SHORT)
     {
-      if ((last_short_click_ms[idx] != 0u) &&
-          ((now - last_short_click_ms[idx]) < TIME_DOUBLE_CLICK))
+      if (long_fired[idx] != 0u)
       {
-    	  gest = (uint8_t)GEST_DOUBLE;
-    	  last_short_click_ms[idx] = 0u;
+        /* хвост LONG/SHORT_LONG: ничего не генерируем и pending не заряжаем */
+        long_fired[idx]   = 0u;
+        press_active[idx] = 0u;
       }
       else
       {
-//    	  gest = (uint8_t)GEST_SHORT;
-    	  last_short_click_ms[idx] = (now == 0u) ? 1u : now;;
+        press_start_ms[idx] = press_start_of(now, pb->button_count);
+
+        if ((double_armed[idx] != 0u) ||
+            ((pending_short_ms[idx] != 0u) &&
+             ((press_start_ms[idx] - pending_short_ms[idx]) <=
+              (TIME_DOUBLE_CLICK + MENU_POLL_MS))))
+        {
+          gest = (uint8_t)GEST_DOUBLE;
+          pending_short_ms[idx] = 0u;
+        }
+        else
+        {
+          /* первый клик: SHORT пока НЕ выдаём - ждём окно DOUBLE */
+          pending_short_ms[idx] = (now == 0u) ? 1u : now;
+        }
+        double_armed[idx] = 0u;
+        press_active[idx] = 0u;
       }
       pb->button_count = 0u;
     }
-  }
-  else if ((pb->button_count > 0u) && (pb->button_flag == 0u))
-  {
-    gest = (uint8_t)GEST_FAKE;     /* короче антидребезга */
-    pb->button_count = 0u;
-  }
-  else if ((last_short_click_ms[idx] != 0u) &&
-           (pb->button_flag == 0u) &&
-           ((now - last_short_click_ms[idx]) >= TIME_DOUBLE_CLICK))
-  {
-    gest                     = (uint8_t)GEST_SHORT;
-    last_short_click_ms[idx] = 0u;
+    else if (pb->button_count > 0u)
+    {
+      /* короче антидребезга: дребезг, окно DOUBLE не трогаем, но взвод снимаем */
+      pb->button_count  = 0u;
+      double_armed[idx] = 0u;
+      press_active[idx] = 0u;
+      if (long_fired[idx] == 0u)
+      {
+        gest = (uint8_t)GEST_FAKE;
+      }
+      else
+      {
+        long_fired[idx] = 0u;
+      }
+    }
+    else
+    {
+      if (long_fired[idx] != 0u)
+      {
+        /* отпускание после длинного жеста: гасим подавление */
+        long_fired[idx]   = 0u;
+        press_active[idx] = 0u;
+        double_armed[idx] = 0u;
+      }
+      else if ((pending_short_ms[idx] != 0u) &&
+               (double_armed[idx] == 0u) &&
+               ((now - pending_short_ms[idx]) >= TIME_DOUBLE_CLICK))
+      {
+        /* окно истекло, второго клика нет - отложенный SHORT */
+        gest = (uint8_t)GEST_SHORT;
+        pending_short_ms[idx] = 0u;
+      }
+    }
   }
 
   if (gest != (uint8_t)GEST_NONE)
   {
     set_gesture(idx, gest);
-    /* любой жест перезапускает таймер возврата на главный экран (Avis) */
-    START_TIMER_RTC(TIMER_RTC_MAIN_RESET, VECTOR_MENU_AUTO_RETURN_S);
+    /* любой жест перезапускает таймер возврата на главный экран (Avis).
+       FAKE - дребезг, авто-возврат он продлевать не должен.               */
+    if (gest != (uint8_t)GEST_FAKE)
+    {
+      START_TIMER_RTC(TIMER_RTC_MAIN_RESET, VECTOR_MENU_AUTO_RETURN_S);
+    }
   }
+}
+
+/* Сброс состояния кнопок и декодера. Одна ФИЗИЧЕСКАЯ кнопка PB1 несёт ДВЕ
+   программные структуры: button1 (жесты навигации) и button_sos (SOS), поэтому
+   гасим обе - иначе после включения/выключения или прерванного отсчёта
+   останутся «призрачный» SHORT/DOUBLE (pending_short) и досчитанный SOS.
+   button_pressed не трогаем: им владеет подсветка (Button_Run_Backlight).
+   Звать из Menu_TurnOff(), Button_Run_Start(), Menu_Init() и при
+   старте/отмене/завершении обратного отсчёта (выключение, SOS).
+   КОНТЕКСТ: поток LVGL Task; Menu_Init - до потоков (только запись полей).    */
+void Menu_ResetButtons(void)
+{
+  uint8_t i;
+
+  for (i = 0u; i < 3u; i++)
+  {
+    press_start_ms[i]   = 0u;
+    pending_short_ms[i] = 0u;
+    press_active[i]     = 0u;
+    double_armed[i]     = 0u;
+    long_fired[i]       = 0u;
+    menu_status.gestures[i] = (uint8_t)GEST_NONE;
+  }
+
+  /* Счётчики/флаги: декодер и Button_Run_Start работают по ним напрямую.
+     Флаг гасим - жест, начатый до выключения/включения, не продолжается. */
+  button1.button_count = 0u;
+  button1.button_flag  = 0u;
+  button2.button_count = 0u;
+  button2.button_flag  = 0u;
+  button3.button_count = 0u;
+  button3.button_flag  = 0u;
+
+  /* SOS - вторая структура на ту же PB1 (см. выше): гасим отдельно, чтобы
+     удержание кнопки при включении не досчитало до порога 3 с.            */
+  button_sos.button_count = 0u;
+  button_sos.button_flag  = 0u;
 }
 
 /* ============================================================================
@@ -361,10 +593,10 @@ static void decode_button(uint8_t idx, volatile Button_variables *pb)
    и общие ошибки сбрасываются, ставится бит «прибор выключен», в журнал уходит
    TYPE_TURN_OFF, модули обмена деинициализируются, device_turn =
    DEVICE_TURNED_OFF. Дальше Vector_Run_Indication() в состоянии OFF вызывает
-   Button_Run_Start() - включение долгим нажатием Button1 (как в Avis, где
+   Button_Run_Start() - включение долгим нажатием Button3 (как в Avis, где
    DisplayIndication при выключенном приборе крутит Button_Run_Start/TurnOffPower).
-   Жест - LONG Button2 (1.5 с): он и есть подтверждение, поэтому отдельного
-   обратного отсчёта нет.
+   Жест - LONG Button3 (1.5 с): он и есть подтверждение, поэтому отдельного
+   обратного отсчёта нет. Включение и выключение - ОДНА кнопка Button3.
    ОТЛИЧИЯ от Avis (чего в проекте пока нет):
      - CountdownToShutdown()/TIMER_SHUTDOWN + LCD_CountdownToShutdown - обратный
        отсчёт на экране (автор: «потом сделаем»; задел - ROLLER_TURN_OFF и
@@ -412,6 +644,13 @@ static void Menu_TurnOff(void)
 #endif
 
   RESET_TIMER_RTC(TIMER_RTC_WARM);        /* прогрев следующего включения стартует с нуля */
+  /* Гасим декодер и ОБЕ структуры PB1 (button1 + button_sos): отпускание
+     Button3, которым выключили прибор, и удержание button1/button3 в момент
+     выключения не должны дать «призрачный» SHORT/DOUBLE или досчитанный SOS
+     после следующего включения. Счётчики кнопок при этом обнуляются - пока
+     кнопку не отпустят, повторного LONG не будет (флаг тоже погашен).     */
+  Menu_ResetButtons();
+
   device_turn = DEVICE_TURNED_OFF;
   /* Следующее включение снова начинается с заставки/прогрева: Menu_GoTo дёшево -
      LCD_DeInit уже выполнен, Menu_Draw() выйдет по флагу инициализации.   */
@@ -479,11 +718,13 @@ static void menu_navigate(void)
 	   Если квитировать нечего (активной индикации нет, либо она не снимается
 	   вручную - «нет СИЗ/ГА/браслета»), жест НЕ съедаем: он уходит в навигацию
 	   ниже. Кнопка выбирается по ALERT_ACK_BUTTON (1/2 -> Button1/2, иначе 3).
+	   DOUBLE здесь тоже считается SHORT (menu_as_short, требование автора):
+	   отдельного действия у квитирования нет.
 	   КОНТЕКСТ: поток LVGL Task (Menu_Run, 100 мс).                          */
 	{
 		uint8_t *g_ack = (ALERT_ACK_BUTTON == 1u) ? &g1 :
 					   ((ALERT_ACK_BUTTON == 2u) ? &g2 : &g3);
-		if ((*g_ack == (uint8_t)GEST_SHORT) &&
+		if ((menu_as_short(*g_ack) == (uint8_t)GEST_SHORT) &&
 			(Alert_AckButton() != (uint8_t)ALERT_NONE)){
 			*g_ack = (uint8_t)GEST_NONE;
 		}
@@ -503,7 +744,7 @@ static void menu_navigate(void)
   switch (menu_status.screen)
   {
     /* Заставка/прогрев (SCREEN_START): работают ТОЛЬКО выключение (LONG
-       Button2 -> Menu_TurnOff) и SOS (удержание Button1 3 с - Button_Sos(),
+       Button3 -> Menu_TurnOff) и SOS (удержание Button1 3 с - Button_Sos(),
        вызывается вне switch, в Menu_Run). Остальные жесты гасятся: листать во
        время прогрева нечего, а выход с экрана происходит сам - по истечении
        TIMER_RTC_WARM (Menu_Run) или по выключению. Авто-возврат
@@ -516,12 +757,16 @@ static void menu_navigate(void)
       }
       break;
     /* Главный экран (Avis: STATE_SCREEN_MEASURE).
-       Выключение с этого экрана НЕ сделано: в Avis это LONG с обратным отсчётом
-       (STATE_SCREEN_MEASURE_TO_COUNTDOWN -> CountdownToShutdown -> TurnOffSystem).
-       Menu_TurnOff() готов (см. выше) - автору остался только отсчёт
-       (TIMER_SHUTDOWN + LCD_CountdownToShutdown, ROLLER_TURN_OFF).          */
+       LONG Button3 - выключение (Menu_TurnOff); на страницах сообщений (5/6)
+       тот же LONG открывает соответствующее сообщение (голосовые/чат).
+       В Avis выключение отсюда - LONG Button1 с обратным отсчётом
+       (STATE_SCREEN_MEASURE_TO_COUNTDOWN -> CountdownToShutdown), у нас это
+       задел автора: TIMER_SHUTDOWN + LCD_CountdownToShutdown, ROLLER_TURN_OFF.
+       Вход в меню - Button3 SHORT_LONG (короткий клик + длинное удержание в
+       окне DOUBLE), см. ТЗ п.3. DOUBLE без спецдействия = SHORT.            */
     case SCREEN_MEASURE:
-	    const uint8_t setting_screens[] = {
+    {
+	    static const uint8_t setting_screens[] = {
 	    		SCREEN_MEASURE,
 				SCREEN_MENU,
 				SCREEN_VOICE_MESSAGE,
@@ -529,43 +774,42 @@ static void menu_navigate(void)
 	    };
 
 	    uint8_t sub = 0;
-	    if (g2 == (uint8_t)GEST_SHORT){
-	    	menu_status.state_menu = scroll_down(menu_status.state_menu, MEASURE_PAGES_COUNT-1);
-#if !CONFIG_G4
-	    	if(menu_status.state_menu == 5){
-	    		menu_status.state_menu = 6;
-	    	}
-#endif
+
+	    if (menu_as_short(g2) == (uint8_t)GEST_SHORT){
+	    	/* страница вниз по кольцу с пропуском отключённых сборкой */
+	    	menu_status.state_menu = meas_page_step(menu_status.state_menu, +1);
 	    }
 	    else if (g2 == (uint8_t)GEST_SHORT_LONG){
-	    	menu_status.state_menu = 7;
+	    	/* короткий + длинный Button2 - страница ошибок (вне кольца) */
+	    	menu_status.state_menu = MEAS_PAGE_ERR;
 	    }
-	    else if (g3 == (uint8_t)GEST_SHORT){
-	    	menu_status.state_menu = scroll_up(menu_status.state_menu, MEASURE_PAGES_COUNT-1);
-#if !CONFIG_G4
-	    	if(menu_status.state_menu == 5){
-	    		menu_status.state_menu = 4;
-	    	}
-#endif
+	    else if (menu_as_short(g3) == (uint8_t)GEST_SHORT){
+	    	menu_status.state_menu = meas_page_step(menu_status.state_menu, -1);
 	    }
 	    else if (g3 == (uint8_t)GEST_LONG){
-	    	if(menu_status.state_menu == 5){
+	    	if (menu_status.state_menu == MEAS_PAGE_VOICE){
 	    		sub = 2;
 	    	}
-	    	else if(menu_status.state_menu == 6){
+	    	else if (menu_status.state_menu == MEAS_PAGE_CHAT){
 	    		sub = 3;
 	    	}
-	    	else{
+	    	else {
+	    		/* Выключение: Menu_TurnOff() уже увёл на SCREEN_START. Уходим
+	    		   из switch, иначе Menu_GoTo(setting_screens[0]) ниже вернул бы
+	    		   экран в SCREEN_MEASURE сразу после выключения.              */
 	    		Menu_TurnOff();
+	    		break;
 	    	}
 	    }
 	    else if (g3 == (uint8_t)GEST_SHORT_LONG){
+	    	/* ВХОД В МЕНЮ (ТЗ п.3): state_menu сбросит Menu_GoTo - это
+	    	   переход MEASURE -> MENU (номер страницы не наследуется).    */
 	    	sub = 1;
-	    	menu_status.state_menu = 0;
 	    }
 
 	    Menu_GoTo(setting_screens[sub]);
 	    break;
+    }
 
     case SCREEN_MENU:
       /* Button1 SHORT - вход в пункт (приоритет Button1, как в Avis
@@ -584,10 +828,10 @@ static void menu_navigate(void)
 			}
 			Menu_GoTo(item_screens[item]);
 		  }
-		  else if (g3 == (uint8_t)GEST_SHORT){
+		  else if (menu_as_short(g3) == (uint8_t)GEST_SHORT){
 			menu_status.state_menu = scroll_down(menu_status.state_menu, MENU_ITEMS_COUNT);
 		  }
-		  else if (g2 == (uint8_t)GEST_SHORT){
+		  else if (menu_as_short(g2) == (uint8_t)GEST_SHORT){
 			menu_status.state_menu = scroll_up(menu_status.state_menu, MENU_ITEMS_COUNT);
 		  }
 		  else if (g2 == (uint8_t)GEST_LONG){
@@ -602,10 +846,10 @@ static void menu_navigate(void)
 		  if (g2 == (uint8_t)GEST_LONG){
 			Menu_GoTo((uint8_t)SCREEN_MENU);
 		  }
-		  else if (g2 == (uint8_t)GEST_SHORT){
+		  else if (menu_as_short(g2) == (uint8_t)GEST_SHORT){
 			menu_status.state_submenu = scroll_down(menu_status.state_submenu, MENU_INFO_PAGES);
 		  }
-		  else if (g3 == (uint8_t)GEST_SHORT){
+		  else if (menu_as_short(g3) == (uint8_t)GEST_SHORT){
 			menu_status.state_submenu = scroll_up(menu_status.state_submenu, MENU_INFO_PAGES);
 		  }
 		  break;
@@ -616,10 +860,10 @@ static void menu_navigate(void)
       if (g2 == (uint8_t)GEST_LONG){
         Menu_GoTo((uint8_t)SCREEN_MENU);
       }
-      else if (g2 == (uint8_t)GEST_SHORT){
+      else if (menu_as_short(g2) == (uint8_t)GEST_SHORT){
         menu_status.state_submenu = scroll_down(menu_status.state_submenu, MENU_SETTING_ROWS);
       }
-      else if (g3 == (uint8_t)GEST_SHORT){
+      else if (menu_as_short(g3) == (uint8_t)GEST_SHORT){
         menu_status.state_submenu = scroll_up(menu_status.state_submenu, MENU_SETTING_ROWS);
       }
       break;
@@ -640,8 +884,6 @@ static void menu_navigate(void)
 /* Инициализация меню. КОНТЕКСТ: Measure Task (из Vector_Run_Pre_Init).     */
 void Menu_Init(void)
 {
-  uint8_t i;
-
   menu_status.screen          = (uint8_t)SCREEN_START;
   menu_status.screen_prev     = (uint8_t)SCREEN_START;
   TO_GO_STATE_SCREEN((uint8_t)SCREEN_START);   /* зеркало для LCD_Fill_Template */
@@ -650,10 +892,10 @@ void Menu_Init(void)
   menu_status.dirty_data      = 0u;
   menu_status.last_gesture_ms = 0u;
   menu_status.screen_since_ms = VTICK_MS();
-  for (i = 0; i < 3u; i++){
-    menu_status.gestures[i]     = (uint8_t)GEST_NONE;
-    last_short_click_ms[i]      = 0u;
-  }
+  /* Слоты жестов и состояние декодера - в ноль: при старте кнопки могли
+     остаться зажатыми (в т.ч. PB1 с зеркалом button_sos), а протухший жест
+     выстрелил бы на первом же проходе Menu_Run().                        */
+  Menu_ResetButtons();
 
   /* Авто-возврат на главный экран: как в Avis (TIMER_RTC_MAIN_RESET). */
   START_TIMER_RTC(TIMER_RTC_MAIN_RESET, VECTOR_MENU_AUTO_RETURN_S);
@@ -806,17 +1048,12 @@ void Button_Run_Start(void)
 		// голосовое сообщение - одна фаза ALERT_CH_SOUND с SND_* из образа.
 		Alert_Start(&AlertSeq_PowerOn);
 	    //------------------------------------------------------------------------
-		decode_button(0u, &button1);
-		decode_button(1u, &button2);
-		decode_button(2u, &button3);
-		Menu_Gesture(1u);
-		Menu_Gesture(2u);
-		Menu_Gesture(3u);
-		/* SOS-счётчик гасим вместе с button1: включение - это удержание Button1
-		   1.5 с, и если кнопку держат дальше, button_sos досчитал бы до 3 с и
-		   выдал SOS сразу после включения.                                  */
-		button_sos.button_count = 0;
-		button_sos.button_flag  = 0;
+		Menu_ResetButtons();
+		/* Включение - это удержание Button3 до LONG, а на той же PB1 висит
+		   button_sos: Menu_ResetButtons() гасит ОБЕ структуры и состояние
+		   декодера, иначе отпускание/повторное нажатие дали бы «призрачный»
+		   SHORT и досчитанный SOS сразу после включения. Счётчик button3 при
+		   этом обнулён - пока кнопку не отпустят, повторного LONG не будет. */
 
 	    /* Прибор включён БЕЗ звука/вибро - состояние прогрева (shared_types.h:
 	       DEVICE_TURNED_ON_1 «используется для прогрева и авт выкл.»). Экран -

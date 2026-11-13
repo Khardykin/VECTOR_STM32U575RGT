@@ -86,7 +86,12 @@ typedef struct
 {
   volatile uint8_t  screen;             /* screen_t текущий экран            */
   volatile uint8_t  screen_prev;        /* предыдущий (для «назад»)          */
-  volatile uint8_t  state_menu;         /* позиция скролла в SCREEN_MENU     */
+  volatile uint8_t  state_menu;         /* ОДНО поле на две сущности (экономия
+                                           памяти): страница SCREEN_MEASURE либо
+                                           курсор SCREEN_MENU. При любом
+                                           переходе MEASURE<->MENU сбрасывается
+                                           в 0 (Menu_GoTo); возврат из
+                                           INFO/SETTING в MENU курсор хранит.  */
   volatile uint8_t  state_submenu;      /* позиция внутри пункта (резерв)    */
   volatile uint8_t  dirty_data;         /* конфиг меняли -> SaveConfig=1 при
                                            возврате на SCREEN_MAIN (Avis)    */
@@ -121,6 +126,18 @@ void Menu_GoTo(uint8_t screen);
    Для внешних потребителей (например, тест звука/отключение по LONG).
    КОНТЕКСТ: поток.                                                          */
 uint8_t Menu_Gesture(uint8_t button);
+
+/* Сброс состояния кнопок и декодера: ожидающие короткие клики, взведённые
+   двойные, подавление отпускания после LONG, слоты жестов и ОБЕ структуры
+   одной физической кнопки PB1 (button1 + button_sos). button_pressed не
+   трогается - им владеет подсветка (Button_Run_Backlight).
+   Звать при выключении/включении прибора (Menu_TurnOff, Button_Run_Start) и
+   при старте/отмене/завершении обратного отсчёта (выключение, SOS): иначе
+   отпускание или новое нажатие дадут «призрачный» SHORT/DOUBLE, а счётчик
+   button_sos досчитает до SOS после включения.
+   КОНТЕКСТ: поток LVGL Task (Menu_Run/Menu_TurnOff/Button_Run_Start),
+   до планировщика - Menu_Init (без блокировок).                             */
+void Menu_ResetButtons(void);
 
 /* Точки отрисовки/цикла (Menu_Draw с коммита автора «up menu tft» - НЕ weak):
    Menu_Draw()        - аналог DisplayIndication из Avis: ЦЕЛИКОМ обновляет

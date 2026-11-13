@@ -642,16 +642,34 @@
 /* --- Основа меню (Menu_vector.c) ----------------------------------
  * Жесты кнопок декодируются из button_count (счёт в TIM3 1 кГц = мс,
  * ставит EXTI) по образцу Button_1/2/3_Menu из Avis_Menu_2.c:
- *   SHORT  - нажатие дольше антидребезга, отпущено до LONG;
- *   LONG   - удержание >= VECTOR_MENU_PRESS_LONG_MS (срабатывает ДО отпускания);
- *   DOUBLE - два SHORT с интервалом < VECTOR_MENU_DOUBLE_MS;
- *   SHORT_LONG - SHORT, затем LONG быстрее DOUBLE-окна;
+ *   SHORT  - нажатие дольше антидребезга, выдаётся ОТЛОЖЕННО: на
+ *            VECTOR_MENU_DOUBLE_MS после отпускания, если второй клик так и не
+ *            пришёл (иначе двойное нажатие давало бы лишнее одиночное действие);
+ *   LONG   - удержание >= VECTOR_MENU_PRESS_LONG_MS: срабатывает ПО ТАЙМЕРУ,
+ *            пока кнопка ещё зажата (по нему сразу запускается обратный отсчёт -
+ *            выключение прибора или SOS), отпускание после него подавляется
+ *            (long_fired) и не заряжает SHORT;
+ *   DOUBLE - два SHORT: 2-е нажатие началось в окне VECTOR_MENU_DOUBLE_MS
+ *            (+ VECTOR_MENU_POLL_MS на квантование 100-мс опроса);
+ *   SHORT_LONG - SHORT, затем LONG, начавшийся в том же окне (срабатывает по
+ *            таймеру, как LONG);
  *   FAKE   - слишком короткое (дребезг).
- * SOS - ОТДЕЛЬНЫЙ счётчик button_sos (в stm32u5xx_it.c он зеркалит Button1:
- * те же EXTI-флаги, свой button_count), порог VECTOR_MENU_PRESS_SOS_MS
- * длиннее обычного LONG: удержание Button1 3 с (Avis Button_Sos с
- * BUTTON_PRESS_LONG_SOS). Обратный отсчёт до подачи SOS - задел автора
- * (экран/роллер ROLLER_SOS и LCD_CountdownToSOS уже есть).
+ * DOUBLE без отдельного спецдействия на текущем экране обрабатывается как
+ * один обычный SHORT (menu_navigate -> menu_as_short): двойное нажатие не
+ * должно проглатываться впустую.
+ * ВХОД В МЕНЮ: SCREEN_MEASURE -> SCREEN_MENU по Button3 SHORT_LONG.
+ * ПИТАНИЕ: включение и выключение прибора - Button3 (LONG): при выключенном
+ * приборе Button_Run_Start(), при включённом - Menu_TurnOff() (SCREEN_START и
+ * SCREEN_MEASURE, кроме страниц сообщений).
+ * SOS - ОТДЕЛЬНЫЙ счётчик button_sos: на одну кнопку PB1 ведутся ДВЕ
+ * независимые структуры - button1 (жесты навигации) и button_sos (SOS).
+ * В stm32u5xx_it.c button_sos зеркалит Button1 (те же EXTI-флаги, СВОЙ
+ * button_count), порог VECTOR_MENU_PRESS_SOS_MS длиннее обычного LONG:
+ * удержание Button1 3 с (Avis Button_Sos с BUTTON_PRESS_LONG_SOS). При
+ * включении/выключении/отмене отсчёта обе структуры гасятся через
+ * Menu_ResetButtons() (Menu_vector.c) - иначе остаются «призрачные» жесты.
+ * Обратный отсчёт до подачи SOS - задел автора (экран/роллер ROLLER_SOS и
+ * LCD_CountdownToSOS уже есть).
  * Авто-возврат на главный экран: любой жест перезапускает TIMER_RTC_MAIN_RESET
  * (секундный таймер прибора), по его expiry Menu_Run() возвращает SCREEN_MAIN.
  * приоритет жестов ПОСТОЯННЫЙ - Button1 > Button2 > Button3 (автор, п.3);
@@ -672,6 +690,14 @@
 #endif
 #ifndef VECTOR_MENU_DOUBLE_MS
 #define VECTOR_MENU_DOUBLE_MS       400u
+#endif
+/* Период опроса меню: Menu_Run() вызывается из потока LVGL Task по
+   timer.flag_100ms, поэтому и начало нажатия, и окно DOUBLE измеряются с
+   квантованием до VECTOR_MENU_POLL_MS. Константа компенсирует это в окне
+   двойного клика (иначе настоящий двойной с паузой 250-400 мс распадался бы
+   на два одиночных). Держать равной периоду опроса.                       */
+#ifndef VECTOR_MENU_POLL_MS
+#define VECTOR_MENU_POLL_MS         100u
 #endif
 #ifndef VECTOR_MENU_AUTO_RETURN_S
 #define VECTOR_MENU_AUTO_RETURN_S   30u
