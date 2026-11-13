@@ -474,7 +474,8 @@ static void phase_on(const alert_phase_t *p)
   }
   if ((p->ch & (uint8_t)ALERT_CH_BEEP) != 0u)
   {
-    audio_beep();                                   /* 240 мс, внутренняя flash */
+    /* длина писка = t_on_ms фазы (короткий/длинный); WAIT_END -> по умолчанию */
+    audio_beep_ms((p->t_on_ms == (uint16_t)ALERT_WAIT_END) ? 0u : p->t_on_ms);
   }
   if ((p->ch & (uint8_t)ALERT_CH_SOUND) != 0u)
   {

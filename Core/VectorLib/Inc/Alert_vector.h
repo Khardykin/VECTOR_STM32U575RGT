@@ -214,7 +214,7 @@ typedef enum
   ALERT_CH_LED1  = 0x01,   /* ALARM_LED_1 (PA11)                            */
   ALERT_CH_LED2  = 0x02,   /* ALARM_LED_2 (PA12)                            */
   ALERT_CH_VIBRO = 0x04,   /* Vibro_On/Off (хук vector_macros, weak)        */
-  ALERT_CH_BEEP  = 0x08,   /* audio_beep(): 240 мс, внутренняя flash        */
+  ALERT_CH_BEEP  = 0x08,   /* audio_beep(): 400 мс, внутренняя flash        */
   ALERT_CH_SOUND = 0x10    /* audio_play_now(sound_idx): клип образа (SND_*)*/
 } alert_ch_t;
 

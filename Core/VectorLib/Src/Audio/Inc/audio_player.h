@@ -129,7 +129,8 @@ audio_err_t audio_play(uint16_t idx);      /* в очередь, после те
 audio_err_t audio_play_now(uint16_t idx);  /* прервать текущий и играть   */
 audio_err_t audio_play_name(const char *name);
 void        audio_stop(void);
-void        audio_beep(void);      /* аварийный писк из внутренней flash */
+void        audio_beep(void);
+void audio_beep_ms(uint16_t ms);   /* писк заданной длины, мс (0 = по умолчанию) */      /* аварийный писк из внутренней flash */
 
 /* --- ХУКИ платформенного вывода SAI/DMA: реализованы в audio_player.c,
    вызываются из vector_macros.c (там живут HAL-колбэки SAI - библиотека

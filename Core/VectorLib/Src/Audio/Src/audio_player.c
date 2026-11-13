@@ -106,6 +106,7 @@ static volatile int32_t ap_vol_q15 = 32767;   /* 100% */
  * ap_mark_silent() - и поток плеера, и ISR завершения DMA.
  * ap_pending_idx: -1 = нет отложенного звука, >=0 = ждёт окончания текущего. */
 static volatile int32_t ap_pending_idx = -1;
+static volatile uint32_t ap_beep_total = 0;  /* 0 = длина по умолчанию */
 
 /* ----------------------------------------------------------------- ЦИКЛ ---
  * Режим "один звук по кругу": повторяется ПОСЛЕДНИЙ ЗАПУЩЕННЫЙ звук образа
@@ -491,15 +492,17 @@ static void apply_volume(int16_t *p, uint32_t n)
    Возврат: AUDIO_OK или AUDIO_ERR_IO (DMA не запустилась).                  */
 static audio_err_t beep_now(void)
 {
+  uint32_t total = (ap_beep_total != 0u) ? ap_beep_total : audio_beep_samples;
+  ap_beep_total = 0u;
 #if VECTOR_AUDIO_STREAM
-  if (stream_start_src(-2, 0, audio_beep_pcm, 0, audio_beep_samples) == AUDIO_OK)
+  if (stream_start_src(-2, 0, audio_beep_pcm, 0, total) == AUDIO_OK)
   {
-    LOG_I(VLOG_M_AUDIO, "beep started (stream), %u samples", audio_beep_samples);
+    LOG_I(VLOG_M_AUDIO, "beep started (stream), %u samples", total);
     return AUDIO_OK;
   }
 #endif
   {
-    int sai_rc = Sai_StartDMA((uint8_t *)audio_beep_pcm, audio_beep_samples);
+    int sai_rc = Sai_StartDMA((uint8_t *)audio_beep_pcm, audio_beep_loop_samples);
     if (sai_rc != 0)
     {
       audio_status.cnt_errors++;
@@ -508,11 +511,11 @@ static audio_err_t beep_now(void)
             (int32_t)sai_rc, Sai_GetErrorCode());
       return AUDIO_ERR_IO;
     }
-    LOG_I(VLOG_M_AUDIO, "beep started, %u samples", audio_beep_samples);
-    ap_mark_beep();              /* маркер: играет аварийный писк */
+    LOG_I(VLOG_M_AUDIO, "beep started, %u samples", total);
+    ap_mark_beep();
     audio_status.cnt_started++;
     ap_play_deadline  = VTICK_MS() +
-                        ((audio_beep_samples * 1000u) / AUDIO_SAMPLE_RATE) + AP_STUCK_MARGIN_MS;
+                        ((total * 1000u) / AUDIO_SAMPLE_RATE) + AP_STUCK_MARGIN_MS;
     return AUDIO_OK;
   }
 }
@@ -840,6 +843,7 @@ static void ap_thread_entry(ULONG arg)
       {
         stop_now();
         queue_clear();
+        ap_beep_total = (a == 0u) ? 0u : (((uint32_t)a * AUDIO_SAMPLE_RATE) / 1000u);
         (void)beep_now();
       }
       else if (cmd == AUDIO_CMD_PLAY)
@@ -1250,6 +1254,16 @@ audio_err_t audio_play_name(const char *name)
 void audio_beep(void)
 {
   ULONG msg = MSG(AUDIO_CMD_BEEP, 0);
+  if (tx_queue_send(&ap_queue, &msg, TX_NO_WAIT) == TX_SUCCESS)
+  {
+    (void)tx_semaphore_put(&ap_wake);
+  }
+}
+
+/* Писк заданной длины (мс). 0 = по умолчанию. Контекст: любой. */
+void audio_beep_ms(uint16_t ms)
+{
+  ULONG msg = MSG(AUDIO_CMD_BEEP, ms);
   if (tx_queue_send(&ap_queue, &msg, TX_NO_WAIT) == TX_SUCCESS)
   {
     (void)tx_semaphore_put(&ap_wake);
