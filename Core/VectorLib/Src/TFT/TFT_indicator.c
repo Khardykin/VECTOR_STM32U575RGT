@@ -58,8 +58,8 @@ static const screen_map_t scr_map[] = {
 	{SCREEN_CONNECT_DEVICE, &ui_ScreenMenu,		ui_ScreenMenu_screen_init},
 	{SCREEN_VOICE_MESSAGE,  &ui_ScreenMenu,     ui_ScreenMenu_screen_init},
 	{SCREEN_TEXT_MESSAGE,   &ui_ScreenMenu,     ui_ScreenMenu_screen_init},
-	{SCREEN_COUNTDOWN_SHUTDOWN, &ui_ScreenHeadMain, ui_ScreenHeadMain_screen_init},
-	{SCREEN_COUNTDOWN_SOS,      &ui_ScreenHeadMain, ui_ScreenHeadMain_screen_init},
+	{SCREEN_COUNTDOWN_SHUTDOWN, &ui_ScreenStart, ui_ScreenHeadMain_screen_init},
+	{SCREEN_COUNTDOWN_SOS,      &ui_ScreenStart, ui_ScreenHeadMain_screen_init},
 };
 
 //------------------------------------------------------------------------------
