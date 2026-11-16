@@ -461,7 +461,9 @@ static void ui_update_input_panel_head_enter(const char * text, int8_t rank, int
     ui_menu_item_set_focus(ui_LabelBack, ui_LabelBack, back_st, false);
 
     // 4. Глобальные настройки панели
-    ui_set_label_text(ui_LabelHeadEnter, _(text_labels[enter])); // или ваш источник текста
+    ui_set_label_text(ui_LabelHeadEnter, _(text_labels[enter]));
+    ui_set_obj_hidden(ui_LabelOk,   false);
+    ui_set_obj_hidden(ui_LabelBack, false);
 
     ui_next_state.head_enter = false;
 }
@@ -2054,6 +2056,8 @@ void LCD_CountdownSetTimer(uint32_t data, uint16_t roller)
 	//-------------------------------
 	ui_set_label_text(ui_LabelHeadEnter, _(text_labels[roller]));
 	ui_set_label_text(ui_LabelSetEnter, (const char*)str_lcd);
+    ui_set_obj_hidden(ui_LabelOk,   true);
+    ui_set_obj_hidden(ui_LabelBack, true);
 	memset(str_lcd, 0, sizeof(str_lcd));
 	//-------------------------------
 	ui_next_state.head_enter = false;
