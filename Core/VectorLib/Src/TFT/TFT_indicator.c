@@ -92,6 +92,8 @@ static const char* const text_labels[ROLLER_END] = {
     [ROLLER_DATATIME]  			= "Дата и время",
 	[ROLLER_TURN_OFF]     		= "Выключение",
 	[ROLLER_SOS]      			= "SOS",
+	[ROLLER_SOS_ON]   			= "SOS ON",
+	[ROLLER_SOS_OFF]  			= "SOS OFF",
 };
 
 const char * env_labels[2][3] = {
@@ -236,7 +238,7 @@ static const meas_layout_t meas_layout[MEAS_MODE_END] = {
 		.name_line = 1, .img_src = NULL
 	},
 	[MEAS_ST_LORA] = {
-		.val_visible = 1,
+		.full_width = 1, .val_visible = 1,
 		.val_x = 0, .val_y = 30, .val_align = LV_ALIGN_CENTER,
 		.val_font = &ui_font_number36, .name_font = &ui_font_number21, .units_font = &ui_font_number21,
 		.name_line = 1, .img_src = NULL
@@ -1591,6 +1593,25 @@ void LCD_Measure(uint8_t panel, uint8_t mode, const char *value, const char *nam
 //   RSSI LoRa-модуля (CONFIG_LORA); правка - только в case MEAS_RSSI ниже.
 // Когда источник появится - правится ТОЛЬКО этот switch.
 //===========================================================================================================================
+//===========================================================================================================================
+// Текущий статус LoRa для MEAS_ST_LORA: какой именно бит ControlLora активен.
+// Приоритет (как в Avis Indication): Эвакуация > SOS > SOS группы > Группа назад > Зона > Группа.
+// NULL = активного статуса нет. КОНТЕКСТ: поток LVGL Task.
+//===========================================================================================================================
+static const char *LCD_LoraStatusText(void)
+{
+#if CONFIG_LORA
+  uint16_t c = Lora_GetControlLora();
+  if (TESTBIT(c, ST_LORA_BIT_EVACUATION)) { return _("Эвакуация"); }
+  if (TESTBIT(c, ST_LORA_BIT_SOS))        { return _("SOS"); }
+  if (TESTBIT(c, ST_LORA_BIT_SOS_GROUP))  { return _("SOS группа"); }
+  if (TESTBIT(c, ST_LORA_BIT_BACK_GROUP)) { return _("Группа назад"); }
+  if (TESTBIT(c, ST_LORA_BIT_ZONE))       { return _("Зона"); }
+  if (TESTBIT(c, ST_LORA_BIT_GROUP))      { return _("Группа"); }
+#endif
+  return NULL;
+}
+
 static void meas_fill(uint8_t mode, char *value, char *name, char *units)
 {
 	value[0] = '\0';
@@ -1714,6 +1735,13 @@ static void meas_fill(uint8_t mode, char *value, char *name, char *units)
 		   появится вместе с CONFIG_LORA. */
 		break;
 
+	case MEAS_ST_LORA:
+	{
+		const char *st = LCD_LoraStatusText();
+		snprintf(value, MEAS_VALUE_SZ, "%s", (st != NULL) ? st : MEAS_NO_DATA);
+		break;
+	}
+
 	default:   /* MEAS_DEFAULT / MEAS_NONE: тексты не трогаем */
 		break;
 	}
@@ -1777,6 +1805,40 @@ void LCD_MeasureScreen(uint8_t num)
 //		ui_menu_item_set_recolor(ui_ImageMeas1, false);
 //		return;
 //	}
+
+	/* ЧЕРЕДОВАНИЕ «страница / статус LoRa» (только главный экран): пока есть
+	   активный статус LoRa, раз в TIME_RTC_DISP_FLASHING_ERR (3 с) меняем фазу:
+	   половина времени - обычная страница, половина - MEAS_ST_LORA на весь
+	   контейнер. Номер страницы не меняется; статус исчез - показ страницы. */
+	{
+		static uint8_t meas_lora_phase = 0u;
+		const char *lora_st = LCD_LoraStatusText();
+		if (lora_st == NULL)
+		{
+			meas_lora_phase = 0u;
+			RESET_TIMER_RTC(TIMER_RTC_DISP_FLASHING_ERR);
+		}
+		else if (TEST_TIMER_RTC(TIMER_RTC_DISP_FLASHING_ERR) != 0)
+		{
+			meas_lora_phase = (uint8_t)!meas_lora_phase;
+			START_TIMER_RTC(TIMER_RTC_DISP_FLASHING_ERR, TIME_RTC_DISP_FLASHING_ERR);
+		}
+		else if (TEST_TIMER_RUN_RTC(TIMER_RTC_DISP_FLASHING_ERR) == 0u)
+		{
+			START_TIMER_RTC(TIMER_RTC_DISP_FLASHING_ERR, TIME_RTC_DISP_FLASHING_ERR);
+		}
+		if (meas_lora_phase != 0u)
+		{
+			meas_fill((uint8_t)MEAS_ST_LORA, value[0], name[0], units[0]);
+			LCD_Measure(0u, (uint8_t)MEAS_ST_LORA, value[0], name[0], units[0]);
+			LCD_Measure(1u, (uint8_t)MEAS_NONE, NULL, NULL, NULL);
+			ui_menu_item_set_focus(NULL, ui_PanelMeasure,  false, false);
+			ui_menu_item_set_focus(NULL, ui_PanelMeasure1, false, false);
+			ui_menu_item_set_recolor(ui_ImageMeas,  false);
+			ui_menu_item_set_recolor(ui_ImageMeas1, false);
+			return;
+		}
+	}
 
 	for (i = 0u; i < 2u; i++)
 	{
@@ -2001,7 +2063,8 @@ void LCD_CountdownSetTimer(uint32_t data, uint16_t roller)
 //===========================================================================================================================
 void LCD_CountdownToSOS(uint32_t data, uint32_t state)
 {
-	LCD_CountdownSetTimer(data, ROLLER_SOS);
+	uint32_t sec = (data + 999u) / 1000u;   /* остаток мс -> секунды */
+	LCD_CountdownSetTimer(sec, (state != 0u) ? ROLLER_SOS_ON : ROLLER_SOS_OFF);
 }
 
 //===========================================================================================================================

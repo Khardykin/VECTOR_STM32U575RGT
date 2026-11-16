@@ -321,8 +321,7 @@ void Menu_Draw(void)
       LCD_CountdownToShutdown(((uint32_t)TEST_TIMER_RUN(TIMER_SHUTDOWN) + 999u) / 1000u);
       break;
     case SCREEN_COUNTDOWN_SOS:
-      LCD_CountdownToSOS(((uint32_t)TEST_TIMER_RUN(TIMER_PRESS_SOS) + 999u) / 1000u,
-                         (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS) != 0u) ? 1u : 0u);
+      LCD_CountdownToSOS((uint32_t)TEST_TIMER_RUN(TIMER_PRESS_SOS), TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS));
       break;
     default:   /* START/CONNECT/MESSAGE - экраны автора (ждут отрисовку) */
       break;
@@ -625,6 +624,7 @@ static void Menu_TurnOff(void)
   if (device_turn == DEVICE_TURNED_OFF){
     return;
   }
+  Alert_Stop();   /* выключение - гасим любую индикацию */
 
 #if (CONFIG_TYPE_LCD_TFT != 0)
   ui_reset_visibility_flags();      /* иконки/панели заголовка - в «скрыто» (Avis) */
@@ -682,8 +682,8 @@ static uint8_t s_cnt_return = 0u; /* экран возврата после от
 
 static void countdown_cancel(void)
 {
-  if (s_cnt_kind == 1u)      { RESET_TIMER(TIMER_SHUTDOWN);   Alert_Clear(ALERT_SHUTDOWN); }
-  else if (s_cnt_kind == 2u) { RESET_TIMER(TIMER_PRESS_SOS);  Alert_Clear(ALERT_SOS_COUNTDOWN); }
+  if (s_cnt_kind == 1u)      { RESET_TIMER(TIMER_SHUTDOWN);   Alert_Clear(ALERT_SHUTDOWN); Alert_Stop(); }
+  else if (s_cnt_kind == 2u) { RESET_TIMER(TIMER_PRESS_SOS);  Alert_Clear(ALERT_SOS_COUNTDOWN); Alert_Stop(); }
   s_cnt_kind = 0u;
 }
 

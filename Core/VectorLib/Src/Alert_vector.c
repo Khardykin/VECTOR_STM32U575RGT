@@ -1156,7 +1156,7 @@ static void gas_local_tick(void)
     }
     else
     {
-      Alert_Set(ALERT_GAS_ALARM);
+      do{Sys_Cfg_Lock();SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GAS_ALARM);Sys_Cfg_Unlock();}while(0);
     }
   }
   else if ((s_gas_src & ALERT_GAS_SRC_LOCAL) != 0u)
@@ -1164,7 +1164,7 @@ static void gas_local_tick(void)
     s_gas_src = (uint8_t)(s_gas_src & (uint8_t)~ALERT_GAS_SRC_LOCAL);
     if (s_gas_src == 0u)
     {
-      Alert_Clear(ALERT_GAS_ALARM);
+      do{Sys_Cfg_Lock();CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GAS_ALARM);Sys_Cfg_Unlock();}while(0);
       LOG_I(VLOG_M_SYS, "alert: gas thresholds back to normal");
     }
   }
@@ -1197,11 +1197,10 @@ static void status_bits_tick(void)
   if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_IMMOBILITY)) { Alert_Set(ALERT_IMMOBILITY); } else { Alert_Clear(ALERT_IMMOBILITY); }
   if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_BATTERY)) { Alert_Set(ALERT_BATTERY_CRIT); } else { Alert_Clear(ALERT_BATTERY_CRIT); }
   if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_LOW_BATTERY)) { Alert_Set(ALERT_BATTERY_LOW); } else { Alert_Clear(ALERT_BATTERY_LOW); }
-  /* Газ: реестр ведут gas_local_tick/Alert_LoraMessage; бит - зеркало для экрана. */
-  Sys_Cfg_Lock();
-  if (Alert_IsActive(ALERT_GAS_ALARM)) { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GAS_ALARM); }
-  else                                 { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GAS_ALARM); }
-  Sys_Cfg_Unlock();
+  /* p8: газ по биту. Бит ST_COMMON_BIT_GAS_ALARM - источник (gas_local_tick,
+     Alert_LoraMessage, Alert_GasAlarm); реестр ведётся по биту.            */
+  if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GAS_ALARM)) { Alert_Set(ALERT_GAS_ALARM); }
+  else                                                     { Alert_Clear(ALERT_GAS_ALARM); }
 }
 
 
@@ -1397,8 +1396,7 @@ static void battery_tick(void)
   /* Критический разряд важнее низкого (приоритет по alert_id_t), поэтому
      низкий заряд взводим только если критического нет - иначе на экране и в
      логе дубли.                                                              */
-  if (crit != 0u) { do{Sys_Cfg_Lock();SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_BATTERY);Sys_Cfg_Unlock();}while(0); } else { do{Sys_Cfg_Lock();CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_BATTERY);Sys_Cfg_Unlock();}while(0); }
-  if ((low != 0u) && (crit == 0u)) { do{Sys_Cfg_Lock();SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_LOW_BATTERY);Sys_Cfg_Unlock();}while(0); } else { do{Sys_Cfg_Lock();CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_LOW_BATTERY);Sys_Cfg_Unlock();}while(0); }
+  /* Биты батареи уже выставлены выше в блоке смены (low/crit) - дубль не нужен. */
 }
 
 /* ============================================================================
@@ -1601,7 +1599,7 @@ return (uint8_t)top;
 void Alert_GasAlarm(uint16_t source_tracker_id)
 {
   s_alert[ALERT_GAS_ALARM].param = source_tracker_id;
-  Alert_Set(ALERT_GAS_ALARM);
+  do{Sys_Cfg_Lock();SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GAS_ALARM);Sys_Cfg_Unlock();}while(0);
   alert_rearm_indication(ALERT_GAS_ALARM);   /* статус уже был - звучим снова */
   LOG_W(VLOG_M_SYS, "alert: GAS ALARM (source tracker ID=%u)",
         (uint32_t)source_tracker_id);
@@ -1658,7 +1656,7 @@ uint8_t Alert_LoraMessage(const uint8_t *text_cp1251, uint8_t len, uint8_t seq)
   if ((s_gas_src & ALERT_GAS_SRC_SERVER) != 0u)
   {
     s_gas_src = (uint8_t)(s_gas_src & (uint8_t)~ALERT_GAS_SRC_SERVER);
-    if (s_gas_src == 0u) { Alert_Clear(ALERT_GAS_ALARM); }
+    if (s_gas_src == 0u) { do{Sys_Cfg_Lock();CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GAS_ALARM);Sys_Cfg_Unlock();}while(0); }
   }
   if (msg_contains(text_cp1251, len, ALERT_MSG_MARK_EVACUATION) != 0u)
   {
