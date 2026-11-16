@@ -1453,6 +1453,12 @@ static void Lora_Control_States_Update(str_lora_data_get_t *rx_data, uint32_t po
         else {
             CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS);
         }
+        if (TESTBIT(lora.ControlLora, ST_LORA_BIT_SOS_GROUP)) {
+            SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS_GROUP);
+        }
+        else {
+            CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS_GROUP);
+        }
         if (TESTBIT(lora.ControlLora, ST_LORA_BIT_EVACUATION)) {
             SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_EVACUATION);
         }

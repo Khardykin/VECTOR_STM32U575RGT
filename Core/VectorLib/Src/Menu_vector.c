@@ -317,6 +317,13 @@ void Menu_Draw(void)
     case SCREEN_SETTING:
       LCD_SubMenuSetting(&Sns_Cfg_struct, menu_status.state_submenu);
       break;
+    case SCREEN_COUNTDOWN_SHUTDOWN:
+      LCD_CountdownToShutdown(((uint32_t)TEST_TIMER_RUN(TIMER_SHUTDOWN) + 999u) / 1000u);
+      break;
+    case SCREEN_COUNTDOWN_SOS:
+      LCD_CountdownToSOS(((uint32_t)TEST_TIMER_RUN(TIMER_PRESS_SOS) + 999u) / 1000u,
+                         (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS) != 0u) ? 1u : 0u);
+      break;
     default:   /* START/CONNECT/MESSAGE - экраны автора (ждут отрисовку) */
       break;
   }
@@ -671,6 +678,7 @@ static void Menu_TurnOff(void)
  *  отмена (таймер + статус гаснут). Досчитал - действие.
  *  КОНТЕКСТ: поток LVGL Task (Menu_Run, 100 мс).                              */
 static uint8_t s_cnt_kind = 0u;   /* 0 = нет, 1 = выключение, 2 = SOS */
+static uint8_t s_cnt_return = 0u; /* экран возврата после отсчёта */
 
 static void countdown_cancel(void)
 {
@@ -682,9 +690,11 @@ static void countdown_cancel(void)
 static void countdown_start_shutdown(void)
 {
   if ((device_turn == DEVICE_TURNED_OFF) || (s_cnt_kind != 0u)) { return; }
+  s_cnt_return = menu_status.screen;
   s_cnt_kind = 1u;
   START_TIMER(TIMER_SHUTDOWN, (uint16_t)VECTOR_COUNTDOWN_SHUTDOWN_MS);
   Alert_Set(ALERT_SHUTDOWN);
+  Menu_GoTo((uint8_t)SCREEN_COUNTDOWN_SHUTDOWN);
   LOG_I(VLOG_M_SYS, "menu: shutdown countdown %u ms", (uint32_t)VECTOR_COUNTDOWN_SHUTDOWN_MS);
 }
 
@@ -699,6 +709,7 @@ static void Menu_CountdownTick(void)
   {
     LOG_I(VLOG_M_SYS, "menu: countdown cancelled (button released)");
     countdown_cancel();
+    Menu_GoTo(s_cnt_return);
     return;
   }
   uint8_t expired = (s_cnt_kind == 1u) ? (uint8_t)TEST_TIMER(TIMER_SHUTDOWN)
@@ -720,23 +731,11 @@ static void Menu_CountdownTick(void)
 #endif
     Alert_Set(ALERT_SOS);
     Menu_ResetButtons();
+    Menu_GoTo(s_cnt_return);
     LOG_W(VLOG_M_SYS, "menu: SOS set by hold countdown");
   }
 }
 
-/* Цифра отсчёта (после Menu_Draw, чтобы шаблон её не затёр). Каждая секунда
-   таймера - новое число: 5,4,3,2,1 (ceil остатка мс до секунд).              */
-static void Menu_CountdownDraw(void)
-{
-  if (s_cnt_kind == 0u) { return; }
-#if (CONFIG_TYPE_LCD_TFT != 0)
-  uint16_t t = (s_cnt_kind == 1u) ? TEST_TIMER_RUN(TIMER_SHUTDOWN)
-                                  : TEST_TIMER_RUN(TIMER_PRESS_SOS);
-  uint32_t sec = ((uint32_t)t + 999u) / 1000u;
-  if (s_cnt_kind == 1u) { LCD_CountdownToShutdown(sec); }
-  else { LCD_CountdownToSOS(sec, (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS) != 0u) ? 1u : 0u); }
-#endif
-}
 
 /* SOS: удержание button_sos >= BUTTON_PRESS_SOS (3 с) запускает ОБРАТНЫЙ
    ОТСЧЁТ (TIMER_PRESS_SOS), а не мгновенное действие. Пока SOS уже поднят,
@@ -749,9 +748,11 @@ static void Button_Sos(void)
         (button_sos.button_count >= BUTTON_PRESS_SOS) &&
         (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS) == 0u))
     {
+      s_cnt_return = menu_status.screen;
       s_cnt_kind = 2u;
       START_TIMER(TIMER_PRESS_SOS, (uint16_t)VECTOR_COUNTDOWN_SOS_MS);
       Alert_Set(ALERT_SOS_COUNTDOWN);
+      Menu_GoTo((uint8_t)SCREEN_COUNTDOWN_SOS);
       LOG_I(VLOG_M_SYS, "menu: SOS countdown %u ms", (uint32_t)VECTOR_COUNTDOWN_SOS_MS);
     }
   }
@@ -1028,7 +1029,6 @@ void Menu_Run(void)
   }
   Button_Run_Backlight();
   Menu_Draw();
-  Menu_CountdownDraw();
 }
 
 

@@ -49,7 +49,7 @@ typedef struct {
 	void (*init_func)(void);
 } screen_map_t;
 
-static const screen_map_t scr_map[8] = {
+static const screen_map_t scr_map[] = {
 	{SCREEN_START,  		&ui_ScreenStart,	ui_ScreenStart_screen_init},
 	{SCREEN_MEASURE,		&ui_ScreenMeasurements,      ui_ScreenMeasurements_screen_init},
 	{SCREEN_MENU,			&ui_ScreenMenu,		ui_ScreenMenu_screen_init},
@@ -58,6 +58,8 @@ static const screen_map_t scr_map[8] = {
 	{SCREEN_CONNECT_DEVICE, &ui_ScreenMenu,		ui_ScreenMenu_screen_init},
 	{SCREEN_VOICE_MESSAGE,  &ui_ScreenMenu,     ui_ScreenMenu_screen_init},
 	{SCREEN_TEXT_MESSAGE,   &ui_ScreenMenu,     ui_ScreenMenu_screen_init},
+	{SCREEN_COUNTDOWN_SHUTDOWN, &ui_ScreenHeadMain, ui_ScreenHeadMain_screen_init},
+	{SCREEN_COUNTDOWN_SOS,      &ui_ScreenHeadMain, ui_ScreenHeadMain_screen_init},
 };
 
 //------------------------------------------------------------------------------
@@ -231,6 +233,12 @@ static const meas_layout_t meas_layout[MEAS_MODE_END] = {
 		.full_width = 1, .name_visible = 1,
 		.name_x = 0, .name_y = 15, .name_align = LV_ALIGN_TOP_MID,
 		.val_font = &ui_font_number85, .name_font = &ui_font_number21, .units_font = &ui_font_number21,
+		.name_line = 1, .img_src = NULL
+	},
+	[MEAS_ST_LORA] = {
+		.val_visible = 1,
+		.val_x = 0, .val_y = 30, .val_align = LV_ALIGN_CENTER,
+		.val_font = &ui_font_number36, .name_font = &ui_font_number21, .units_font = &ui_font_number21,
 		.name_line = 1, .img_src = NULL
 	},
 };

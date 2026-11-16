@@ -67,6 +67,9 @@ typedef enum
   SCREEN_VOICE_MESSAGE,
   SCREEN_TEXT_MESSAGE,
   //------------------------------------------------------------------------------
+  SCREEN_COUNTDOWN_SHUTDOWN,  /* обратный отсчёт выключения (удержание) */
+  SCREEN_COUNTDOWN_SOS,       /* обратный отсчёт SOS (удержание)        */
+
   SCREEN_COUNT
 } screen_t;
 

@@ -226,6 +226,12 @@ static const alert_desc_t s_desc[ALERT_ID_COUNT] =
     .blink = 1u, .ack_button = 0u, .burst = 0u,
     .period_ms = 600u, .pause_ms = 400u,
     .voice = ALERT_SND_NONE, .hold_s = 0u },
+  /* SOS группы - флаг сервера «в группе кто-то нажал SOS» (бит SOS_GROUP).   */
+  [ALERT_SOS_GROUP] = {
+    .name = "SOS группы", .prio = ALERT_PRIO_ALARM, .ch = ALERT_CHMASK_ALARM,
+    .blink = 1u, .ack_button = 0u, .burst = 0u,
+    .period_ms = 600u, .pause_ms = 400u,
+    .voice = ALERT_SND_NONE, .hold_s = 0u },
 
   /* Обратный отсчёт выключения: ТИК раз в секунду (200 мс звук+вибро+свет,
      800 мс пауза), пока кнопка зажата и статус жив (Menu_vector).            */
@@ -247,14 +253,14 @@ static const alert_desc_t s_desc[ALERT_ID_COUNT] =
     .name = "ОСТОРОЖНО! ГАЗ!", .prio = ALERT_PRIO_ALARM, .ch = ALERT_CHMASK_ALARM,
     .blink = 0u, .ack_button = 1u, .burst = 0u,
     .period_ms = ALERT_PERIOD_GAS_MS, .pause_ms = ALERT_PAUSE_GAS_MS,
-    .voice = ALERT_SND_GAS, .hold_s = ALERT_GAS_HOLD_S },
+    .voice = ALERT_SND_GAS, .hold_s = 0u },   /* газ не гаснет по таймауту */
 
   /* «ВСЕМ НА ВЫХОД» - бит сервера (пока поднят) или трекер-«мастер»          */
   [ALERT_EVACUATION] = {
     .name = "ВСЕМ НА ВЫХОД", .prio = ALERT_PRIO_ALARM, .ch = ALERT_CHMASK_ALARM,
     .blink = 1u, .ack_button = 1u, .burst = 0u,
     .period_ms = ALERT_PERIOD_EVAC_MS, .pause_ms = ALERT_PAUSE_EVAC_MS,
-    .voice = ALERT_SND_EVACUATION, .hold_s = ALERT_EVAC_HOLD_S },
+    .voice = ALERT_SND_EVACUATION, .hold_s = 0u },
 
   /* Неподвижность: инцидент «Отсутствие активности» (EventLog 0x10).
      Снимается ТОЛЬКО появлением движения - автоочистки нет (hold_s = 0)      */
@@ -316,7 +322,7 @@ static const alert_desc_t s_desc[ALERT_ID_COUNT] =
     .name = "Сообщение", .prio = ALERT_PRIO_UI, .ch = ALERT_CHMASK_MESSAGE,
     .blink = 0u, .ack_button = 1u, .burst = 0u,
     .period_ms = ALERT_PERIOD_MSG_MS, .pause_ms = ALERT_PAUSE_MSG_MS,
-    .voice = ALERT_SND_MESSAGE, .hold_s = ALERT_MSG_HOLD_S },
+    .voice = ALERT_SND_MESSAGE, .hold_s = 0u },
 };
 
 /* Имена ошибок прибора по номеру бита Config_common.StateErr (enum
@@ -964,7 +970,7 @@ static void immob_on_motion(void)
 
   if (s_alert[ALERT_IMMOBILITY].status != 0u)
   {
-    Alert_Clear(ALERT_IMMOBILITY);
+    do{Sys_Cfg_Lock();CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_IMMOBILITY);Sys_Cfg_Unlock();}while(0);
   }
 }
 #endif /* CONFIG_LIS3DH - источник события движения (акселерометр) */
@@ -1012,7 +1018,7 @@ static void immob_tick_1s(void)
     /* Функция выключена в настройках: статус снимаем, счётчики гасим.       */
     if ((s_im.phase != (uint8_t)IM_IDLE) || (s_alert[ALERT_IMMOBILITY].status != 0u))
     {
-      Alert_Clear(ALERT_IMMOBILITY);
+      do{Sys_Cfg_Lock();CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_IMMOBILITY);Sys_Cfg_Unlock();}while(0);
       s_im.phase         = (uint8_t)IM_IDLE;
       s_im.no_motion_s   = 0u;
       s_im.prealarm_s    = 0u;
@@ -1062,7 +1068,7 @@ static void immob_tick_1s(void)
          свет; одновременно стартует предаварийный таймер.                   */
       s_im.phase      = (uint8_t)IM_PREALARM;
       s_im.prealarm_s = immob_cfg(cfg->Immobility_PreAlarm_s, ALERT_IMMOB_PREALARM_S_DEF);
-      Alert_Set(ALERT_IMMOBILITY);
+      do{Sys_Cfg_Lock();SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_IMMOBILITY);Sys_Cfg_Unlock();}while(0);
       LOG_W(VLOG_M_SYS, "alert: IMMOBILITY (no motion %u s) -> indication %u s to react",
             (uint32_t)s_im.no_motion_s, (uint32_t)s_im.prealarm_s);
     }
@@ -1163,8 +1169,8 @@ static void gas_local_tick(void)
     }
   }
 
-  if (fail != 0u) { Alert_Set(ALERT_GA_SENSOR_FAIL); }
-  else            { Alert_Clear(ALERT_GA_SENSOR_FAIL); }
+  if (fail != 0u) { do{Sys_Cfg_Lock();SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GA_SENSOR_FAIL);Sys_Cfg_Unlock();}while(0); }
+  else            { do{Sys_Cfg_Lock();CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GA_SENSOR_FAIL);Sys_Cfg_Unlock();}while(0); }
 }
 #endif /* CONFIG_BLE */
 
@@ -1178,48 +1184,26 @@ static void gas_local_tick(void)
    (Alert_Tick, раз в секунду).                                              */
 static void status_bits_tick(void)
 {
-  /* SOS: источник - бит (Lora downlink или постановка с кнопки). */
-  if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS)) { Alert_Set(ALERT_SOS); }
-  else                                               { Alert_Clear(ALERT_SOS); }
-
-  /* Зеркала реестр -> бит для экрана/журнала. */
+  /* p6: биты -> реестр. Биты ST_COMMON_ERR - ИСТОЧНИК (их ставят battery_tick,
+     device_presence_tick, gas_local_tick, immob, Lora-мост, меню); здесь ОДНО
+     место, где по битам ведётся реестр индикации. Реестр сам биты НЕ пишет.   */
+  if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS)) { Alert_Set(ALERT_SOS); } else { Alert_Clear(ALERT_SOS); }
+  if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS_GROUP)) { Alert_Set(ALERT_SOS_GROUP); } else { Alert_Clear(ALERT_SOS_GROUP); }
+  if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_EVACUATION)) { Alert_Set(ALERT_EVACUATION); } else { Alert_Clear(ALERT_EVACUATION); }
+  if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_GAS)) { Alert_Set(ALERT_NO_GAS); } else { Alert_Clear(ALERT_NO_GAS); }
+  if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_PPE)) { Alert_Set(ALERT_NO_PPE); } else { Alert_Clear(ALERT_NO_PPE); }
+  if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_BRACELET)) { Alert_Set(ALERT_NO_BRACELET); } else { Alert_Clear(ALERT_NO_BRACELET); }
+  if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GA_SENSOR_FAIL)) { Alert_Set(ALERT_GA_SENSOR_FAIL); } else { Alert_Clear(ALERT_GA_SENSOR_FAIL); }
+  if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_IMMOBILITY)) { Alert_Set(ALERT_IMMOBILITY); } else { Alert_Clear(ALERT_IMMOBILITY); }
+  if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_BATTERY)) { Alert_Set(ALERT_BATTERY_CRIT); } else { Alert_Clear(ALERT_BATTERY_CRIT); }
+  if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_LOW_BATTERY)) { Alert_Set(ALERT_BATTERY_LOW); } else { Alert_Clear(ALERT_BATTERY_LOW); }
+  /* Газ: реестр ведут gas_local_tick/Alert_LoraMessage; бит - зеркало для экрана. */
   Sys_Cfg_Lock();
-  if (Alert_IsActive(ALERT_EVACUATION))    { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_EVACUATION); }
-  else                                     { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_EVACUATION); }
-  if (Alert_IsActive(ALERT_NO_GAS))        { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_GAS); }
-  else                                     { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_GAS); }
-  if (Alert_IsActive(ALERT_NO_PPE))        { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_PPE); }
-  else                                     { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_PPE); }
-  if (Alert_IsActive(ALERT_NO_BRACELET))   { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_BRACELET); }
-  else                                     { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_BRACELET); }
-  if (Alert_IsActive(ALERT_GA_SENSOR_FAIL)){ SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GA_SENSOR_FAIL); }
-  else                                     { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GA_SENSOR_FAIL); }
+  if (Alert_IsActive(ALERT_GAS_ALARM)) { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GAS_ALARM); }
+  else                                 { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GAS_ALARM); }
   Sys_Cfg_Unlock();
 }
 
-/* Автоочистка статусов с ОДНОРАЗОВЫМ источником (колонка hold_s в s_desc).
-   Метку подтверждения обновляет Alert_Set(), поэтому у серверной газовой
-   тревоги, локальной эвакуации «мастера» и сигнала сообщения нет «вечного»
-   залипания; у неподвижности, «нет СИЗ/ГА/браслета», ошибок и батареи
-   hold_s = 0 - их снимает только их источник.                              */
-static void alert_hold_tick(void)
-{
-  uint8_t i;
-
-  for (i = 1u; i < (uint8_t)ALERT_ID_COUNT; i++)
-  {
-    const alert_desc_t *d = &s_desc[i];
-
-    if ((d->hold_s == 0u) || (s_alert[i].status == 0u)) { continue; }
-    if (VTICK_ELAPSED_MS(s_alert[i].since_ms) >= ((uint32_t)d->hold_s * 1000u))
-    {
-      if (i == (uint8_t)ALERT_GAS_ALARM) { s_gas_src = 0u; }  /* источник погашен */
-      LOG_I(VLOG_M_SYS, "alert: hold %u s expired -> CLEAR [%s]",
-            (uint32_t)d->hold_s, d->name);
-      Alert_Clear((alert_id_t)i);
-    }
-  }
-}
 
 /* ============================================================================
  *                    УСТРОЙСТВА КОМПЛЕКТА: нет СИЗ / ГА / браслета
@@ -1256,11 +1240,11 @@ static void device_presence_tick(void)
         if (Ble_telemetry.ppe[i].Present != 0u) { ppe_ok = 1u; break; }
       }
     }
-    if (ppe_ok != 0u) { Alert_Clear(ALERT_NO_PPE); } else { Alert_Set(ALERT_NO_PPE); }
+    if (ppe_ok != 0u) { do{Sys_Cfg_Lock();CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_PPE);Sys_Cfg_Unlock();}while(0); } else { do{Sys_Cfg_Lock();SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_PPE);Sys_Cfg_Unlock();}while(0); }
   }
   else
   {
-    Alert_Clear(ALERT_NO_PPE);      /* удалено из настроек - индикация прекращается */
+    do{Sys_Cfg_Lock();CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_PPE);Sys_Cfg_Unlock();}while(0);      /* удалено из настроек - индикация прекращается */
   }
 
   /* Газоанализатор (AVIS): флаг «данные свежие» из BLE-телеметрии.           */
@@ -1271,11 +1255,11 @@ static void device_presence_tick(void)
     {
       gas_ok = 1u;
     }
-    if (gas_ok != 0u) { Alert_Clear(ALERT_NO_GAS); } else { Alert_Set(ALERT_NO_GAS); }
+    if (gas_ok != 0u) { do{Sys_Cfg_Lock();CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_GAS);Sys_Cfg_Unlock();}while(0); } else { do{Sys_Cfg_Lock();SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_GAS);Sys_Cfg_Unlock();}while(0); }
   }
   else
   {
-    Alert_Clear(ALERT_NO_GAS);
+    do{Sys_Cfg_Lock();CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_GAS);Sys_Cfg_Unlock();}while(0);
   }
 
   /* Браслет (пульсометр): телеметрия заведена (bracelet_online/bracelet_ms),
@@ -1290,11 +1274,11 @@ static void device_presence_tick(void)
     {
       brsl_ok = 1u;
     }
-    if (brsl_ok != 0u) { Alert_Clear(ALERT_NO_BRACELET); } else { Alert_Set(ALERT_NO_BRACELET); }
+    if (brsl_ok != 0u) { do{Sys_Cfg_Lock();CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_BRACELET);Sys_Cfg_Unlock();}while(0); } else { do{Sys_Cfg_Lock();SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_BRACELET);Sys_Cfg_Unlock();}while(0); }
   }
   else
   {
-    Alert_Clear(ALERT_NO_BRACELET);
+    do{Sys_Cfg_Lock();CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_BRACELET);Sys_Cfg_Unlock();}while(0);
   }
 }
 #endif /* CONFIG_BLE */
@@ -1397,10 +1381,10 @@ static void battery_tick(void)
   if ((low != s_bat_low) || (crit != s_bat_crit))
   {
     Sys_Cfg_Lock();
-//    if (crit != 0u) { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_BATTERY); }
-//    else            { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_BATTERY); }
-//    if (low  != 0u) { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_LOW_BATTERY); }
-//    else            { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_LOW_BATTERY); }
+    if (crit != 0u) { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_BATTERY); }
+    else            { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_BATTERY); }
+    if (low  != 0u) { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_LOW_BATTERY); }
+    else            { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_LOW_BATTERY); }
     Sys_Cfg_Unlock();
 
     LOG_W(VLOG_M_SYS, "alert: battery %u mV (lim1=%u lim2=%u) -> low=%u crit=%u",
@@ -1413,8 +1397,8 @@ static void battery_tick(void)
   /* Критический разряд важнее низкого (приоритет по alert_id_t), поэтому
      низкий заряд взводим только если критического нет - иначе на экране и в
      логе дубли.                                                              */
-  if (crit != 0u) { Alert_Set(ALERT_BATTERY_CRIT); } else { Alert_Clear(ALERT_BATTERY_CRIT); }
-  if ((low != 0u) && (crit == 0u)) { Alert_Set(ALERT_BATTERY_LOW); } else { Alert_Clear(ALERT_BATTERY_LOW); }
+  if (crit != 0u) { do{Sys_Cfg_Lock();SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_BATTERY);Sys_Cfg_Unlock();}while(0); } else { do{Sys_Cfg_Lock();CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_BATTERY);Sys_Cfg_Unlock();}while(0); }
+  if ((low != 0u) && (crit == 0u)) { do{Sys_Cfg_Lock();SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_LOW_BATTERY);Sys_Cfg_Unlock();}while(0); } else { do{Sys_Cfg_Lock();CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_LOW_BATTERY);Sys_Cfg_Unlock();}while(0); }
 }
 
 /* ============================================================================
@@ -1608,7 +1592,9 @@ uint8_t Alert_AckButton(void)
   s_alert[top].indication = 0u;
   s_alert[top].ack_ms     = VTICK_MS();
   LOG_I(VLOG_M_SYS, "alert: ACK by button [%s] (status stays)", s_desc[top].name);
-  return (uint8_t)top;
+    /* Сообщение - одноразовый статус без hold: квитирование снимает и статус. */
+  if (top == ALERT_MESSAGE) { Alert_Clear(ALERT_MESSAGE); }
+return (uint8_t)top;
 }
 
 /* «ОСТОРОЖНО! ГАЗ!» с ID трекера-источника (на экране виден ID).            */
@@ -1666,9 +1652,17 @@ uint8_t Alert_LoraMessage(const uint8_t *text_cp1251, uint8_t len, uint8_t seq)
     Alert_GasAlarm(msg_extract_id(text_cp1251, len));
     return (uint8_t)ALERT_GAS_ALARM;
   }
+  /* Сюда доходим только с НЕ-газовым сообщением: «ГАЗ» от сервера живёт,
+     пока не придёт ДРУГОЙ статус (требование автора) - снимаем серверный
+     источник; локальный (пороги Avis) снимается только возвратом в норму.   */
+  if ((s_gas_src & ALERT_GAS_SRC_SERVER) != 0u)
+  {
+    s_gas_src = (uint8_t)(s_gas_src & (uint8_t)~ALERT_GAS_SRC_SERVER);
+    if (s_gas_src == 0u) { Alert_Clear(ALERT_GAS_ALARM); }
+  }
   if (msg_contains(text_cp1251, len, ALERT_MSG_MARK_EVACUATION) != 0u)
   {
-    Alert_Set(ALERT_EVACUATION);
+    do{Sys_Cfg_Lock();SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_EVACUATION);Sys_Cfg_Unlock();}while(0);
     alert_rearm_indication(ALERT_EVACUATION);
     LOG_W(VLOG_M_SYS, "alert: EVACUATION by message seq=%u", (uint32_t)seq);
     return (uint8_t)ALERT_EVACUATION;
@@ -1690,7 +1684,7 @@ uint8_t Alert_SendEvacuation(void)
     return 0u;
   }
 
-  Alert_Set(ALERT_EVACUATION);
+  do{Sys_Cfg_Lock();SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_EVACUATION);Sys_Cfg_Unlock();}while(0);
   alert_rearm_indication(ALERT_EVACUATION);
 #if CONFIG_LORA
   if (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_LORA))
@@ -1815,7 +1809,6 @@ void Alert_Tick(void)
 
     syserr_tick();             /* ошибки модулей (ST_COMMON_ERR)            */
     battery_tick();            /* низкий/критический заряд по напряжению    */
-    alert_hold_tick();         /* автоочистка статусов с одноразовым источником */
     status_bits_tick();        /* биты StateErr <-> реестр (единое место)   */
 
 #if CONFIG_LIS3DH
@@ -1838,13 +1831,13 @@ void Alert_Tick(void)
     {
       if (TESTBIT(Lora_GetControlLora(), ST_LORA_BIT_EVACUATION))
       {
-        Alert_Set(ALERT_EVACUATION);
+        do{Sys_Cfg_Lock();SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_EVACUATION);Sys_Cfg_Unlock();}while(0);
       }
       else if (s_alert[ALERT_EVACUATION].status != 0u)
       {
         /* Снято сервером. Локальную (мастер) эвакуацию сервер не сбрасывает -
            её гасит hold_s после последнего подтверждения.                   */
-        Alert_Clear(ALERT_EVACUATION);
+        do{Sys_Cfg_Lock();CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_EVACUATION);Sys_Cfg_Unlock();}while(0);
       }
       /* Motion-блок: поза + признак неподвижности + уровень активности.      */
       Lora_SetMotionState(immob_posture(),

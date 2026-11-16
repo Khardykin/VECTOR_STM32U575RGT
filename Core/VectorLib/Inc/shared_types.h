@@ -127,6 +127,9 @@ enum ST_COMMON_ERR
   ST_COMMON_BIT_NO_PPE,                          // Нет связи с СИЗ
   ST_COMMON_BIT_NO_BRACELET,                     // Нет связи с браслетом
   ST_COMMON_BIT_GA_SENSOR_FAIL,                  // Отказ сенсора ГА (бит 6 ST_GA_ERR любого канала)
+  ST_COMMON_BIT_SOS_GROUP,                       // SOS группы (от сервера, бит SOS_GROUP ControlLora)
+  ST_COMMON_BIT_IMMOBILITY,                      // Неподвижность/отсутствие активности (LIS3DH)
+  ST_COMMON_BIT_GAS_ALARM,                       // Тревога по газу (пороги Avis / сервер)
 };
 //--------------------------------------------------------------------------------------------------------------
 enum ST_COMMON
