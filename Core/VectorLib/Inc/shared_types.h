@@ -120,6 +120,11 @@ enum ST_COMMON_ERR
   ST_COMMON_BIT_ERR_LORA,                           // бит 8 - Ошибка LORA
   ST_COMMON_BIT_ERR_LCD, 							// бит 9 - Ошибка LCD
   ST_COMMON_BIT_CRITICAL_BATTERY,					// бит 10 - Критическое состояние батареи +
+  ST_COMMON_BIT_NO_PPE,      // Потеря связи с СИЗ
+  ST_COMMON_BIT_NO_BRACELET, // Потеря связи с браслетом
+  ST_COMMON_BIT_NO_GA,       // Потеря связи с газоанализатором
+  ST_COMMON_BIT_SOS,                 // SOS (из LoRa downlink)
+  ST_COMMON_BIT_EVACUATION,          // Эвакуация (из LoRa downlink)
 };
 //--------------------------------------------------------------------------------------------------------------
 enum ST_COMMON
