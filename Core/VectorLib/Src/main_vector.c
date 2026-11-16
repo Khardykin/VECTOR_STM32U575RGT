@@ -939,17 +939,6 @@ void Vector_Run_Measure(void)
      sensors_status; ошибки шины - в ST_COMMON_BIT_ERR_*.                   */
   sensors_read();
 
-  /* Поворот экрана по акселерометру: прерывание ACCEL_INT (PC11) только
-     ставит флаг, ориентацию определяет lis3dh_update_all() внутри
-     sensors_read(), а экран крутим здесь - в одном потоке с остальной
-     индикацией, чтобы не получить двух владельцев дисплея.                 */
-#if (CONFIG_TYPE_LCD_TFT && VECTOR_SCREEN_ROTATION)
-  if (sensors_rotation_changed() != 0u)
-  {
-    TFT_Rotation(sensors_status.Screen_rotation);   /* из sensors_status */
-  }
-#endif
-
   /* BLE/LoRa/LTE ВЫНЕСЕНЫ в свои потоки (ble_task/lora_task/lte_task; п.65 +
      решение автора «для Lte_Run тоже нужен свой поток») - здесь остался GPS;
      свой ритм каждый модуль держит внутри (RTC-таймеры TIMER_RTC_*).

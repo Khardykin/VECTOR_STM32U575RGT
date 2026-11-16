@@ -1013,15 +1013,12 @@ uint16_t LCD_Fill_Template(SNS_CFG *pSnsCfg)
 	bool screen_was_changed = false;
 	uint8_t current_state = IS_STATE_SCREEN();
 
-#if (CONFIG_LIS3DH)
-    if (lis3dh_orientation_changed()) {  // Ориентация изменилась?
-    	state_rotation = lis3dh_get_rotation_state();
-    }
-#endif
-	if(state_rotation != state_rotation_old){
-		TFT_Rotation(state_rotation);
-		state_rotation_old = state_rotation;
+
+#if (CONFIG_TYPE_LCD_TFT && VECTOR_SCREEN_ROTATION)
+	if (sensors_rotation_changed() != 0u){
+		TFT_Rotation(sensors_status.Screen_rotation);   /* из sensors_status */
 	}
+#endif
 
 	LCD_Image_SET(0);
 
