@@ -25,6 +25,7 @@ enum{
 	TIMER_MAIN_SCREEN,                              // Таймер возврата на главный экран
 	TIMER_SHUTDOWN,                                 // Таймер выключения прибора
 	TIMER_CHARGE_SOUND_VIBRO,						// Таймер включение звука и вибро при зарядке
+	TIMER_PRESS_SOS,                                // Обратный отсчёт SOS
 	TIMER_END,
 };
 //===========================================================================================================================
@@ -111,20 +112,21 @@ enum ST_GA_ERR
 //Для общего статусного байта ошибок, биты статуса ошибок
 enum ST_COMMON_ERR
 {
-  ST_COMMON_BIT_CRITICAL_LOW_BATTERY,               // бит 2 - Критично низкий заряд аккумулятора(err) +
-  ST_COMMON_BIT_ERR_STS4,                           // бит 3 - Ошибка микросхемы температуры
-  ST_COMMON_BIT_ERR_NBIOT,                          // бит 4 - Ошибка NB Iot
-  ST_COMMON_BIT_ERR_BLE,                            // бит 5 - Ошибка BLE
-  ST_COMMON_BIT_ERR_GPS,                            // бит 6 - Ошибка GPS
-  ST_COMMON_BIT_ERR_GSM,                            // бит 7 - Ошибка GSM
-  ST_COMMON_BIT_ERR_LORA,                           // бит 8 - Ошибка LORA
-  ST_COMMON_BIT_ERR_LCD, 							// бит 9 - Ошибка LCD
-  ST_COMMON_BIT_CRITICAL_BATTERY,					// бит 10 - Критическое состояние батареи +
-  ST_COMMON_BIT_NO_PPE,      // Потеря связи с СИЗ
-  ST_COMMON_BIT_NO_BRACELET, // Потеря связи с браслетом
-  ST_COMMON_BIT_NO_GA,       // Потеря связи с газоанализатором
-  ST_COMMON_BIT_SOS,                 // SOS (из LoRa downlink)
-  ST_COMMON_BIT_EVACUATION,          // Эвакуация (из LoRa downlink)
+  ST_COMMON_BIT_CRITICAL_LOW_BATTERY,               // Критично низкий заряд аккумулятора(err) +
+  ST_COMMON_BIT_ERR_STS4,                           // Ошибка микросхемы температуры
+  ST_COMMON_BIT_ERR_NBIOT,                          // Ошибка NB Iot
+  ST_COMMON_BIT_ERR_BLE,                            // Ошибка BLE
+  ST_COMMON_BIT_ERR_GPS,                            // Ошибка GPS
+  ST_COMMON_BIT_ERR_GSM,                            // Ошибка GSM
+  ST_COMMON_BIT_ERR_LORA,                           // Ошибка LORA
+  ST_COMMON_BIT_ERR_LCD, 							// Ошибка LCD
+  ST_COMMON_BIT_CRITICAL_BATTERY,					// Критическое состояние батареи +
+  ST_COMMON_BIT_SOS,                              // SOS (зеркало ST_LORA_BIT_SOS из ControlLora)
+  ST_COMMON_BIT_EVACUATION,                      // Эвакуация (зеркало ST_LORA_BIT_EVACUATION)
+  ST_COMMON_BIT_NO_GAS,                          // Нет связи с газоанализатором
+  ST_COMMON_BIT_NO_PPE,                          // Нет связи с СИЗ
+  ST_COMMON_BIT_NO_BRACELET,                     // Нет связи с браслетом
+  ST_COMMON_BIT_GA_SENSOR_FAIL,                  // Отказ сенсора ГА (бит 6 ST_GA_ERR любого канала)
 };
 //--------------------------------------------------------------------------------------------------------------
 enum ST_COMMON
@@ -138,8 +140,6 @@ enum ST_COMMON
   ST_COMMON_BIT_TURN_ON_GPS,                        // бит 6 - Включение GPS
   ST_COMMON_BIT_TURN_ON_GSM,                        // бит 7 - Включение GSM
   ST_COMMON_BIT_TURN_ON_LORA,                       // бит 8 - Включение LORA
-  ST_COMMON_BIT_SOS,                                // бит 9 - SOS (зеркало ST_LORA_BIT_SOS из ControlLora - «выходной мост» LoRa, п.65)
-  ST_COMMON_BIT_EVACUATION,                         // бит 10 - Эвакуация (зеркало ST_LORA_BIT_EVACUATION)
   ST_COMMON_BIT_TURN_OFF = 31,                      // бит 31 - Прибор выключен(Не ведутся логи в режиме выключения)+
 };
 

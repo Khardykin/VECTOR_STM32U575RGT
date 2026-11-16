@@ -547,6 +547,8 @@ static void decode_button(uint8_t idx, volatile Button_variables *pb)
   }
 }
 
+static void countdown_cancel(void);   /* отсчёт удержания (определение ниже) */
+
 /* Сброс состояния кнопок и декодера. Одна ФИЗИЧЕСКАЯ кнопка PB1 несёт ДВЕ
    программные структуры: button1 (жесты навигации) и button_sos (SOS), поэтому
    гасим обе - иначе после включения/выключения или прерванного отсчёта
@@ -582,6 +584,8 @@ void Menu_ResetButtons(void)
      удержание кнопки при включении не досчитало до порога 3 с.            */
   button_sos.button_count = 0u;
   button_sos.button_flag  = 0u;
+
+  countdown_cancel();   /* прерванный отсчёт не переживает сброс кнопок */
 }
 
 /* ============================================================================
@@ -659,43 +663,101 @@ static void Menu_TurnOff(void)
   LOG_I(VLOG_M_SYS, "menu: turn off (TYPE_TURN_OFF queued)");
 }
 
-/* SOS: удержание button_sos >= BUTTON_PRESS_SOS (3 с). button_sos в
-   stm32u5xx_it.c зеркалит Button1 (те же EXTI-флаги, счётчик свой - растёт в
-   Timer_Tick_1ms), поэтому жест не конфликтует с декодером меню: LONG Button1
-   (1.5 с) в навигации не используется, а SOS срабатывает на 3 с.
-   Аналог Avis Button_Sos() (docs/Avis_Menu_Functionality.c.md): там условие
-   CONFIG_LORA + ST_COMMON_BIT_TURN_ON_LORA + get_state_start_flag_lora(), затем
-   START_TIMER(TIMER_PRESS_SOS, TIME_PRESS_SOS) и переход на
-   STATE_SCREEN_COUNTDOWN_SOS - обратный отсчёт с отменой отпусканием.
-   У нас SOS пока БЕЗ действия (автор: «обратный отсчёт будет, потом сделаем»):
-   жест фиксируется, счётчик гасится и пишется лог. Для доделки понадобятся
-   миллисекундный таймер обратного отсчёта (в enum 1 мс свободных слотов нет -
-   добавить свой перед TIMER_END), LCD_CountdownToSOS() + ROLLER_SOS (уже есть)
-   и Lora_SetControlLoraBit(ST_LORA_BIT_SOS, 1) под CONFIG_LORA.
-   Работает на ЛЮБОМ экране (в Avis Button_Sos() вызывается из Button_Run, а не
-   из экранного switch); на SCREEN_START это один из двух рабочих жестов.
-   КОНТЕКСТ: поток LVGL Task (Menu_Run, 100 мс).                             */
+/* ============================================================================
+ *  ОБРАТНЫЙ ОТСЧЁТ УДЕРЖАНИЯ (выключение / SOS) - как CountdownToShutdown /
+ *  CountdownToSOS Avis: таймер идёт, ПОКА кнопка зажата; цифра на экране
+ *  меняется каждую секунду таймера; тик звука+вибро+света раз в секунду ведёт
+ *  реестр Alert (ALERT_SHUTDOWN / ALERT_SOS_COUNTDOWN). Отпустил раньше -
+ *  отмена (таймер + статус гаснут). Досчитал - действие.
+ *  КОНТЕКСТ: поток LVGL Task (Menu_Run, 100 мс).                              */
+static uint8_t s_cnt_kind = 0u;   /* 0 = нет, 1 = выключение, 2 = SOS */
+
+static void countdown_cancel(void)
+{
+  if (s_cnt_kind == 1u)      { RESET_TIMER(TIMER_SHUTDOWN);   Alert_Clear(ALERT_SHUTDOWN); }
+  else if (s_cnt_kind == 2u) { RESET_TIMER(TIMER_PRESS_SOS);  Alert_Clear(ALERT_SOS_COUNTDOWN); }
+  s_cnt_kind = 0u;
+}
+
+static void countdown_start_shutdown(void)
+{
+  if ((device_turn == DEVICE_TURNED_OFF) || (s_cnt_kind != 0u)) { return; }
+  s_cnt_kind = 1u;
+  START_TIMER(TIMER_SHUTDOWN, (uint16_t)VECTOR_COUNTDOWN_SHUTDOWN_MS);
+  Alert_Set(ALERT_SHUTDOWN);
+  LOG_I(VLOG_M_SYS, "menu: shutdown countdown %u ms", (uint32_t)VECTOR_COUNTDOWN_SHUTDOWN_MS);
+}
+
+/* Логика отсчёта (до навигации): отпустил - отмена; досчитал - действие. */
+static void Menu_CountdownTick(void)
+{
+  if (s_cnt_kind == 0u) { return; }
+  uint8_t held = (s_cnt_kind == 1u)
+      ? (uint8_t)((READ_PIN_IN(BUTTON_3) == VECTOR_KEY_PRESSED_LEVEL) ? 1u : 0u)
+      : (uint8_t)((READ_PIN_IN(BUTTON_1) == VECTOR_KEY_PRESSED_LEVEL) ? 1u : 0u);
+  if (held == 0u)
+  {
+    LOG_I(VLOG_M_SYS, "menu: countdown cancelled (button released)");
+    countdown_cancel();
+    return;
+  }
+  uint8_t expired = (s_cnt_kind == 1u) ? (uint8_t)TEST_TIMER(TIMER_SHUTDOWN)
+                                       : (uint8_t)TEST_TIMER(TIMER_PRESS_SOS);
+  if (expired == 0u) { return; }
+  if (s_cnt_kind == 1u)
+  {
+    countdown_cancel();
+    Menu_TurnOff();
+  }
+  else
+  {
+    countdown_cancel();
+    Sys_Cfg_Lock();
+    SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS);
+    Sys_Cfg_Unlock();
+#if CONFIG_LORA
+    Lora_SetControlLoraBit(ST_LORA_BIT_SOS, 1u);
+#endif
+    Alert_Set(ALERT_SOS);
+    Menu_ResetButtons();
+    LOG_W(VLOG_M_SYS, "menu: SOS set by hold countdown");
+  }
+}
+
+/* Цифра отсчёта (после Menu_Draw, чтобы шаблон её не затёр). Каждая секунда
+   таймера - новое число: 5,4,3,2,1 (ceil остатка мс до секунд).              */
+static void Menu_CountdownDraw(void)
+{
+  if (s_cnt_kind == 0u) { return; }
+#if (CONFIG_TYPE_LCD_TFT != 0)
+  uint16_t t = (s_cnt_kind == 1u) ? TEST_TIMER_RUN(TIMER_SHUTDOWN)
+                                  : TEST_TIMER_RUN(TIMER_PRESS_SOS);
+  uint32_t sec = ((uint32_t)t + 999u) / 1000u;
+  if (s_cnt_kind == 1u) { LCD_CountdownToShutdown(sec); }
+  else { LCD_CountdownToSOS(sec, (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS) != 0u) ? 1u : 0u); }
+#endif
+}
+
+/* SOS: удержание button_sos >= BUTTON_PRESS_SOS (3 с) запускает ОБРАТНЫЙ
+   ОТСЧЁТ (TIMER_PRESS_SOS), а не мгновенное действие. Пока SOS уже поднят,
+   повторное удержание не запускает отсчёт (сброс SOS - по LoRa downlink).   */
 static void Button_Sos(void)
 {
   if (button_sos.button_flag != 0u)
   {
-    if (button_sos.button_count >= BUTTON_PRESS_SOS)
+    if ((s_cnt_kind == 0u) &&
+        (button_sos.button_count >= BUTTON_PRESS_SOS) &&
+        (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS) == 0u))
     {
-      /* удержание засчитано: гасим флаг, чтобы SOS не повторился до отпускания
-         кнопки (Avis: button_sos.button_flag = 0)                          */
-      button_sos.button_flag  = 0u;
-      button_sos.button_count = 0u;
-#if CONFIG_LORA
-      /* TODO(автор): Lora_SetControlLoraBit(ST_LORA_BIT_SOS, 1) + обратный
-         отсчёт на экране - см. комментарий выше.                           */
-#endif
-      LOG_I(VLOG_M_SYS, "menu: SOS hold %u ms (countdown and SOS signal - TODO)",
-            (uint32_t)BUTTON_PRESS_SOS);
+      s_cnt_kind = 2u;
+      START_TIMER(TIMER_PRESS_SOS, (uint16_t)VECTOR_COUNTDOWN_SOS_MS);
+      Alert_Set(ALERT_SOS_COUNTDOWN);
+      LOG_I(VLOG_M_SYS, "menu: SOS countdown %u ms", (uint32_t)VECTOR_COUNTDOWN_SOS_MS);
     }
   }
   else
   {
-    button_sos.button_count = 0u;   /* кнопка отпущена - счётчик с нуля (Avis) */
+    button_sos.button_count = 0u;   /* кнопка отпущена - счётчик с нуля */
   }
 }
 
@@ -730,6 +792,9 @@ static void menu_navigate(void)
 		}
 	}
 
+  /* Идёт обратный отсчёт (выключение/SOS) - навигацию не пускаем. */
+  if (s_cnt_kind != 0u) { return; }
+
 
   /* Выключение прибора - ПОЭКРАННО (Menu_TurnOff): LONG Button2 на
      SCREEN_START уже работает, на SCREEN_MEASURE в Avis это LONG с обратным
@@ -753,7 +818,7 @@ static void menu_navigate(void)
        раньше времени.                                                   */
     case SCREEN_START:
       if (g3 == (uint8_t)GEST_LONG){
-        Menu_TurnOff();
+        countdown_start_shutdown();
       }
       break;
     /* Главный экран (Avis: STATE_SCREEN_MEASURE).
@@ -794,10 +859,9 @@ static void menu_navigate(void)
 	    		sub = 3;
 	    	}
 	    	else {
-	    		/* Выключение: Menu_TurnOff() уже увёл на SCREEN_START. Уходим
-	    		   из switch, иначе Menu_GoTo(setting_screens[0]) ниже вернул бы
-	    		   экран в SCREEN_MEASURE сразу после выключения.              */
-	    		Menu_TurnOff();
+	    		/* Выключение - обратный отсчёт удержания (CountdownToShutdown
+	    		   Avis): отпустил раньше - отмена; досчитал - Menu_TurnOff.   */
+	    		countdown_start_shutdown();
 	    		break;
 	    	}
 	    }
@@ -925,6 +989,7 @@ void Menu_Run(void)
   /* SOS - свой счётчик (button_sos), работает на любом экране: до декодера
      жестов, чтобы удержание Button1 3 с не «съедалось» экранной навигацией. */
   Button_Sos();
+  Menu_CountdownTick();
 
   menu_navigate();
 
@@ -963,6 +1028,7 @@ void Menu_Run(void)
   }
   Button_Run_Backlight();
   Menu_Draw();
+  Menu_CountdownDraw();
 }
 
 

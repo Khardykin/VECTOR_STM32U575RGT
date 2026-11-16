@@ -194,10 +194,6 @@ extern "C" {
    переключение каждые 100 мс - тик их Indication()).                        */
 #define ALERT_BLINK_PERIOD_MS    (100u)
 
-/* Единицы period_ms/pause_ms в Alert_SignalEx - как time_pulse/time_pause в
-   LedSoundVibroPlay Avis (тик 100 мс). Значение 0 = «по умолчанию из таблицы»
-   (для pause_ms это законный «без паузы» - см. доки .c).                    */
-#define ALERT_SIG_UNIT_MS        (100u)
 
 /* Повторы ВСЕЙ последовательности: 0 = вечно (до Alert_Stop/вытеснения).     */
 #define ALERT_REPEAT_FOREVER     (0u)
@@ -218,25 +214,6 @@ typedef enum
   ALERT_CH_SOUND = 0x10    /* audio_play_now(sound_idx): клип образа (SND_*)*/
 } alert_ch_t;
 
-/* Идентификаторы готовых СИГНАЛОВ - порт switch_flag_led из LedSoundVibroPlay/
-   Indication (Avis_Optional_Functions.c). Период/пауза/мигание каждого -
-   таблица s_sig_tab в Alert_vector.c (значения Avis), старт - Alert_Signal().
-   Это разовые сигналы (СОБЫТИЯ), а не статусы: SOS/групповой/зарядка/тест.
-   Сигналы SYSERR/LOWBAT/SENSFAIL из Avis теперь ведёт реестр статусов
-   (ALERT_DEVICE_ERROR / ALERT_BATTERY_*), таблица сохранена для совместимости
-   вызовов и для ручного теста.                                              */
-#define ALERT_SIG_SYSERR         (0x01u)  /* ошибка системы: 1 с / 0.5 с, LED  */
-#define ALERT_SIG_EXCEEDED       (0x02u)  /* выход за диапазон: 1 с / 0.2 с    */
-#define ALERT_SIG_LIMIT3         (0x03u)  /* порог 3 (TWA/STEL): 0.5 с / 0.3 с */
-#define ALERT_SIG_LIMIT2         (0x04u)  /* порог 2: 0.5 с / 0.5 с            */
-#define ALERT_SIG_LIMIT1         (0x05u)  /* порог 1: 0.6 с / 0.9 с, мигание   */
-#define ALERT_SIG_LOWBAT         (0x06u)  /* низкая батарея: 0.2 с / 0.3 с     */
-#define ALERT_SIG_SENSFAIL       (0x07u)  /* отказ датчика: 1 с / 0.5 с, LED   */
-#define ALERT_SIG_SOS            (0x08u)  /* SOS (LoRa): 0.6 с / 0.4 с, миг.   */
-#define ALERT_SIG_GROUP          (0x09u)  /* групповой (LoRa): 1 с / 0.5 с     */
-#define ALERT_SIG_BACKGR         (0x0Au)  /* фоновый (LoRa): 1 с / 0.2 с, миг. */
-#define ALERT_SIG_CHARGE         (0x0Bu)  /* зарядка звук+вибро: 0.6 с / 0.2 с */
-#define ALERT_SIG_TEST           (0x0Fu)  /* тест звука: 0.5 с / 1 с, без LED  */
 
 /* Одна фаза: МАСКА каналов + период (ВКЛ) + пауза + повторы. Примеры:
      { ALERT_CH_VIBRO, 500u, 200u, 1u, 0u, 0u }  - вибро 0.5 с, пауза 0.2 с;
@@ -283,14 +260,6 @@ void    Alert_StartEx(const alert_seq_t *seq,
                       uint16_t pause_ms,   /* 0 = t_off_ms из таблицы        */
                       uint8_t  repeats,    /* 0 = repeats из таблицы         */
                       uint8_t  count);     /* 0 = ВЕЧНО (до Alert_Stop)      */
-/* Разовый сигнал ALERT_SIG_* с параметрами по умолчанию из таблицы s_sig_tab
-   (1 пачка) либо с заданными (Alert_SignalEx: 0 = «по умолчанию», count = 0 -
-   вечно, до Alert_Stop).                                                    */
-void    Alert_Signal(uint8_t sig_id);
-void    Alert_SignalEx(uint8_t sig_id,
-                       uint16_t period_ms, uint16_t pause_ms,
-                       uint8_t  blink,     /* 1 = мигать LED (100 мс)        */
-                       uint8_t  count);    /* повторов пачки; 0 = вечно      */
 void    Alert_Stop(void);                  /* запрос стопа: любой поток;
                                               каналы погасятся в Tick        */
 uint8_t Alert_Busy(void);                  /* 1 = что-то идёт/запрошено      */
@@ -309,15 +278,22 @@ void    Alert_IndicationTick(void);
 typedef enum
 {
   ALERT_NONE = 0,
-  ALERT_GAS_ALARM,        /* «ОСТОРОЖНО! ГАЗ!» (пороги Avis или сервер, ID) */
+  /* ПРИОРИТЕТ = порядок в enum (alert_top_indication идёт от младшего id):
+     SOS -> отсчёт выключения -> отсчёт SOS -> эвакуация -> газ -> неподвижность
+     -> комплект (нет ГА/СИЗ/браслета, один ритм) -> отказ сенсора ГА ->
+     прибор (крит. разряд, ошибки, низкий заряд) -> сообщение.               */
+  ALERT_SOS,              /* SOS (бит ST_COMMON_BIT_SOS в StateErr)         */
+  ALERT_SHUTDOWN,         /* обратный отсчёт выключения (удержание кнопки)  */
+  ALERT_SOS_COUNTDOWN,    /* обратный отсчёт SOS (удержание кнопки)         */
   ALERT_EVACUATION,       /* «ВСЕМ НА ВЫХОД» (бит EVACUATION от сервера)    */
+  ALERT_GAS_ALARM,        /* «ОСТОРОЖНО! ГАЗ!» (пороги Avis или сервер, ID) */
   ALERT_IMMOBILITY,       /* «Неподвижность/Отсутствие активности»          */
   ALERT_NO_GAS,           /* нет газоанализатора (ГА) в комплекте           */
   ALERT_NO_PPE,           /* нет СИЗ                                        */
   ALERT_NO_BRACELET,      /* нет браслета (пульсометра)                     */
+  ALERT_GA_SENSOR_FAIL,   /* отказ сенсора ГА (бит 6 ST_GA_ERR канала)      */
   ALERT_BATTERY_CRIT,     /* критический разряд батареи                     */
-  ALERT_DEVICE_ERROR,     /* ошибка прибора (модули: ТЕМП/NB-IoT/BLE/GPS/
-                             GSM/LORA/LCD), param = номер бита StateErr     */
+  ALERT_DEVICE_ERROR,     /* ошибка прибора (модули), param = бит StateErr  */
   ALERT_BATTERY_LOW,      /* низкий заряд АКБ                               */
   ALERT_MESSAGE,          /* текстовое сообщение сервера (Message, п.7.1)   */
   ALERT_ID_COUNT

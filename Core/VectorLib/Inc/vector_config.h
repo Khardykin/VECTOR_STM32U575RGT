@@ -572,13 +572,14 @@
 #define ALERT_PAUSE_BATCRIT_MS           200u
 #endif
 
-/* Локальная газовая тревога ПО ПОРОГАМ подключённого газоанализатора Avis
-   (автор: «где-то по порогам с Ависа, где-то от сервера»): маска битов
-   Connected_device.StateErr, которые считаются загазованностью. По умолчанию
-   биты 0..4 = Порог 1/2/3, STEL, TWA (enum ST_GA_ERR, shared_types.h). Бит 5
-   «Превышение диапазона» намеренно не входит: это не тревога по газу.      */
+/* Газовая тревога по КАНАЛАМ газоанализатора (patch_4, требование автора):
+   биты 0..5 ST_GA_ERR ЛЮБОГО канала Sensor[i].StateErr (Порог 1/2/3, STEL,
+   TWA, Превышение диапазона) -> ALERT_GAS_ALARM. Бит 6 (SENSOR_FAILED) ->
+   отдельный ALERT_GA_SENSOR_FAIL, биты 7+ не индицируем. Смотрим ПО КАНАЛАМ,
+   а не по своду Connected_device.StateErr: свод (ERROR_MASK_ST_1) смешивает
+   пороги с ошибками калибровки - была бы ложная тревога.                   */
 #ifndef ALERT_GAS_THR_MASK
-#define ALERT_GAS_THR_MASK               0x001Fu
+#define ALERT_GAS_THR_MASK               0x003Fu
 #endif
 
 /* АВТООЧИСТКА статусов с одноразовым источником (колонка hold_s в таблице
@@ -698,6 +699,17 @@
    на два одиночных). Держать равной периоду опроса.                       */
 #ifndef VECTOR_MENU_POLL_MS
 #define VECTOR_MENU_POLL_MS         100u
+#endif
+/* Обратный отсчёт удержания (patch_4, как CountdownToShutdown/CountdownToSOS
+   Avis): после LONG-порога кнопка должна оставаться зажатой ещё N мс; цифра
+   на экране меняется каждую секунду таймера, тик звука+света - раз в секунду
+   (статусы ALERT_SHUTDOWN / ALERT_SOS_COUNTDOWN). Отпустил раньше - отсчёт
+   и индикация гаснут мгновенно.                                            */
+#ifndef VECTOR_COUNTDOWN_SHUTDOWN_MS
+#define VECTOR_COUNTDOWN_SHUTDOWN_MS 3000u
+#endif
+#ifndef VECTOR_COUNTDOWN_SOS_MS
+#define VECTOR_COUNTDOWN_SOS_MS      3000u
 #endif
 #ifndef VECTOR_MENU_AUTO_RETURN_S
 #define VECTOR_MENU_AUTO_RETURN_S   30u

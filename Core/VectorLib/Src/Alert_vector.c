@@ -76,17 +76,6 @@
                                              ALERT_CH_VIBRO | ALERT_CH_BEEP))
 #define ALERT_CHMASK_MESSAGE      ((uint8_t)(ALERT_CH_LED1 | ALERT_CH_BEEP))
 
-/* Звук сигналов по умолчанию: писк audio_beep() (внутренняя flash, не зависит
-   от SPI-образа). Если нужен клип образа (SND_TONE_1K и т.п.) - добавьте в
-   маску ALERT_CH_SOUND и укажите sound_idx в таблице s_sig_tab; тон тогда
-   оборвётся концом периода (phase_off -> audio_stop), как SOUND_OFF в Avis.  */
-#define ALERT_SIG_SOUND_IDX       (SND_KOLOKOL_1)
-
-/* Перевод единиц Avis (100 мс) в миллисекунды с защитой от переполнения
-   uint16 (pulse <= 255 -> 25500 мс; pause <= 655 -> 65500 мс).              */
-#define ALERT_SIG_MS(v, cap) \
-  ((uint16_t)(((uint32_t)(v) * ALERT_SIG_UNIT_MS > (uint32_t)(cap)) \
-              ? (uint32_t)(cap) : ((uint32_t)(v) * ALERT_SIG_UNIT_MS)))
 
 /* Сколько битов StateErr покрывает маска ERROR_MASK_ST_2 (0x03FF -> биты 0..9). */
 #define ALERT_SYSERR_BITS         (10u)
@@ -191,58 +180,6 @@ const alert_seq_t AlertSeq_PowerOn =
   .count = 1u                       /* один прогон, как в Avis               */
 };
 
-/* Таблица СИГНАЛОВ - порт вызовов LedSoundVibroPlay(id, pulse, pause, blink,
-   block_sound, block_led, test_sound) из Indication() Avis: pulse/pause в
-   единицах 100 мс, перевод в мс - при старте (ALERT_SIG_MS); block_sound=ON
-   -> без BEEP/SOUND, block_led=ON -> без LED; у Avis звук+вибро идут вместе,
-   поэтому вибро в маске всегда, звук - где block_sound=OFF. blink=1 у Avis
-   (mode_blink_led) -> SET_TGL обеих LED: мигают ОБА светодиода фазы.
-   count по умолчанию - 1 пачка; «тревога до подтверждения» = Alert_SignalEx
-   с count=0 (ALERT_REPEAT_FOREVER) и Alert_Stop() по квитанции.
-   ВНИМАНИЕ: SYSERR/LOWBAT/SENSFAIL теперь ведёт РЕЕСТР СТАТУСОВ (они стали
-   статусами ALERT_DEVICE_ERROR / ALERT_BATTERY_*), строки оставлены для
-   совместимости вызовов и ручного теста.                                    */
-typedef struct
-{
-  uint8_t  ch;         /* маска каналов                                      */
-  uint8_t  pulse;      /* период, единицы 100 мс (time_pulse Avis)           */
-  uint8_t  pause;      /* пауза, единицы 100 мс (time_pause Avis)            */
-  uint8_t  blink;      /* 1 = мигать LED (mode_blink_led Avis)               */
-  uint16_t sound_idx;  /* клип образа для бита SOUND (BEEP игнорирует)       */
-} alert_sig_def_t;
-
-/* Индексируется id сигнала (0x00 не используется - у Avis это «всё выкл»).   */
-static const alert_sig_def_t s_sig_tab[16] =
-{
-  /* 0x00 */ { 0u, 0u, 0u, 0u, 0u },                                  /* - */
-  /* 0x01 SYSERR   */ { (uint8_t)(ALERT_CH_VIBRO | ALERT_CH_LED1 | ALERT_CH_LED2),
-                         10u, 5u, 0u, ALERT_SIG_SOUND_IDX },   /* block_sound=ON */
-  /* 0x02 EXCEEDED */ { (uint8_t)(ALERT_CH_VIBRO | ALERT_CH_BEEP | ALERT_CH_LED1 | ALERT_CH_LED2),
-                         10u, 2u, 0u, ALERT_SIG_SOUND_IDX },
-  /* 0x03 LIMIT3   */ { (uint8_t)(ALERT_CH_VIBRO | ALERT_CH_BEEP | ALERT_CH_LED1 | ALERT_CH_LED2),
-                          5u, 3u, 0u, ALERT_SIG_SOUND_IDX },
-  /* 0x04 LIMIT2   */ { (uint8_t)(ALERT_CH_VIBRO | ALERT_CH_BEEP | ALERT_CH_LED1 | ALERT_CH_LED2),
-                          5u, 5u, 0u, ALERT_SIG_SOUND_IDX },
-  /* 0x05 LIMIT1   */ { (uint8_t)(ALERT_CH_VIBRO | ALERT_CH_BEEP | ALERT_CH_LED1 | ALERT_CH_LED2),
-                          6u, 9u, 1u, ALERT_SIG_SOUND_IDX },   /* blink=ON */
-  /* 0x06 LOWBAT   */ { (uint8_t)(ALERT_CH_VIBRO | ALERT_CH_BEEP | ALERT_CH_LED1 | ALERT_CH_LED2),
-                          2u, 3u, 0u, ALERT_SIG_SOUND_IDX },
-  /* 0x07 SENSFAIL */ { (uint8_t)(ALERT_CH_VIBRO | ALERT_CH_LED1 | ALERT_CH_LED2),
-                         10u, 5u, 0u, ALERT_SIG_SOUND_IDX },   /* block_sound=ON */
-  /* 0x08 SOS      */ { (uint8_t)(ALERT_CH_VIBRO | ALERT_CH_BEEP | ALERT_CH_LED1 | ALERT_CH_LED2),
-                          6u, 4u, 1u, ALERT_SIG_SOUND_IDX },   /* blink=ON */
-  /* 0x09 GROUP    */ { (uint8_t)(ALERT_CH_VIBRO | ALERT_CH_BEEP | ALERT_CH_LED1 | ALERT_CH_LED2),
-                         10u, 5u, 1u, ALERT_SIG_SOUND_IDX },   /* blink=ON */
-  /* 0x0A BACKGR   */ { (uint8_t)(ALERT_CH_VIBRO | ALERT_CH_BEEP | ALERT_CH_LED1 | ALERT_CH_LED2),
-                         10u, 2u, 1u, ALERT_SIG_SOUND_IDX },   /* blink=ON */
-  /* 0x0B CHARGE   */ { (uint8_t)(ALERT_CH_VIBRO | ALERT_CH_BEEP),
-                          6u, 2u, 0u, ALERT_SIG_SOUND_IDX },   /* block_led=ON */
-  /* 0x0C */ { 0u, 0u, 0u, 0u, 0u },                                  /* - */
-  /* 0x0D */ { 0u, 0u, 0u, 0u, 0u },                                  /* - */
-  /* 0x0E */ { 0u, 0u, 0u, 0u, 0u },                                  /* - */
-  /* 0x0F TEST     */ { (uint8_t)(ALERT_CH_VIBRO | ALERT_CH_BEEP),
-                          5u, 10u, 0u, ALERT_SIG_SOUND_IDX },  /* block_led=ON, test_sound=ON */
-};
 
 /* ---------------------------------------------------------------------------
  * РЕЕСТР СТАТУСОВ
@@ -280,6 +217,28 @@ static const alert_desc_t s_desc[ALERT_ID_COUNT] =
     .name = "", .prio = ALERT_PRIO_SERVICE, .ch = 0u,
     .blink = 0u, .ack_button = 0u, .burst = 0u,
     .period_ms = 0u, .pause_ms = 0u,
+    .voice = ALERT_SND_NONE, .hold_s = 0u },
+
+  /* SOS - бит ST_COMMON_BIT_SOS в StateErr (зеркало ControlLora). Индикация
+     непрерывная, пока бит поднят; кнопкой не квитировать (ack_button = 0).   */
+  [ALERT_SOS] = {
+    .name = "SOS", .prio = ALERT_PRIO_ALARM, .ch = ALERT_CHMASK_ALARM,
+    .blink = 1u, .ack_button = 0u, .burst = 0u,
+    .period_ms = 600u, .pause_ms = 400u,
+    .voice = ALERT_SND_NONE, .hold_s = 0u },
+
+  /* Обратный отсчёт выключения: ТИК раз в секунду (200 мс звук+вибро+свет,
+     800 мс пауза), пока кнопка зажата и статус жив (Menu_vector).            */
+  [ALERT_SHUTDOWN] = {
+    .name = "Выключение", .prio = ALERT_PRIO_ALARM, .ch = ALERT_CHMASK_ALARM,
+    .blink = 0u, .ack_button = 0u, .burst = 0u,
+    .period_ms = 200u, .pause_ms = 800u,
+    .voice = ALERT_SND_NONE, .hold_s = 0u },
+  /* Обратный отсчёт SOS - тот же тик раз в секунду.                          */
+  [ALERT_SOS_COUNTDOWN] = {
+    .name = "SOS-отсчёт", .prio = ALERT_PRIO_ALARM, .ch = ALERT_CHMASK_ALARM,
+    .blink = 0u, .ack_button = 0u, .burst = 0u,
+    .period_ms = 200u, .pause_ms = 800u,
     .voice = ALERT_SND_NONE, .hold_s = 0u },
 
   /* «ОСТОРОЖНО! ГАЗ!» - пороги своего газоанализатора Avis ИЛИ команда
@@ -322,6 +281,14 @@ static const alert_desc_t s_desc[ALERT_ID_COUNT] =
     .name = "Нет браслета", .prio = ALERT_PRIO_ALARM, .ch = ALERT_CHMASK_DEVICE,
     .blink = 0u, .ack_button = 0u, .burst = 0u,
     .period_ms = ALERT_PERIOD_DEVICE_MS, .pause_ms = ALERT_PAUSE_DEVICE_MS,
+    .voice = ALERT_SND_NONE, .hold_s = 0u },
+
+  /* Отказ сенсора ГА (бит 6 ST_GA_ERR любого канала) - однократная пачка,
+     как ошибки прибора; повторное срабатывание звучит снова.                */
+  [ALERT_GA_SENSOR_FAIL] = {
+    .name = "Отказ сенсора ГА", .prio = ALERT_PRIO_ALARM, .ch = ALERT_CHMASK_ERROR,
+    .blink = 0u, .ack_button = 0u, .burst = ALERT_BURST_ERR,
+    .period_ms = ALERT_PERIOD_ERR_MS, .pause_ms = ALERT_PAUSE_ERR_MS,
     .voice = ALERT_SND_NONE, .hold_s = 0u },
 
   /* Прибор: критический разряд, ошибки модулей, низкий заряд. Индикация
@@ -654,68 +621,6 @@ void Alert_StartEx(const alert_seq_t *seq,
   seq_request(seq, period_ms, pause_ms, repeats, count, (uint8_t)ALERT_NONE);
 }
 
-/* Сигнал по id (ALERT_SIG_*) с параметрами ПО УМОЛЧАНИЮ из таблицы s_sig_tab
-   (порт LedSoundVibroPlay Avis: период/пауза в единицах 100 мс, звук+вибро+свет
-   одновременно одной фазой). 1 пачка, без повторов. КОНТЕКСТ: ЛЮБОЙ поток.  */
-void Alert_Signal(uint8_t sig_id)
-{
-  Alert_SignalEx(sig_id, 0u, 0u, 0u, 1u);
-}
-
-/* Сигнал с ЗАДАВАЕМЫМИ периодом/паузой/миганием/числом повторов:
-     sig_id    - ALERT_SIG_* (таблица s_sig_tab: маска каналов, значения по
-                 умолчанию);
-     period_ms - период пачки, мс; 0 = по умолчанию (pulse*100 из таблицы);
-     pause_ms  - пауза, мс; 0 = по умолчанию (pause*100 из таблицы);
-     blink     - 1 = мигать LED фазы (100 мс, mode_blink_led Avis), 0 = ровно;
-     count     - сколько раз прогнать пачку; 0 = ALERT_REPEAT_FOREVER
-                 (до подтверждения: Alert_Stop() по квитанции).
-   КОНТЕКСТ: ЛЮБОЙ поток.                                                    */
-void Alert_SignalEx(uint8_t sig_id,
-                    uint16_t period_ms, uint16_t pause_ms,
-                    uint8_t blink, uint8_t count)
-{
-  /* Слоты запроса: фаза/таблица сигнала живут в СТАТИКЕ до применения в Tick
-     (Alert_StartEx принимает указатель, а движок читает его асинхронно).
-     Два чередующихся слота (счётчик s_sig_slot): Tick копирует фазу
-     опубликованного слота в свою s_phase, а следующий вызов пишет ДРУГОЙ слот
-     - гонки «писатель vs читатель» нет даже при вызове из двух потоков.     */
-  static alert_phase_t s_sig_phase[2];
-  static alert_seq_t   s_sig_seq[2];
-  static volatile uint8_t s_sig_slot = 0u;
-  const alert_sig_def_t *def;
-  alert_phase_t ph;
-  uint8_t slot;
-
-  if (sig_id >= (uint8_t)(sizeof(s_sig_tab) / sizeof(s_sig_tab[0])))
-  {
-    return;                         /* неизвестный id - не тревожим            */
-  }
-  def = &s_sig_tab[sig_id];
-  if (def->ch == 0u)
-  {
-    return;                         /* id зарезервирован (0x00/0x0C..0x0E)     */
-  }
-
-  /* Фаза сигнала: маска каналов из таблицы; период/пауза - из вызова либо по
-     умолчанию (единицы Avis 100 мс -> мс, с защитой от переполнения);
-     звук+вибро+свет стартуют ОДНОВРЕМЕННО - одной фазой (LedSoundVibroPlay). */
-  ph.ch        = def->ch;
-  ph.t_on_ms   = (period_ms != 0u) ? period_ms : ALERT_SIG_MS(def->pulse, 65500u);
-  ph.t_off_ms  = (pause_ms  != 0u) ? pause_ms  : ALERT_SIG_MS(def->pause, 65500u);
-  ph.repeats   = 1u;                /* «пачка» = 1 ВКЛ/ВЫКЛ; повторы - count   */
-  ph.blink     = blink;
-  ph.sound_idx = def->sound_idx;
-
-  slot = (uint8_t)(s_sig_slot ^ 1u);
-  s_sig_phase[slot] = ph;
-  s_sig_seq[slot].ph    = &s_sig_phase[slot];
-  s_sig_seq[slot].n     = 1u;
-  s_sig_seq[slot].prio  = ALERT_PRIO_ALARM;  /* сигнал вытесняет UI/сервис     */
-  s_sig_seq[slot].count = count;             /* 0 = до подтверждения           */
-  s_sig_slot = slot;
-  seq_request(&s_sig_seq[slot], 0u, 0u, 0u, count, (uint8_t)ALERT_NONE);
-}
 
 /* Запрос стопа (погасить каналы). КОНТЕКСТ: ЛЮБОЙ поток.                    */
 void Alert_Stop(void)
@@ -1220,12 +1125,20 @@ static uint16_t alert_own_id(void)
    возврат в норму - снимает статус, ЕСЛИ серверный источник не активен.     */
 static void gas_local_tick(void)
 {
-  uint8_t thr = 0u;
+  uint8_t thr  = 0u;
+  uint8_t fail = 0u;
 
   if ((Ble_telemetry.gas_online != 0u) &&
       ((uint32_t)(GetTick() - Ble_telemetry.gas_ms) <= ALERT_DEV_STALE_MS))
   {
-    thr = (uint8_t)(Connected_device.StateErr & (uint32_t)ALERT_GAS_THR_MASK);
+    uint8_t i;
+    for (i = 0u; i < (uint8_t)COUNT_CHAN; i++)
+    {
+      const SNS_DevChan_Type *ch = &Connected_device.Sensor[i];
+      if (ch->channel == 0xFFu) { continue; }   /* канал отсутствует */
+      if ((ch->StateErr & (uint32_t)ALERT_GAS_THR_MASK) != 0u) { thr = 1u; }
+      if ((ch->StateErr & ((uint32_t)1u << ST_BIT_SENSOR_FAILED)) != 0u) { fail = 1u; }
+    }
   }
 
   if (thr != 0u)
@@ -1233,11 +1146,11 @@ static void gas_local_tick(void)
     if ((s_gas_src & ALERT_GAS_SRC_LOCAL) == 0u)
     {
       s_gas_src = (uint8_t)(s_gas_src | ALERT_GAS_SRC_LOCAL);
-      Alert_GasAlarm(alert_own_id());   /* переход: статус + индикация + лог   */
+      Alert_GasAlarm(alert_own_id());
     }
     else
     {
-      Alert_Set(ALERT_GAS_ALARM);       /* подтверждение: только метка времени */
+      Alert_Set(ALERT_GAS_ALARM);
     }
   }
   else if ((s_gas_src & ALERT_GAS_SRC_LOCAL) != 0u)
@@ -1249,8 +1162,40 @@ static void gas_local_tick(void)
       LOG_I(VLOG_M_SYS, "alert: gas thresholds back to normal");
     }
   }
+
+  if (fail != 0u) { Alert_Set(ALERT_GA_SENSOR_FAIL); }
+  else            { Alert_Clear(ALERT_GA_SENSOR_FAIL); }
 }
 #endif /* CONFIG_BLE */
+
+/* ЕДИНОЕ место, где биты Config_common.StateErr сводятся с реестром статусов
+   (требование автора: выставление битов - по всему коду, индикация - в одном
+   месте). Направления:
+     SOS          : бит -> реестр (бит пишет Lora downlink / меню; здесь читаем);
+     EVACUATION, NO_GAS/NO_PPE/NO_BRACELET, GA_SENSOR_FAIL : реестр -> бит
+                  (источники - существующие tick-и; бит - зеркало для экрана/журнала).
+   RMW StateErr из нескольких потоков - под Sys_Cfg_Lock. КОНТЕКСТ: Measure Task
+   (Alert_Tick, раз в секунду).                                              */
+static void status_bits_tick(void)
+{
+  /* SOS: источник - бит (Lora downlink или постановка с кнопки). */
+  if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS)) { Alert_Set(ALERT_SOS); }
+  else                                               { Alert_Clear(ALERT_SOS); }
+
+  /* Зеркала реестр -> бит для экрана/журнала. */
+  Sys_Cfg_Lock();
+  if (Alert_IsActive(ALERT_EVACUATION))    { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_EVACUATION); }
+  else                                     { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_EVACUATION); }
+  if (Alert_IsActive(ALERT_NO_GAS))        { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_GAS); }
+  else                                     { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_GAS); }
+  if (Alert_IsActive(ALERT_NO_PPE))        { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_PPE); }
+  else                                     { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_PPE); }
+  if (Alert_IsActive(ALERT_NO_BRACELET))   { SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_BRACELET); }
+  else                                     { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_NO_BRACELET); }
+  if (Alert_IsActive(ALERT_GA_SENSOR_FAIL)){ SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GA_SENSOR_FAIL); }
+  else                                     { CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GA_SENSOR_FAIL); }
+  Sys_Cfg_Unlock();
+}
 
 /* Автоочистка статусов с ОДНОРАЗОВЫМ источником (колонка hold_s в s_desc).
    Метку подтверждения обновляет Alert_Set(), поэтому у серверной газовой
@@ -1871,6 +1816,7 @@ void Alert_Tick(void)
     syserr_tick();             /* ошибки модулей (ST_COMMON_ERR)            */
     battery_tick();            /* низкий/критический заряд по напряжению    */
     alert_hold_tick();         /* автоочистка статусов с одноразовым источником */
+    status_bits_tick();        /* биты StateErr <-> реестр (единое место)   */
 
 #if CONFIG_LIS3DH
     /* Порог движения мог поменять конфигуратор/меню - применяем на лету.     */

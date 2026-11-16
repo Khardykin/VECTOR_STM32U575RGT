@@ -1442,23 +1442,22 @@ static void Lora_Control_States_Update(str_lora_data_get_t *rx_data, uint32_t po
             (lora.ControlLora & (uint16_t)~allowed_mask) |
             (rx_data->ControlLoraValue & allowed_mask);
 
-        /* ВЫХОДНОЙ МОСТ (автор, п.65): серверные статусы комплекта зеркалим в
-           Config_common.State - меню/звук/индикация/журнал читают штатные
-           ST_COMMON_BIT_*, не зная про внутренности LoRa (симметрично
-           входному мосту Lora_UpdateInputData). RMW State из нескольких
-           потоков - под блокировкой конфига (Sys_Cfg_Lock).               */
+        /* ВЫХОДНОЙ МОСТ (автор, п.65;): SOS/EVACUATION - ТРЕВОГИ,
+           зеркалим в Config_common.StateErr (ST_COMMON_ERR).
+           Индикацию по битам ведёт Alert_vector (status_bits_tick), меню/
+           журнал читают готовые биты. RMW StateErr - под Sys_Cfg_Lock.     */
         Sys_Cfg_Lock();
         if (TESTBIT(lora.ControlLora, ST_LORA_BIT_SOS)) {
-            SET_STATUS_COMMON_BIT(ST_COMMON_BIT_SOS);
+            SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS);
         }
         else {
-            CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_SOS);
+            CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS);
         }
         if (TESTBIT(lora.ControlLora, ST_LORA_BIT_EVACUATION)) {
-            SET_STATUS_COMMON_BIT(ST_COMMON_BIT_EVACUATION);
+            SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_EVACUATION);
         }
         else {
-            CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_EVACUATION);
+            CLEAR_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_EVACUATION);
         }
         Sys_Cfg_Unlock();
     }
