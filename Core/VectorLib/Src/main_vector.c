@@ -842,14 +842,6 @@ void Vector_Run_Pre_Init(void)
   START_TIMER_RTC(TIMER_RTC_LOG,
                   log_archive_period_s(Sns_Cfg_struct.Config_archive.Archiveinterval));
 
-  /* Датчики на I2C1: BME280 / LIS3DH / MAX17048 (включаются CONFIG_*).
-     Результат - в sensors_status.*_ok и в логе.                            */
-  /* MAX17048: quickStart + лимиты напряжения от BAT_MIN/BAT_MAX конфига
-     (автор) - до sensors_init(), конфиг к этому моменту прочитан.     */
-  Battery_Init();
-
-  sensors_init();
-
   /* Биты включения модулей обмена. Конфиг уже прочитан выше, но биты TURN_ON_*
      в сохранённом State могут отсутствовать (первый пуск / сброс конфига),
      поэтому выставляем их по флагам сборки - иначе *_Run() ничего не делают

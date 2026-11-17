@@ -1009,9 +1009,6 @@ void Menu_Init(void)
   /* Мигание зарядки/ошибок на экране (Avis: TIMER_RTC_DISP_FLASHING_SYSTEM). */
   state_flashing_system = 0u;
   START_TIMER_RTC(TIMER_RTC_DISP_FLASHING_CHARGE, TIME_RTC_DISP_FLASHING_CHARGE);
-
-  LOG_I(VLOG_M_SYS, "menu: init (screen START, auto-return %u s)",
-        (uint32_t)VECTOR_MENU_AUTO_RETURN_S);
 }
 
 /* Цикл меню (вызывается из Vector_Run_Indication(), поток LVGL Task,
@@ -1103,6 +1100,11 @@ void Button_Run_Start(void)
 	if(button3.button_count >= BUTTON_PRESS_LONG){
 		//------------------------------------------------------------------------
 //		SET_ON(POWER_ON_MCU);
+#if CONFIG_DISPLAY
+		/* Основа меню: машина экранов + декодер жестов кнопок. Экраны/статусы
+		 * 			 определит автор - каркас уже считает кнопки и ходит по screen_t.        */
+		Menu_Init();
+#endif
 		//------------------------------------------------------------------------
 		// Инициализация ЭКРАНА (панели) - при включении по кнопке. LVGL и UI
 		// SquareLine к этому моменту уже созданы: ui_lv_init() вызывается ДО
@@ -1132,14 +1134,22 @@ void Button_Run_Start(void)
 #endif
 		//------------------------------------------------------------------------
 #if CONFIG_LORA
-    Lora_DeInit(0);
+		Lora_DeInit(0);
 #endif
 #if CONFIG_LORA_G
-    Lora_g_DeInit(0);
+    	Lora_g_DeInit(0);
 #endif
 #if CONFIG_GPS
-    Gps_DeInit(0);
+    	Gps_DeInit(0);
 #endif
+		//------------------------------------------------------------------------
+		/* Датчики на I2C1: BME280 / LIS3DH / MAX17048 (включаются CONFIG_*).
+		   Результат - в sensors_status.*_ok и в логе.                            */
+		/* MAX17048: quickStart + лимиты напряжения от BAT_MIN/BAT_MAX конфига
+		   (автор) - до sensors_init(), конфиг к этому моменту прочитан.     */
+		Battery_Init();
+
+		sensors_init();
 		//------------------------------------------------------------------------
 		// Индикация (замечание автора): НЕБЛОКИРУЮЩЕ - через движок индикации
 		// Alert_vector: 3 писка ИЗ ПАМЯТИ МК (audio_beep - клип 240 мс во
@@ -1150,7 +1160,6 @@ void Button_Run_Start(void)
 		// голосовое сообщение - одна фаза ALERT_CH_SOUND с SND_* из образа.
 		Alert_Start(&AlertSeq_PowerOn);
 	    //------------------------------------------------------------------------
-		Menu_ResetButtons();
 		/* Включение - это удержание Button3 до LONG, а на той же PB1 висит
 		   button_sos: Menu_ResetButtons() гасит ОБЕ структуры и состояние
 		   декодера, иначе отпускание/повторное нажатие дали бы «призрачный»
@@ -1162,8 +1171,6 @@ void Button_Run_Start(void)
 	       SCREEN_START (заставка), рабочий режим включит Menu_Run() по
 	       истечении TIMER_RTC_WARM.                                        */
 	    device_turn = DEVICE_TURNED_ON_1;
-	    Menu_GoTo((uint8_t)SCREEN_START);
-	    menu_status.state_menu = 0;      /* страницы измерений - с первой    */
 	    START_TIMER_RTC(TIMER_RTC_WARM, TIME_RTC_START);
 	    //вход в обычный режим работы!!!!!!!!!!!
 	    START_TIMER_RTC(TIMER_RTC_LIGHT_RESET, TIME_RTC_LIGHT_RESET*12);
