@@ -679,12 +679,12 @@ static void Menu_TurnOff(void)
  *  КОНТЕКСТ: поток LVGL Task (Menu_Run, 100 мс).                              */
 static uint8_t s_cnt_kind = 0u;   /* 0 = нет, 1 = выключение, 2 = SOS */
 static uint8_t s_cnt_return = 0u; /* экран возврата после отсчёта */
-static uint8_t s_cnt_final = 0u;  /* p15: уже в финальной фазе (< 1000 мс) */
+static uint8_t s_cnt_final = 0u;  /* уже в финальной фазе (< 1000 мс) */
 
 static void countdown_cancel(void)
 {
-  if (s_cnt_kind == 1u)      { RESET_TIMER(TIMER_SHUTDOWN);   Alert_Clear(ALERT_SHUTDOWN);
-  else if (s_cnt_kind == 2u) { RESET_TIMER(TIMER_PRESS_SOS);  Alert_Clear(ALERT_SOS_COUNTDOWN);
+  if (s_cnt_kind == 1u)      { RESET_TIMER(TIMER_SHUTDOWN);   Alert_Clear(ALERT_SHUTDOWN);}
+  else if (s_cnt_kind == 2u) { RESET_TIMER(TIMER_PRESS_SOS);  Alert_Clear(ALERT_SOS_COUNTDOWN);}
   s_cnt_kind = 0u;
   s_cnt_final = 0u;   /* p15 */
 }
@@ -694,7 +694,7 @@ static void countdown_start_shutdown(void)
   if ((device_turn == DEVICE_TURNED_OFF) || (s_cnt_kind != 0u)) { return; }
   s_cnt_return = menu_status.screen;
   s_cnt_kind = 1u;
-  s_cnt_final = 0u;   /* p15: начинаем с обычной фазы */
+  s_cnt_final = 0u;   /* начинаем с обычной фазы */
   START_TIMER(TIMER_SHUTDOWN, (uint16_t)VECTOR_COUNTDOWN_SHUTDOWN_MS);
   Alert_Set(ALERT_SHUTDOWN);
   Menu_GoTo((uint8_t)SCREEN_COUNTDOWN_SHUTDOWN);
@@ -720,7 +720,7 @@ static void Menu_CountdownTick(void)
   uint8_t expired = (s_cnt_kind == 1u) ? (uint8_t)TEST_TIMER(TIMER_SHUTDOWN)
                                        : (uint8_t)TEST_TIMER(TIMER_PRESS_SOS);
 
-  /* p15 v2: финальный сценарий запущен - ждём, пока он отработает
+  /* финальный сценарий запущен - ждём, пока он отработает
      (Alert_Busy() == 0), и только потом выполняем действие.                 */
   if (s_cnt_final != 0u)
   {
@@ -753,7 +753,7 @@ static void Menu_CountdownTick(void)
 
   if (expired == 0u) { return; }
 
-  /* p15 v2: таймер истёк - гасим обычный статус и запускаем финальный
+  /* таймер истёк - гасим обычный статус и запускаем финальный
      сценарий (аналогично AlertSeq_PowerOn). Он отработает 600 мс и сам
      остановится; на следующем тике выполним действие.                        */
   if (s_cnt_kind == 1u)
@@ -783,7 +783,7 @@ static void Button_Sos(void)
     {
       s_cnt_return = menu_status.screen;
       s_cnt_kind = 2u;
-      s_cnt_final = 0u;   /* p15: начинаем с обычной фазы */
+      s_cnt_final = 0u;   /* начинаем с обычной фазы */
       START_TIMER(TIMER_PRESS_SOS, (uint16_t)VECTOR_COUNTDOWN_SOS_MS);
       Alert_Set(ALERT_SOS_COUNTDOWN);
       Menu_GoTo((uint8_t)SCREEN_COUNTDOWN_SOS);

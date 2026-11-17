@@ -180,7 +180,7 @@ const alert_seq_t AlertSeq_PowerOn =
   .count = 1u                       /* один прогон, как в Avis               */
 };
 
-/* p15 v2: финальный звук отсчёта (выключение / SOS). Одна фаза: длинный
+/* финальный звук отсчёта (выключение / SOS). Одна фаза: длинный
    писк 600 мс со всеми каналами (звук + вибро + оба LED). Запускается один
    раз при истечении таймера, после чего движок сам останавливается
    (seq_finish), и Menu_CountdownTick выполняет действие.                    */
@@ -1216,7 +1216,7 @@ static void gas_local_tick(void)
    (Alert_Tick, раз в секунду).                                              */
 static void status_bits_tick(void)
 {
-  /* p6: биты -> реестр. Биты ST_COMMON_ERR - ИСТОЧНИК (их ставят battery_tick,
+  /* биты -> реестр. Биты ST_COMMON_ERR - ИСТОЧНИК (их ставят battery_tick,
      device_presence_tick, gas_local_tick, immob, Lora-мост, меню); здесь ОДНО
      место, где по битам ведётся реестр индикации. Реестр сам биты НЕ пишет.   */
   if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS)) { Alert_Set(ALERT_SOS); } else { Alert_Clear(ALERT_SOS); }
@@ -1229,7 +1229,7 @@ static void status_bits_tick(void)
   if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_IMMOBILITY)) { Alert_Set(ALERT_IMMOBILITY); } else { Alert_Clear(ALERT_IMMOBILITY); }
   if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_BATTERY)) { Alert_Set(ALERT_BATTERY_CRIT); } else { Alert_Clear(ALERT_BATTERY_CRIT); }
   if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_CRITICAL_LOW_BATTERY)) { Alert_Set(ALERT_BATTERY_LOW); } else { Alert_Clear(ALERT_BATTERY_LOW); }
-  /* p8: газ по биту. Бит ST_COMMON_BIT_GAS_ALARM - источник (gas_local_tick,
+  /* газ по биту. Бит ST_COMMON_BIT_GAS_ALARM - источник (gas_local_tick,
      Alert_LoraMessage, Alert_GasAlarm); реестр ведётся по биту.            */
   if (TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_GAS_ALARM)) { Alert_Set(ALERT_GAS_ALARM); }
   else                                                     { Alert_Clear(ALERT_GAS_ALARM); }

@@ -247,7 +247,7 @@ typedef struct
 
 /* Готовый сценарий включения прибора (порт Button_Run_Start из Avis).        */
 extern const alert_seq_t AlertSeq_PowerOn;
-extern const alert_seq_t AlertSeq_CountdownFinal;  /* p15 v2: финальный звук отсчёта */
+extern const alert_seq_t AlertSeq_CountdownFinal;  /* финальный звук отсчёта */
 
 /* --- API движка -----------------------------------------------------------*/
 /* Запрос старта сценария: любой поток; старт в ближайший Alert_IndicationTick

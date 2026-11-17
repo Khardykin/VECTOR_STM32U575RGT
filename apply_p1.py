@@ -1,94 +1,62 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# apply_p20.py - (1) SHUTDOWN/SOS_COUNTDOWN выше SOS/SOS_GROUP;
-# (2) убрать ALERT_SHUTDOWN_FINAL и ALERT_SOS_COUNTDOWN_FINAL.
-# Запуск ИЗ КОРНЯ: py apply_p20.py (идемпотентен)
-import re, os, sys
+# clean_patch_labels.py - удаляет метки патчей (p15:, p20 v2: и т.д.) из комментариев.
+# Проходится по файлам, изменённым за последние 2 дня. Запуск: py clean_patch_labels.py
+import os, re, subprocess
 
-AH = "Core/VectorLib/Inc/Alert_vector.h"
-AV = "Core/VectorLib/Src/Alert_vector.c"
-MV = "Core/VectorLib/Src/Menu_vector.c"
+dst = "."
 
-def rd(p):
-    with open(p, encoding="utf-8") as f: return f.read()
-def wr(p, s):
-    with open(p, "w", encoding="utf-8", newline="") as f: f.write(s)
+# Коммиты за последние 2 дня
+r = subprocess.run(
+    ["git", "log", "--since=2 days", "--name-only", "--pretty=format:"],
+    capture_output=True, text=True
+)
 
-for p in (AH, AV, MV):
-    if not os.path.exists(p): print("[!] нет %s" % p); sys.exit(1)
+# Извлекаем уникальные файлы (только .c и .h)
+files_to_clean = set()
+for line in r.stdout.strip().split('\n'):
+    f = line.strip()
+    if f and (f.endswith('.c') or f.endswith('.h')):
+        files_to_clean.add(f)
 
-# ============================================================
-# 1. Alert_vector.h: переставить приоритет + убрать FINAL
-# ============================================================
-h = rd(AH)
-if "ALERT_SHUTDOWN_FINAL" not in h and re.search(r'ALERT_NONE\s*=\s*0,\s*\n[^A]*ALERT_SHUTDOWN,', h):
-    print("[=] Alert_vector.h: приоритет уже правильный, FINAL убраны")
-else:
-    old_enum = """  ALERT_NONE = 0,
-  /* ПРИОРИТЕТ = порядок в enum (alert_top_indication идёт от младшего id):
-     SOS -> отсчёт выключения -> отсчёт SOS -> эвакуация -> газ -> неподвижность
-     -> комплект (нет ГА/СИЗ/браслета, один ритм) -> отказ сенсора ГА ->
-     прибор (крит. разряд, ошибки, низкий заряд) -> сообщение.               */
-  ALERT_SOS,              /* SOS свой (кнопка, бит SOS в StateErr)        */
-  ALERT_SOS_GROUP,        /* SOS группы (от сервера, бит SOS_GROUP)       */
-  ALERT_SHUTDOWN,         /* обратный отсчёт выключения (удержание кнопки)  */
-  ALERT_SOS_COUNTDOWN,    /* обратный отсчёт SOS (удержание кнопки)         */
-  ALERT_SHUTDOWN_FINAL,   /* p15: последняя секунда выключения (600 мс)     */
-  ALERT_SOS_COUNTDOWN_FINAL, /* p15: последняя секунда SOS (600 мс)         */
-  ALERT_EVACUATION,       /* «ВСЕМ НА ВЫХОД» (бит EVACUATION от сервера)    */"""
+print(f"Found {len(files_to_clean)} files to process\n")
 
-    new_enum = """  ALERT_NONE = 0,
-  /* ПРИОРИТЕТ = порядок в enum (alert_top_indication идёт от младшего id):
-     p20: отсчёт выключения/включения — высший (таймер действия пользователя,
-     не должен прерываться серверными тревогами) -> SOS -> SOS группы ->
-     эвакуация -> газ -> неподвижность -> комплект (нет ГА/СИЗ/браслета)
-     -> отказ сенсора ГА -> прибор (крит. разряд, ошибки, низкий заряд)
-     -> сообщение.                                                          */
-  ALERT_SHUTDOWN,         /* p20: обратный отсчёт выключения (удержание кнопки) */
-  ALERT_SOS_COUNTDOWN,    /* p20: обратный отсчёт SOS (удержание кнопки)        */
-  ALERT_SOS,              /* SOS свой (кнопка, бит SOS в StateErr)              */
-  ALERT_SOS_GROUP,        /* SOS группы (от сервера, бит SOS_GROUP)             */
-  ALERT_EVACUATION,       /* «ВСЕМ НА ВЫХОД» (бит EVACUATION от сервера)        */"""
+def clean_patch_labels(text):
+    """Удаляет метки патчей (p15:, p20 v2: и т.д.) из комментариев"""
+    # /* p15: текст */ -> /* текст */
+    text = re.sub(r'/\*\s*p\d+(?:\s+v\d+)?\s*:\s*', '/* ', text)
+    # // p15: текст -> // текст
+    text = re.sub(r'//\s*p\d+(?:\s+v\d+)?\s*:\s*', '// ', text)
+    # /* текст, p15: ещё текст */ -> /* текст, ещё текст */
+    text = re.sub(r',\s*p\d+(?:\s+v\d+)?\s*:\s*', ', ', text)
+    # "     p15: текст" -> "     текст"
+    text = re.sub(r'^(\s*)p\d+(?:\s+v\d+)?\s*:\s*', r'\1', text, flags=re.MULTILINE)
+    # ; p15: текст -> ; текст
+    text = re.sub(r';\s*p\d+(?:\s+v\d+)?\s*:\s*', '; ', text)
+    return text
 
-    if old_enum not in h:
-        print("[!] Alert_vector.h: якорь не совпал, проверь точный текст"); sys.exit(1)
-    wr(AH, h.replace(old_enum, new_enum, 1))
-    print("[+] Alert_vector.h: приоритет сдвинут + FINAL убраны")
+total_changes = 0
+for f in sorted(files_to_clean):
+    if not os.path.exists(f):
+        continue
+    
+    with open(f, encoding="utf-8") as fp:
+        content = fp.read()
+    
+    cleaned = clean_patch_labels(content)
+    
+    if cleaned != content:
+        orig_lines = content.split('\n')
+        clean_lines = cleaned.split('\n')
+        changes = sum(1 for a,b in zip(orig_lines, clean_lines) if a!=b)
+        
+        print(f"[+] {f}: {changes} строк очищено")
+        
+        with open(f, "w", encoding="utf-8", newline="") as fp:
+            fp.write(cleaned)
+        total_changes += changes
+    else:
+        print(f"[=] {f}: без изменений")
 
-# ============================================================
-# 2. Alert_vector.c: убрать FINAL из s_desc
-# ============================================================
-a = rd(AV)
-if "[ALERT_SHUTDOWN_FINAL]" not in a and "[ALERT_SOS_COUNTDOWN_FINAL]" not in a:
-    print("[=] Alert_vector.c: FINAL в s_desc уже убраны")
-else:
-    # Удаляем блоки через regex (гибко, под любой формат)
-    a2 = re.sub(
-        r'\s*/\*[^*]*p15[^*]*финальн[^*]*\*/\s*'
-        r'\[ALERT_SHUTDOWN_FINAL\]\s*=\s*\{[^}]+\},\s*'
-        r'\[ALERT_SOS_COUNTDOWN_FINAL\]\s*=\s*\{[^}]+\},',
-        '', a, count=1, flags=re.DOTALL)
-    if a2 == a:
-        # Пробуем без комментария
-        a2 = re.sub(r'\s*\[ALERT_SHUTDOWN_FINAL\]\s*=\s*\{[^}]+\},', '', a, count=1, flags=re.DOTALL)
-        a2 = re.sub(r'\s*\[ALERT_SOS_COUNTDOWN_FINAL\]\s*=\s*\{[^}]+\},', '', a2, count=1, flags=re.DOTALL)
-    if a2 == a:
-        print("[!] Alert_vector.c: не удалось удалить FINAL"); sys.exit(1)
-    wr(AV, a2)
-    print("[+] Alert_vector.c: FINAL удалены из s_desc")
-
-# ============================================================
-# 3. Menu_vector.c: убрать Alert_Clear(ALERT_*_FINAL)
-# ============================================================
-m = rd(MV)
-if "ALERT_SHUTDOWN_FINAL" not in m and "ALERT_SOS_COUNTDOWN_FINAL" not in m:
-    print("[=] Menu_vector.c: FINAL уже убраны")
-else:
-    m2 = re.sub(r'\s*Alert_Clear\(ALERT_SHUTDOWN_FINAL\);[^\n]*', '', m)
-    m2 = re.sub(r'\s*Alert_Clear\(ALERT_SOS_COUNTDOWN_FINAL\);[^\n]*', '', m2)
-    if m2 == m:
-        print("[!] Menu_vector.c: не удалось удалить Clear FINAL"); sys.exit(1)
-    wr(MV, m2)
-    print("[+] Menu_vector.c: Alert_Clear(ALERT_*_FINAL) убраны")
-
-print("ГОТОВО. Собери проект (Debug).")
+print(f"\n✓ Всего: {total_changes} строк очищено от меток патчей")
+print("ГОТОВО. Теперь сделай git add + commit.")
