@@ -265,19 +265,6 @@ static const alert_desc_t s_desc[ALERT_ID_COUNT] =
     .period_ms = 200u, .pause_ms = 800u,
     .voice = ALERT_SND_NONE, .hold_s = 0u },
 
-  /* p15: финальная секунда - один длинный писк 600 мс (burst=1, pause=0).
-     Оборвётся countdown_cancel при завершении таймера.                     */
-  [ALERT_SHUTDOWN_FINAL] = {
-    .name = "Выключение(ф)", .prio = ALERT_PRIO_ALARM, .ch = ALERT_CHMASK_ALARM,
-    .blink = 0u, .ack_button = 0u, .burst = 1u,
-    .period_ms = 600u, .pause_ms = 0u,
-    .voice = ALERT_SND_NONE, .hold_s = 0u },
-  [ALERT_SOS_COUNTDOWN_FINAL] = {
-    .name = "SOS-отсчёт(ф)", .prio = ALERT_PRIO_ALARM, .ch = ALERT_CHMASK_ALARM,
-    .blink = 0u, .ack_button = 0u, .burst = 1u,
-    .period_ms = 600u, .pause_ms = 0u,
-    .voice = ALERT_SND_NONE, .hold_s = 0u },
-
   /* «ОСТОРОЖНО! ГАЗ!» - пороги своего газоанализатора Avis ИЛИ команда
      сервера; на экране виден ID трекера-источника (требование автора п.4)    */
   [ALERT_GAS_ALARM] = {

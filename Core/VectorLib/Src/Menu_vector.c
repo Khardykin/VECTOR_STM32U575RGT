@@ -684,9 +684,7 @@ static uint8_t s_cnt_final = 0u;  /* p15: уже в финальной фазе 
 static void countdown_cancel(void)
 {
   if (s_cnt_kind == 1u)      { RESET_TIMER(TIMER_SHUTDOWN);   Alert_Clear(ALERT_SHUTDOWN);
-    Alert_Clear(ALERT_SHUTDOWN_FINAL);   /* p15 */ Alert_Stop(); }
   else if (s_cnt_kind == 2u) { RESET_TIMER(TIMER_PRESS_SOS);  Alert_Clear(ALERT_SOS_COUNTDOWN);
-    Alert_Clear(ALERT_SOS_COUNTDOWN_FINAL);   /* p15 */ Alert_Stop(); }
   s_cnt_kind = 0u;
   s_cnt_final = 0u;   /* p15 */
 }
