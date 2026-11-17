@@ -219,6 +219,7 @@ void ui_ScreenHeadMain_screen_init(void)
     lv_obj_set_x(ui_PanelHeadEnter, 0);
     lv_obj_set_y(ui_PanelHeadEnter, 10);
     lv_obj_set_align(ui_PanelHeadEnter, LV_ALIGN_CENTER);
+    lv_obj_add_flag(ui_PanelHeadEnter, LV_OBJ_FLAG_HIDDEN);     /// Flags
     lv_obj_remove_flag(ui_PanelHeadEnter, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
     lv_obj_set_style_border_width(ui_PanelHeadEnter, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 

@@ -137,7 +137,7 @@ int32_t lis3dh_init(void)
 
 #if LIS3DH_ENABLE_FF_INIT
     // Падение - не критично для работы: при ошибке просто не будет событий
-//    (void)lis3dh_enable_free_fall(LIS3DH_FF_THRESHOLD_MG, LIS3DH_FF_DURATION_MS);
+    (void)lis3dh_enable_free_fall(LIS3DH_FF_THRESHOLD_MG, LIS3DH_FF_DURATION_MS);
 #endif
     return 0;
 }
@@ -235,9 +235,11 @@ int32_t lis3dh_update_all(void)
     // 1b. Падение: забираем латч INT2 (чтение INT2_SRC сбрасывает флаг IA)
     {
         uint8_t src2 = 0;
-        if (lis3dh_read_reg(&dev_ctx, LIS3DH_INT2_SRC, &src2, 1) == 0 && (src2 & 0x40U)) {
-            fall_cache.count++;
-            fall_cache.pending = true;
+        if (lis3dh_read_reg(&dev_ctx, LIS3DH_INT2_SRC, &src2, 1) == 0) {
+        	if(src2 & 0x40U){
+				fall_cache.count++;
+				fall_cache.pending = true;
+        	}
         }
     }
 #endif
