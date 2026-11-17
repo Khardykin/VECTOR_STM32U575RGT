@@ -686,7 +686,7 @@ static void countdown_cancel(void)
   if (s_cnt_kind == 1u)      { RESET_TIMER(TIMER_SHUTDOWN);   Alert_Clear(ALERT_SHUTDOWN);}
   else if (s_cnt_kind == 2u) { RESET_TIMER(TIMER_PRESS_SOS);  Alert_Clear(ALERT_SOS_COUNTDOWN);}
   s_cnt_kind = 0u;
-  s_cnt_final = 0u;   /* p15 */
+  s_cnt_final = 0u;
 }
 
 static void countdown_start_shutdown(void)
