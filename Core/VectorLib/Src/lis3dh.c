@@ -137,7 +137,7 @@ int32_t lis3dh_init(void)
 
 #if LIS3DH_ENABLE_FF_INIT
     // Падение - не критично для работы: при ошибке просто не будет событий
-    (void)lis3dh_enable_free_fall(LIS3DH_FF_THRESHOLD_MG, LIS3DH_FF_DURATION_MS);
+//    (void)lis3dh_enable_free_fall(LIS3DH_FF_THRESHOLD_MG, LIS3DH_FF_DURATION_MS);
 #endif
     return 0;
 }
@@ -291,8 +291,8 @@ uint8_t lis3dh_get_rotation_state(void)
 {
     static uint8_t last_state = 0;
     switch (orient_cache.current) {
-        case LIS3DH_ORIENT_X_UP:   last_state = 2; return 2;  // На кармане
-        case LIS3DH_ORIENT_X_DOWN: last_state = 0; return 0;  // Наклонили к себе
+        case LIS3DH_ORIENT_X_UP:   last_state = 1; return 1;  // На кармане
+        case LIS3DH_ORIENT_X_DOWN: last_state = 3; return 3;  // Наклонили к себе
         default: return last_state;  // Переходные состояния — не дёргаем экран
     }
 }
