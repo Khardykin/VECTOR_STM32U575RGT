@@ -106,7 +106,7 @@ void ui_ScreenMeasurements_screen_init(void)
     lv_obj_set_height(ui_PanelMeasure1, 144);
     lv_obj_set_x(ui_PanelMeasure1, 80);
     lv_obj_set_y(ui_PanelMeasure1, 0);
-    lv_obj_set_align(ui_PanelMeasure1, LV_ALIGN_CENTER);
+    lv_obj_set_align(ui_PanelMeasure1, LV_ALIGN_TOP_MID);
     lv_obj_remove_flag(ui_PanelMeasure1, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
     lv_obj_set_style_border_width(ui_PanelMeasure1, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 

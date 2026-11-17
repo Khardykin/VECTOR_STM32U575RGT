@@ -116,8 +116,8 @@ void ui_ScreenHeadMain_screen_init(void)
     lv_bar_set_start_value(ui_BarBattery, 0, LV_ANIM_OFF);
     lv_obj_set_width(ui_BarBattery, 18);
     lv_obj_set_height(ui_BarBattery, 10);
-    lv_obj_set_x(ui_BarBattery, 125);
-    lv_obj_set_y(ui_BarBattery, 0);
+    lv_obj_set_x(ui_BarBattery, 124);
+    lv_obj_set_y(ui_BarBattery, 1);
     lv_obj_set_align(ui_BarBattery, LV_ALIGN_CENTER);
     lv_obj_set_style_bg_color(ui_BarBattery, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_BarBattery, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -134,8 +134,8 @@ void ui_ScreenHeadMain_screen_init(void)
     ui_LabelPercent = lv_label_create(ui_PanelHead);
     lv_obj_set_width(ui_LabelPercent, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_LabelPercent, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_LabelPercent, 145);
-    lv_obj_set_y(ui_LabelPercent, 0);
+    lv_obj_set_x(ui_LabelPercent, 144);
+    lv_obj_set_y(ui_LabelPercent, 1);
     lv_obj_set_align(ui_LabelPercent, LV_ALIGN_CENTER);
     lv_label_set_text(ui_LabelPercent, "100%");
     ui_object_set_themeable_style_property(ui_LabelPercent, LV_PART_MAIN | LV_STATE_DEFAULT, LV_STYLE_TEXT_COLOR,
@@ -193,7 +193,7 @@ void ui_ScreenHeadMain_screen_init(void)
     lv_obj_remove_flag(ui_ImageMirax, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
 
     ui_BarLoad = lv_bar_create(ui_ScreenHeadMain);
-    lv_bar_set_value(ui_BarLoad, 25, LV_ANIM_OFF);
+    lv_bar_set_value(ui_BarLoad, 80, LV_ANIM_OFF);
     lv_bar_set_start_value(ui_BarLoad, 0, LV_ANIM_OFF);
     lv_obj_set_width(ui_BarLoad, 210);
     lv_obj_set_height(ui_BarLoad, 10);
@@ -219,7 +219,6 @@ void ui_ScreenHeadMain_screen_init(void)
     lv_obj_set_x(ui_PanelHeadEnter, 0);
     lv_obj_set_y(ui_PanelHeadEnter, 10);
     lv_obj_set_align(ui_PanelHeadEnter, LV_ALIGN_CENTER);
-    lv_obj_add_flag(ui_PanelHeadEnter, LV_OBJ_FLAG_HIDDEN);     /// Flags
     lv_obj_remove_flag(ui_PanelHeadEnter, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
     lv_obj_set_style_border_width(ui_PanelHeadEnter, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
@@ -274,7 +273,7 @@ void ui_ScreenHeadMain_screen_init(void)
                                            _ui_theme_color_textcolor);
     ui_object_set_themeable_style_property(ui_LabelSetEnter, LV_PART_MAIN | LV_STATE_DEFAULT, LV_STYLE_TEXT_OPA,
                                            _ui_theme_alpha_textcolor);
-    lv_obj_set_style_text_font(ui_LabelSetEnter, &ui_font_number21, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_LabelSetEnter, &ui_font_number36, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_LabelHeadEnter = lv_label_create(ui_PanelHeadEnter);
     lv_obj_set_width(ui_LabelHeadEnter, LV_SIZE_CONTENT);   /// 1

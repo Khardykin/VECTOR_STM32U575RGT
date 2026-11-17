@@ -180,6 +180,24 @@ const alert_seq_t AlertSeq_PowerOn =
   .count = 1u                       /* один прогон, как в Avis               */
 };
 
+/* p15 v2: финальный звук отсчёта (выключение / SOS). Одна фаза: длинный
+   писк 600 мс со всеми каналами (звук + вибро + оба LED). Запускается один
+   раз при истечении таймера, после чего движок сам останавливается
+   (seq_finish), и Menu_CountdownTick выполняет действие.                    */
+static const alert_phase_t s_countdown_final_phases[] =
+{
+  /*  маска каналов (alert_ch_t)                                          период пауза повт миг sound_idx */
+  { (uint8_t)(ALERT_CH_BEEP | ALERT_CH_LED1 | ALERT_CH_LED2 | ALERT_CH_VIBRO),
+                                                   600u,   0u, 1u, 0u, 0u },
+};
+const alert_seq_t AlertSeq_CountdownFinal =
+{
+  .ph    = s_countdown_final_phases,
+  .n     = (uint8_t)(sizeof(s_countdown_final_phases) / sizeof(s_countdown_final_phases[0])),
+  .prio  = ALERT_PRIO_ALARM,
+  .count = 1u                       /* один прогон, как у PowerOn            */
+};
+
 
 /* ---------------------------------------------------------------------------
  * РЕЕСТР СТАТУСОВ
@@ -245,6 +263,19 @@ static const alert_desc_t s_desc[ALERT_ID_COUNT] =
     .name = "SOS-отсчёт", .prio = ALERT_PRIO_ALARM, .ch = ALERT_CHMASK_ALARM,
     .blink = 0u, .ack_button = 0u, .burst = 0u,
     .period_ms = 200u, .pause_ms = 800u,
+    .voice = ALERT_SND_NONE, .hold_s = 0u },
+
+  /* p15: финальная секунда - один длинный писк 600 мс (burst=1, pause=0).
+     Оборвётся countdown_cancel при завершении таймера.                     */
+  [ALERT_SHUTDOWN_FINAL] = {
+    .name = "Выключение(ф)", .prio = ALERT_PRIO_ALARM, .ch = ALERT_CHMASK_ALARM,
+    .blink = 0u, .ack_button = 0u, .burst = 1u,
+    .period_ms = 600u, .pause_ms = 0u,
+    .voice = ALERT_SND_NONE, .hold_s = 0u },
+  [ALERT_SOS_COUNTDOWN_FINAL] = {
+    .name = "SOS-отсчёт(ф)", .prio = ALERT_PRIO_ALARM, .ch = ALERT_CHMASK_ALARM,
+    .blink = 0u, .ack_button = 0u, .burst = 1u,
+    .period_ms = 600u, .pause_ms = 0u,
     .voice = ALERT_SND_NONE, .hold_s = 0u },
 
   /* «ОСТОРОЖНО! ГАЗ!» - пороги своего газоанализатора Avis ИЛИ команда
@@ -634,6 +665,7 @@ void Alert_Stop(void)
   s_req_seq   = NULL;
   s_req_owner = (uint8_t)ALERT_NONE;
   s_req_stop  = 1u;
+  s_ind_owner = (uint8_t)ALERT_NONE;
 }
 
 /* 1 = сценарий идёт или запрошен.                                           */
@@ -823,14 +855,27 @@ static void alert_indication_arbitrate(void)
      (неподвижность, свежесть устройств, ошибки и батарея от экрана и звука не
      зависят). Флаг indication у статусов не трогаем - после включения прибор
      снова начнёт оповещать, а квитирование не «проглатывается» втихую.      */
-  if (device_turn != DEVICE_TURNED_ON)
+  if (device_turn == DEVICE_TURNED_OFF)
   {
     if (s_ind_owner != (uint8_t)ALERT_NONE)
     {
       Alert_Stop();
-      s_ind_owner = (uint8_t)ALERT_NONE;
     }
     return;
+  }
+
+  if (device_turn == DEVICE_TURNED_ON_1)
+  {
+    /* Прогрев: если активный статус не из разрешённого списка (SHUTDOWN,
+       SOS_COUNTDOWN) - сбрасываем его indication, чтобы arbitrate не запустил.
+       PowerOn (через s_req_seq) не трогаем - он не статус, а прямой сценарий. */
+    if ((top != ALERT_NONE) &&
+        (top != ALERT_SHUTDOWN) &&
+        (top != ALERT_SOS_COUNTDOWN))
+    {
+      s_alert[top].indication = 0u;
+      top = ALERT_NONE;
+    }
   }
 
   if (top == (alert_id_t)s_ind_owner)

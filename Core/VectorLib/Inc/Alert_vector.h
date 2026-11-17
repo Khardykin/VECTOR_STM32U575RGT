@@ -247,6 +247,7 @@ typedef struct
 
 /* Готовый сценарий включения прибора (порт Button_Run_Start из Avis).        */
 extern const alert_seq_t AlertSeq_PowerOn;
+extern const alert_seq_t AlertSeq_CountdownFinal;  /* p15 v2: финальный звук отсчёта */
 
 /* --- API движка -----------------------------------------------------------*/
 /* Запрос старта сценария: любой поток; старт в ближайший Alert_IndicationTick
@@ -286,6 +287,8 @@ typedef enum
   ALERT_SOS_GROUP,        /* SOS группы (от сервера, бит SOS_GROUP)       */
   ALERT_SHUTDOWN,         /* обратный отсчёт выключения (удержание кнопки)  */
   ALERT_SOS_COUNTDOWN,    /* обратный отсчёт SOS (удержание кнопки)         */
+  ALERT_SHUTDOWN_FINAL,   /* p15: последняя секунда выключения (600 мс)     */
+  ALERT_SOS_COUNTDOWN_FINAL, /* p15: последняя секунда SOS (600 мс)         */
   ALERT_EVACUATION,       /* «ВСЕМ НА ВЫХОД» (бит EVACUATION от сервера)    */
   ALERT_GAS_ALARM,        /* «ОСТОРОЖНО! ГАЗ!» (пороги Avis или сервер, ID) */
   ALERT_IMMOBILITY,       /* «Неподвижность/Отсутствие активности»          */

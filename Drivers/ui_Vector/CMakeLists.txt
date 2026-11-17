@@ -23,6 +23,7 @@ SET(SOURCES screens/ui_ScreenStart.c
     images/ui_img_imagemenu_arrow_png.c
     images/ui_img_imagemenu_arrow_down_png.c
     images/ui_img_imagemenu_humidity_png.c
+    images/ui_img_imagehead_3g_png.c
     images/ui_img_imagehead_lora_png.c
     images/ui_img_imagehead_lte_png.c
     images/ui_img_imagehead_volume_mute_on_png.c
@@ -33,7 +34,6 @@ SET(SOURCES screens/ui_ScreenStart.c
     images/ui_img_imagemenu_satellite_png.c
     images/ui_img_imagemenu_temp_png.c
     images/ui_img_imagemenu_voice_png.c
-    images/ui_img_imagehead_3g_png.c
     fonts/ui_font_number14.c
     fonts/ui_font_number21.c
     fonts/ui_font_number36.c

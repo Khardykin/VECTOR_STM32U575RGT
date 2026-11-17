@@ -321,7 +321,7 @@ void Menu_Draw(void)
       LCD_CountdownToShutdown(((uint32_t)TEST_TIMER_RUN(TIMER_SHUTDOWN) + 999u) / 1000u);
       break;
     case SCREEN_COUNTDOWN_SOS:
-      LCD_CountdownToSOS((uint32_t)TEST_TIMER_RUN(TIMER_PRESS_SOS), TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS));
+      LCD_CountdownToSOS(((uint32_t)TEST_TIMER_RUN(TIMER_PRESS_SOS) + 999u) / 1000u, TEST_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS));
       break;
     default:   /* START/CONNECT/MESSAGE - экраны автора (ждут отрисовку) */
       break;
@@ -679,12 +679,16 @@ static void Menu_TurnOff(void)
  *  КОНТЕКСТ: поток LVGL Task (Menu_Run, 100 мс).                              */
 static uint8_t s_cnt_kind = 0u;   /* 0 = нет, 1 = выключение, 2 = SOS */
 static uint8_t s_cnt_return = 0u; /* экран возврата после отсчёта */
+static uint8_t s_cnt_final = 0u;  /* p15: уже в финальной фазе (< 1000 мс) */
 
 static void countdown_cancel(void)
 {
-  if (s_cnt_kind == 1u)      { RESET_TIMER(TIMER_SHUTDOWN);   Alert_Clear(ALERT_SHUTDOWN); Alert_Stop(); }
-  else if (s_cnt_kind == 2u) { RESET_TIMER(TIMER_PRESS_SOS);  Alert_Clear(ALERT_SOS_COUNTDOWN); Alert_Stop(); }
+  if (s_cnt_kind == 1u)      { RESET_TIMER(TIMER_SHUTDOWN);   Alert_Clear(ALERT_SHUTDOWN);
+    Alert_Clear(ALERT_SHUTDOWN_FINAL);   /* p15 */ Alert_Stop(); }
+  else if (s_cnt_kind == 2u) { RESET_TIMER(TIMER_PRESS_SOS);  Alert_Clear(ALERT_SOS_COUNTDOWN);
+    Alert_Clear(ALERT_SOS_COUNTDOWN_FINAL);   /* p15 */ Alert_Stop(); }
   s_cnt_kind = 0u;
+  s_cnt_final = 0u;   /* p15 */
 }
 
 static void countdown_start_shutdown(void)
@@ -692,6 +696,7 @@ static void countdown_start_shutdown(void)
   if ((device_turn == DEVICE_TURNED_OFF) || (s_cnt_kind != 0u)) { return; }
   s_cnt_return = menu_status.screen;
   s_cnt_kind = 1u;
+  s_cnt_final = 0u;   /* p15: начинаем с обычной фазы */
   START_TIMER(TIMER_SHUTDOWN, (uint16_t)VECTOR_COUNTDOWN_SHUTDOWN_MS);
   Alert_Set(ALERT_SHUTDOWN);
   Menu_GoTo((uint8_t)SCREEN_COUNTDOWN_SHUTDOWN);
@@ -702,6 +707,7 @@ static void countdown_start_shutdown(void)
 static void Menu_CountdownTick(void)
 {
   if (s_cnt_kind == 0u) { return; }
+
   uint8_t held = (s_cnt_kind == 1u)
       ? (uint8_t)((READ_PIN_IN(BUTTON_3) == VECTOR_KEY_PRESSED_LEVEL) ? 1u : 0u)
       : (uint8_t)((READ_PIN_IN(BUTTON_1) == VECTOR_KEY_PRESSED_LEVEL) ? 1u : 0u);
@@ -712,28 +718,57 @@ static void Menu_CountdownTick(void)
     Menu_GoTo(s_cnt_return);
     return;
   }
+
   uint8_t expired = (s_cnt_kind == 1u) ? (uint8_t)TEST_TIMER(TIMER_SHUTDOWN)
                                        : (uint8_t)TEST_TIMER(TIMER_PRESS_SOS);
+
+  /* p15 v2: финальный сценарий запущен - ждём, пока он отработает
+     (Alert_Busy() == 0), и только потом выполняем действие.                 */
+  if (s_cnt_final != 0u)
+  {
+    if (Alert_Busy() != 0u) { return; }    /* сценарий ещё играет - ждём */
+    if (s_cnt_kind == 1u)
+    {
+      RESET_TIMER(TIMER_SHUTDOWN);
+      s_cnt_kind = 0u;
+      s_cnt_final = 0u;
+      Menu_TurnOff();
+    }
+    else
+    {
+      RESET_TIMER(TIMER_PRESS_SOS);
+      s_cnt_kind = 0u;
+      s_cnt_final = 0u;
+      Sys_Cfg_Lock();
+      SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS);
+      Sys_Cfg_Unlock();
+#if CONFIG_LORA
+      Lora_SetControlLoraBit(ST_LORA_BIT_SOS, 1u);
+#endif
+      Alert_Set(ALERT_SOS);
+      Menu_ResetButtons();
+      Menu_GoTo(s_cnt_return);
+      LOG_W(VLOG_M_SYS, "menu: SOS set by hold countdown");
+    }
+    return;
+  }
+
   if (expired == 0u) { return; }
+
+  /* p15 v2: таймер истёк - гасим обычный статус и запускаем финальный
+     сценарий (аналогично AlertSeq_PowerOn). Он отработает 600 мс и сам
+     остановится; на следующем тике выполним действие.                        */
   if (s_cnt_kind == 1u)
   {
-    countdown_cancel();
-    Menu_TurnOff();
+    Alert_Clear(ALERT_SHUTDOWN);
   }
   else
   {
-    countdown_cancel();
-    Sys_Cfg_Lock();
-    SET_STATUS_COMMON_ERR_BIT(ST_COMMON_BIT_SOS);
-    Sys_Cfg_Unlock();
-#if CONFIG_LORA
-    Lora_SetControlLoraBit(ST_LORA_BIT_SOS, 1u);
-#endif
-    Alert_Set(ALERT_SOS);
-    Menu_ResetButtons();
-    Menu_GoTo(s_cnt_return);
-    LOG_W(VLOG_M_SYS, "menu: SOS set by hold countdown");
+    Alert_Clear(ALERT_SOS_COUNTDOWN);
   }
+  Alert_Start(&AlertSeq_CountdownFinal);
+  s_cnt_final = 1u;
+  LOG_I(VLOG_M_SYS, "menu: countdown expired, final sound started");
 }
 
 
@@ -750,6 +785,7 @@ static void Button_Sos(void)
     {
       s_cnt_return = menu_status.screen;
       s_cnt_kind = 2u;
+      s_cnt_final = 0u;   /* p15: начинаем с обычной фазы */
       START_TIMER(TIMER_PRESS_SOS, (uint16_t)VECTOR_COUNTDOWN_SOS_MS);
       Alert_Set(ALERT_SOS_COUNTDOWN);
       Menu_GoTo((uint8_t)SCREEN_COUNTDOWN_SOS);
