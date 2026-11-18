@@ -1313,7 +1313,7 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
     labels[total_count] = env_labels[APPLANG][0]; values[total_count++] = env_temp_str;
 
 
-    snprintf(env_press_str, sizeof(env_press_str), "%d mmHg",
+    snprintf(env_press_str, sizeof(env_press_str), "%d kPa",
              (int)(sensors_status.Pressure * 0.0750062f + 0.5f));
     labels[total_count] = env_labels[APPLANG][1]; values[total_count++] = env_press_str;
 
