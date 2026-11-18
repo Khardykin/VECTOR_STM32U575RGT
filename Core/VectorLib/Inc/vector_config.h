@@ -712,7 +712,7 @@
 #define VECTOR_COUNTDOWN_SOS_MS      3000u
 #endif
 #ifndef VECTOR_MENU_AUTO_RETURN_S
-#define VECTOR_MENU_AUTO_RETURN_S   30u
+#define VECTOR_MENU_AUTO_RETURN_S   60u
 #endif
 #ifndef VECTOR_MENU_ITEMS
 #define VECTOR_MENU_ITEMS           4u   /* пунктов в SCREEN_MENU (заглушка: по

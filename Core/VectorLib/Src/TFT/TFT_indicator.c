@@ -24,6 +24,7 @@ uint32_t color_background[3] = {0x215CA2, 0xFFFFFF}; // синий белый
 uint32_t color_text[3] = {0xFFFFFF, 0x000000}; // белый черный
 //------------------------------------------------------------------------------
 #define INFO_LINE_HEIGHT            (25)
+#define MENU_LINE_HEIGHT            (36)   /* проектная высота строки меню, ui_ScreenMenu.c */
 #define LCD_BATTERY_CHARGE_HOLD_MS  (1500u)
 #define MEAS_VALUE_SZ               (16u)
 #define MEAS_NAME_SZ                (48u)
@@ -1192,6 +1193,14 @@ void LCD_Menu(uint8_t num)
            гасим (в дизайне там плейсхолдер "21.01.2014").                  */
         ui_set_obj_hidden(panels[i], false);
         ui_set_obj_hidden(labelsRight[i], true);
+        /* INFO растягивает Panel0 под список (строки × INFO_LINE_HEIGHT) -
+           возвращаем проектную высоту строки меню (36 px, ui_ScreenMenu.c),
+           иначе после INFO первая строка меню остаётся высокой. Геттер
+           СТИЛЯ, а не coords: он свежий сразу после set (см. panel_w).   */
+        if (lv_obj_get_style_height(panels[i], LV_PART_MAIN) != MENU_LINE_HEIGHT)
+        {
+            lv_obj_set_height(panels[i], MENU_LINE_HEIGHT);
+        }
     }
 }
 
@@ -1211,8 +1220,60 @@ void LCD_SubMenu_Single(uint8_t num, uint16_t roller)
     ui_set_obj_hidden(ui_Panel0, false);
 	//-------------------------------
 }
-
 //===========================================================================================================================
+// Формат среды для INFO-меню (LCD_SubMenuInfo): ОДИН ЗНАК после точки + единицы.
+// Экран измерений (meas_fill) остаётся на ЦЕЛЫХ - требования разные, поэтому
+// хелпер INFO отдельный и на meas_fill не влияет.
+// Данные уже в физических единицах - активен double-путь драйвера Bosch
+// (BME280_DOUBLE_ENABLE в bme280_defs.h), comp_data = °C / %RH / Па.
+// На экран INFO: "25.1 °C", "46.3 %", "101.3 кПа"; датчик не ответил - "--".
+// КОНТЕКСТ: поток LVGL Task.
+//===========================================================================================================================
+/* Индексы величин для info_fmt_env() - порядок как в env_labels: T, H, P. */
+#define INFO_ENV_TEMP               (0u)
+#define INFO_ENV_HUM                (1u)
+#define INFO_ENV_PRESS              (2u)
+
+static int32_t info_round(float v)
+{
+	return (int32_t)((v >= 0.0f) ? (v + 0.5f) : (v - 0.5f));
+}
+
+/* Одна функция на все три величины INFO: значение ×10 -> "целые.десятые"
+   плюс единицы. Данные уже в физических единицах (double-путь BME280):
+   Temperature - °C, Humidity - %, Pressure - кПа.
+   Датчик не ответил (Sensors_ok & SENSORS_OK_BME) - MEAS_NO_DATA.
+   num[24] и точности %.7s/%.8s - чтобы snprintf был заведомо по размеру
+   (реальные диапазоны драйвера: -40..85 °C, 0..100 %, 30..110 кПа).      */
+static void info_fmt_env(char *buf, uint32_t sz, uint8_t kind)
+{
+	float       v;
+	const char *unit;
+	char        num[24];
+	int32_t     v10;
+	uint32_t    u;
+
+	if ((sensors_status.Sensors_ok & SENSORS_OK_BME) == 0u)
+	{
+		snprintf(buf, sz, "%s", MEAS_NO_DATA);
+		return;
+	}
+
+	switch (kind)
+	{
+	case INFO_ENV_HUM:   v = sensors_status.Humidity;    unit = "%";      break;
+	case INFO_ENV_PRESS: v = sensors_status.Pressure;    unit = _("кПа"); break;
+	default:             v = sensors_status.Temperature; unit = "°C";     break;
+	}
+
+	v10 = info_round(v * 10.0f);
+	u   = (uint32_t)((v10 < 0) ? -v10 : v10);
+	if (u > 9999u) { u = 9999u; }          /* максимум "999.9" */
+	snprintf(num, sizeof(num), "%s%u.%u", (v10 < 0) ? "-" : "",
+			 (unsigned)(u / 10u), (unsigned)(u % 10u));
+	snprintf(buf, sz, "%.7s %.8s", num, unit);
+}
+
 void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
 {
     uint8_t current_page = num;
@@ -1229,9 +1290,9 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
     static char str_sn_dev[24];
     static char str_hw[12], str_fw[12];
     static char str_sys_err_buf[64];
-    static char env_temp_str[15];
-    static char env_press_str[15];
-    static char env_hum_str[15];
+    static char env_temp_str[24];
+    static char env_press_str[24];
+    static char env_hum_str[24];
 
     // Массивы указателей
     const char * labels[60];
@@ -1303,24 +1364,19 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
         }
     }
 
-    // --- 5.1. Температура, давление и влажность ---
-    /* Единицы sensors_status (BME280 int32-драйвер, см. main_vector.h):
-       Temperature = °C×100, Humidity = %×1024, Pressure = гПа×10.
-       На экран - целые: °C, % и мм рт.ст. (гПа×10 × 0.0750062 = mmHg,
-       10132 -> 760). Раньше значения печатались сырыми (×100/×1024).     */
-    snprintf(env_temp_str, sizeof(env_temp_str), "%d °С",
-             (int)(sensors_status.Temperature / 100.0f));
+    // --- 5.1. Температура, влажность и давление ---
+    /* INFO: ОДИН знак после точки + единицы - одна функция info_fmt_env().
+       Экран измерений (meas_fill) остаётся на целых, это разные требования.
+       Данные уже в физических единицах (double-путь драйвера BME280):
+       Temperature - °C, Humidity - %, Pressure - кПа.                      */
+    info_fmt_env(env_temp_str,  sizeof(env_temp_str),  INFO_ENV_TEMP);
     labels[total_count] = env_labels[APPLANG][0]; values[total_count++] = env_temp_str;
 
-
-    snprintf(env_press_str, sizeof(env_press_str), "%d kPa",
-             (int)(sensors_status.Pressure));
-    labels[total_count] = env_labels[APPLANG][1]; values[total_count++] = env_press_str;
-
-
-    snprintf(env_hum_str, sizeof(env_hum_str), "%d %%",
-             (int)(sensors_status.Humidity / 1024.0f));
+    info_fmt_env(env_hum_str,   sizeof(env_hum_str),   INFO_ENV_HUM);
     labels[total_count] = env_labels[APPLANG][2]; values[total_count++] = env_hum_str;
+
+    info_fmt_env(env_press_str, sizeof(env_press_str), INFO_ENV_PRESS);
+    labels[total_count] = env_labels[APPLANG][1]; values[total_count++] = env_press_str;
 
     // --- 6. Расчет страниц ---
 #if (CONFIG_MODEL_LCD == 0)
@@ -1361,6 +1417,24 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
     ui_set_obj_align(ui_LabelLeft0, LV_ALIGN_TOP_LEFT);
     ui_set_obj_align(ui_LabelRight0, LV_ALIGN_TOP_RIGHT);
     lv_obj_set_height(ui_Panel0, (int32_t)count_on_page * INFO_LINE_HEIGHT);
+
+    /* INFO переиспользует панели меню (Panel0..3): LCD_Menu/LCD_SubMenuSetting
+       красят их под выбранный пункт (синий градиент + белый текст) и запоминают
+       состояние в LV_STATE_CHECKED/USER_1. Здесь выбора нет - возвращаем всем
+       панелям НЕподсвеченный вид (белый фон, чёрный текст), иначе строки INFO
+       наследуют подсветку меню. Правые лейблы (значения) set_focus не красит -
+       им цвет ставим отдельно. Вызов «умный»: при неизменном состоянии выходит
+       сразу, поэтому лишней инвалидации LVGL каждые 100 мс нет.             */
+    {
+        lv_obj_t *info_panels[] = {ui_Panel0, ui_Panel1, ui_Panel2, ui_Panel3};
+        lv_obj_t *info_left[]   = {ui_LabelLeft0, ui_LabelLeft1, ui_LabelLeft2, ui_LabelLeft3};
+        lv_obj_t *info_right[]  = {ui_LabelRight0, ui_LabelRight1, ui_LabelRight2, ui_LabelRight3};
+        for (uint8_t i = 0u; i < 4u; i++)
+        {
+            ui_menu_item_set_focus(info_left[i], info_panels[i], false, false);
+            ui_set_obj_text_color(info_right[i], lv_color_hex(color_text[1]), LV_PART_MAIN);
+        }
+    }
 
     LCD_Fill_Info_Page(ui_LabelLeft0, ui_LabelRight0, labels, values, start_idx, count_on_page);
 }

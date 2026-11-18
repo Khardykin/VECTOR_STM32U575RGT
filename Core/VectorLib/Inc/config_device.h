@@ -49,7 +49,7 @@
 #define CONFIG_TYPE_LCD_TFT				1				// 0 = экран выключен; 1 = драйвер панели ST7789P3 (TFT.c + LCD_platform.c); 2 = слой индикации Avis (TFT_indicator.c) вместо драйвера. Значения 1 и 2 взаимоисключающи: TFT.c/LCD_platform.c собираются при ненулевом макросе, TFT_indicator.c - только при ==2 (PLAN.md п.29)
 #define CONFIG_MODEL_LCD				0				// 0 = ST7789P3 172x320 (портрет, подсветка вкл/выкл PC6), 1 = 320x240 ILI9341 (ШИМ)
 
-#define CONFIG_LIS3DH					1
+#define CONFIG_LIS3DH					0
 #define CONFIG_BME						1
 #define CONFIG_MAX17048					1
 

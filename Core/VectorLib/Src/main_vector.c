@@ -776,11 +776,6 @@ static void lvgl_task_function(ULONG thread_input)
 void Vector_Run_Pre_Init(void)
 {
   LOG_I(VLOG_M_TASKS, "pre init");
-
-  /* Бренд прибора (MIRAX/BACS) из последней страницы внутренней flash -
-     первой строкой, как Init_Build_Type() в Avis_Run_Pre_Init.      */
-  Init_Build_Type();
-
   //----------------------------------------------------------------------------
   // Для уменьшения потребления, пин PWR_WAKEUP_PIN4_LOW_1 на всякий случай, так как в слип наврятли мы войдем
 	HAL_PWR_EnableWakeUpPin(PWR_WAKEUP_PIN4_LOW_1);
@@ -820,6 +815,10 @@ void Vector_Run_Pre_Init(void)
        Vector_RunFlashMemory() запишет конфиг в первое окно тишины.       */
     SaveConfig = 1u;
   }
+
+  /* Бренд прибора (MIRAX/BACS) из последней страницы внутренней flash -
+     первой строкой, как Init_Build_Type() в Avis_Run_Pre_Init.      */
+  Init_Build_Type();
 
   /*  (замечание автора п.4): указатели архива хранятся ОТДЕЛЬНО от конфига
      в странице-кольце SF_LOG_PTR и сохраняются после каждой записи журнала.

@@ -1031,6 +1031,7 @@ static void immob_report_incident(void)
 }
 
 /* Секундная логика неподвижности.                                           */
+#if CONFIG_LIS3DH
 static void immob_tick_1s(void)
 {
   const SNS_CFG_Type_common *cfg = &Sns_Cfg_struct.Config_common;
@@ -1111,6 +1112,7 @@ static void immob_tick_1s(void)
     break;
   }
 }
+#endif
 
 #if CONFIG_LORA
 /* Поза для LoRa (Motion.StatusBits, биты 0..1): 0 неизвестно, 1 вертикальное,
@@ -1829,8 +1831,9 @@ void Alert_Tick(void)
   if (s_tick_div >= (uint8_t)ALERT_TICKS_PER_SEC)
   {
     s_tick_div = 0u;
-
+#if CONFIG_LIS3DH
     immob_tick_1s();
+#endif
 
 #if CONFIG_BLE
     gas_local_tick();          /* пороги своего газоанализатора Avis        */

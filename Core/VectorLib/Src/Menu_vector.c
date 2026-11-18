@@ -328,9 +328,8 @@ void Menu_Draw(void)
   }
 
   ui_apply_visibility();
-  /* Вызов сохранён как в Avis (DisplayIndication), но LCD_UpdateScreen() в этом
-     проекте - пустышка ((void)0, см. TFT.h): кадр уезжает на панель из
-     lv_timer_handler() потока LVGL Task (my_flush_cb -> TFT_FlushBuffer),
+  /* LCD_UpdateScreen() в этом проекте - пустышка ((void)0, см. TFT.h):
+   * кадр уезжает на панель из lv_timer_handler() потока LVGL Task (my_flush_cb -> TFT_FlushBuffer),
      принудительно «обновлять экран» после отрисовки не нужно.             */
   LCD_UpdateScreen();
 #endif /* CONFIG_TYPE_LCD_TFT */
@@ -866,32 +865,31 @@ static void menu_navigate(void)
        окне DOUBLE), см. ТЗ п.3. DOUBLE без спецдействия = SHORT.            */
     case SCREEN_MEASURE:
     {
-	    static const uint8_t setting_screens[] = {
+	    static const uint8_t item_screens[] = {
 	    		SCREEN_MEASURE,
 				SCREEN_MENU,
 				SCREEN_VOICE_MESSAGE,
 				SCREEN_TEXT_MESSAGE,
 	    };
 
-	    uint8_t sub = 0;
+	    uint8_t item = 0;
 
 	    if (menu_as_short(g2) == (uint8_t)GEST_SHORT){
-	    	/* страница вниз по кольцу с пропуском отключённых сборкой */
-	    	menu_status.state_menu = meas_page_step(menu_status.state_menu, +1);
+	    	menu_status.state_menu = meas_page_step(menu_status.state_menu, -1);
 	    }
 	    else if (g2 == (uint8_t)GEST_SHORT_LONG){
 	    	/* короткий + длинный Button2 - страница ошибок (вне кольца) */
 	    	menu_status.state_menu = MEAS_PAGE_ERR;
 	    }
 	    else if (menu_as_short(g3) == (uint8_t)GEST_SHORT){
-	    	menu_status.state_menu = meas_page_step(menu_status.state_menu, -1);
+	    	menu_status.state_menu = meas_page_step(menu_status.state_menu, +1);
 	    }
 	    else if (g3 == (uint8_t)GEST_LONG){
 	    	if (menu_status.state_menu == MEAS_PAGE_VOICE){
-	    		sub = 2;
+	    		item = 2;
 	    	}
 	    	else if (menu_status.state_menu == MEAS_PAGE_CHAT){
-	    		sub = 3;
+	    		item = 3;
 	    	}
 	    	else {
 	    		/* Выключение - обратный отсчёт удержания (CountdownToShutdown
@@ -903,10 +901,13 @@ static void menu_navigate(void)
 	    else if (g3 == (uint8_t)GEST_SHORT_LONG){
 	    	/* ВХОД В МЕНЮ (ТЗ п.3): state_menu сбросит Menu_GoTo - это
 	    	   переход MEASURE -> MENU (номер страницы не наследуется).    */
-	    	sub = 1;
+	    	item = 1;
 	    }
 
-	    Menu_GoTo(setting_screens[sub]);
+	    if (item >= (uint8_t)(sizeof(item_screens) / sizeof(item_screens[0]))){
+	    	item = 0u;
+	    }
+	    Menu_GoTo(item_screens[item]);
 	    break;
     }
 
@@ -914,7 +915,7 @@ static void menu_navigate(void)
       /* Button1 SHORT - вход в пункт (приоритет Button1, как в Avis
          Button_1_Menu): пункт списка -> экран. Пункт 3 «Журнал событий» -
          экран ещё не создан (автор), пока остаёмся на месте.            */
-		  if (g1 == (uint8_t)GEST_SHORT){
+		  if (g3 == (uint8_t)GEST_SHORT){
 			static const uint8_t item_screens[] = {
 				(uint8_t)SCREEN_INFO_DEVICE,     /* 0 - Информация (Panel0) */
 				(uint8_t)SCREEN_SETTING,         /* 1 - Настройки  (Panel1) */
@@ -923,7 +924,7 @@ static void menu_navigate(void)
 			};
 			uint8_t item = menu_status.state_menu;
 			if (item >= (uint8_t)(sizeof(item_screens) / sizeof(item_screens[0]))){
-			  item = 0u;
+				item = 0u;
 			}
 			Menu_GoTo(item_screens[item]);
 		  }
