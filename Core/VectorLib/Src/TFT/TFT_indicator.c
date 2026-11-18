@@ -1314,7 +1314,7 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
 
 
     snprintf(env_press_str, sizeof(env_press_str), "%d kPa",
-             (int)(sensors_status.Pressure * 0.0750062f + 0.5f));
+             (int)(sensors_status.Pressure));
     labels[total_count] = env_labels[APPLANG][1]; values[total_count++] = env_press_str;
 
 
@@ -1354,14 +1354,15 @@ void LCD_SubMenuInfo(SNS_CFG *pSnsCfg, uint8_t num)
        LabelRight1 созданы скрытыми - показываем; неиспользуемые на этой
        странице строки меню Panel2/Panel3 гасим (заголовок Panel0 показывает
        LCD_SubMenu_Single, лейблы - LCD_Fill_Info_Page).                    */
-    ui_set_obj_hidden(ui_Panel1, false);
+    ui_set_obj_hidden(ui_Panel0, false);
+    ui_set_obj_hidden(ui_Panel1, true);
     ui_set_obj_hidden(ui_Panel2, true);
     ui_set_obj_hidden(ui_Panel3, true);
-    ui_set_obj_align(ui_LabelLeft1, LV_ALIGN_TOP_LEFT);
-    ui_set_obj_align(ui_LabelRight1, LV_ALIGN_TOP_RIGHT);
-    lv_obj_set_height(ui_Panel1, (int32_t)count_on_page * INFO_LINE_HEIGHT);
+    ui_set_obj_align(ui_LabelLeft0, LV_ALIGN_TOP_LEFT);
+    ui_set_obj_align(ui_LabelRight0, LV_ALIGN_TOP_RIGHT);
+    lv_obj_set_height(ui_Panel0, (int32_t)count_on_page * INFO_LINE_HEIGHT);
 
-    LCD_Fill_Info_Page(ui_LabelLeft1, ui_LabelRight1, labels, values, start_idx, count_on_page);
+    LCD_Fill_Info_Page(ui_LabelLeft0, ui_LabelRight0, labels, values, start_idx, count_on_page);
 }
 
 //===========================================================================================================================
