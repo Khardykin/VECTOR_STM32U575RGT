@@ -508,6 +508,9 @@ void USART2_IRQHandler(void)
 /**
   * @brief This function handles USART3 global interrupt.
   */
+/* Гейт эха на время обмена по COM (Command_vector.c). */
+extern uint8_t Command_vector_SessionActive(void);
+
 void USART3_IRQHandler(void)
 {
   /* USER CODE BEGIN USART3_IRQn 0 */
@@ -515,13 +518,13 @@ void USART3_IRQHandler(void)
 	if (UART_IRQReceive(&huart3, &data_uart)){
 		add_to_buffer(&InputBuffer[TYPE_USART], data_uart);
 #if BLE_DEBUG
-		huart3.Instance->TDR = data_uart;
+		if (Command_vector_SessionActive() == 0u) { huart3.Instance->TDR = data_uart; }
 #endif
 #if LTE_DEBUG
-		huart2.Instance->TDR = data_uart;
+		if (Command_vector_SessionActive() == 0u) { huart2.Instance->TDR = data_uart; }
 #endif
 #if LORA_DEBUG
-		huart4.Instance->TDR = data_uart;
+		if (Command_vector_SessionActive() == 0u) { huart4.Instance->TDR = data_uart; }
 #endif
 //		buffer_uart[TYPE_USART].TimeRX = TIME_OUT_UART;
 #if CONFIG_UART

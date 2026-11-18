@@ -238,6 +238,10 @@ def main():
     except FlashError as e:
         print("\n[!] %s" % e); return 1
     finally:
+        try:
+            cli.commit()      # закрывает сессию: эхо и лог возвращаются
+        except Exception:
+            pass
         tr.close()
 
 

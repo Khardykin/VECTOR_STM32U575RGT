@@ -27,18 +27,27 @@ extern "C" {
 #define CMD_MAX_PAYLOAD     1024u
 #define CMD_FRAME_HDR       8u
 #define CMD_MAX_FRAME       (CMD_FRAME_HDR + CMD_MAX_PAYLOAD + 2u)
+#define CMD_OP_READ_HOLD    0x03u   /* Modbus: holding -> Config_common */
+#define CMD_OP_READ_IN      0x04u   /* Modbus: input   -> sensors_status */
 #define CMD_OP_COMMIT       0x0Au
 #define CMD_OP_INFO         0x0Bu
 #define CMD_OP_ERASE        0x0Du
 #define CMD_OP_READ         0x0Eu
 #define CMD_OP_WRITE        0x0Fu
+#define CMD_OP_WRITE_MULTI  0x10u   /* Modbus: запись группы holding */
 #define CMD_ERR_LENGTH      1u
 #define CMD_ERR_RANGE       2u
+#define CMD_ERR_ADDR        2u   /* Modbus: illegal data address */
 #define CMD_ERR_IO          3u
+#define CMD_ERR_VALUE       3u   /* Modbus: illegal data value */
 #define CMD_ERR_VERIFY      4u
 #define CMD_ERR_PROTECTED   5u
 #define CMD_ERR_UNKNOWN     6u
 #define CMD_RESYNC_MS       300u
+#define CMD_SESSION_IDLE_MS 5000u
+/* Резерв под будущий образ прошивки: за LOG_PTR, 1 МБ. */
+#define CMD_FW_BASE         0x00603000u
+#define CMD_FW_SIZE         0x00100000u
 #ifndef CMD_VECTOR_COM
 #define CMD_VECTOR_COM      1     /* 0 - собрать без привязки к USART3/плееру */
 #endif
@@ -52,6 +61,9 @@ uint16_t Command_vector_Frame(const uint8_t *req,uint16_t req_len,uint8_t *rsp,u
 void     Command_vector_RxFeed(const uint8_t *data,uint16_t len,uint32_t now_ms);
 void     Command_vector_Poll(uint32_t now_ms);
 uint16_t Command_vector_CRC16(const uint8_t *data,uint16_t len);
+void     Command_vector_EraseService(void);   /* 1 сектор за проход */
+uint8_t  Command_vector_SessionActive(void);
+void     Command_vector_LogMute(uint8_t mute); /* weak-заглушка */
 #ifdef __cplusplus
 }
 #endif
