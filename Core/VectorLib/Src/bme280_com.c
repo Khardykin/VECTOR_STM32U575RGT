@@ -154,7 +154,7 @@ int8_t bme280_measure(void) /* pSnsCfg не используется - данн�
 		Calib_bme280_Temp(comp_data.temperature);
 		comp_data.temperature = comp_data.temperature + sensors_status.Temperature_calib_offset;
 #endif
-		sensors_status.Temperature = comp_data.temperature;   /*  */      /* ��C  */
+		sensors_status.Temperature = comp_data.temperature;   /*  */      /* T C  */
 		sensors_status.Humidity = comp_data.humidity;         /*  */           /* %   */
 		sensors_status.Pressure = comp_data.pressure/1000.0;  /*  */          /* hPa: 1 мм рт. ст. = 133,3 Па*/
 		return 0;

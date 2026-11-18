@@ -429,7 +429,7 @@ static void log_build(EVENT_LOG *r, TYPE_LOG t, const SNS_CFG *cfg)
 		p.battery_mv  = sensors_status.battery_charge_volt;
 		p.aqi         = 0u;		// задел (§9): датчика качества воздуха нет
 		p.temperature = (int16_t)sensors_status.Temperature;					// °C×100
-		p.humidity    = (uint16_t)(sensors_status.Humidity * 100.0f / 1024.0f);	// %×1024 -> %×100
+		p.humidity    = (uint16_t)sensors_status.Humidity;						// %×1024 -> %×100
 		p.pressure    = (uint16_t)sensors_status.Pressure;						// гПа×10
 		p.motion      = log_motion_byte();
 		memcpy(r->Pl, &p, sizeof p);
