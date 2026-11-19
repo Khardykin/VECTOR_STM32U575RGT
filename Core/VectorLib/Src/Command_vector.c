@@ -3,21 +3,17 @@
   * @file    Command_vector.c
   * @brief   Обмен по COM (USART3) в стиле Avis Command.c.
   *
-  *          parsing_command() - диспетчер, CmdFuncN() - обработчики, где N это
-  *          ДЕСЯТИЧНЫЙ номер команды (как в Avis: 0x03->CmdFunc3, 0x10->CmdFunc16).
-  *          CRC добавляет сам parsing_command (CreateCRC), обработчики возвращают
-  *          длину ответа БЕЗ CRC.
+  *          parsing_command() - диспетчер, добавляет CRC. CmdFuncN - обработчики,
+  *          где N = десятичный код команды (как в Avis).
   *
-  *          Команды:
-  *            0x03 CmdFunc3  - чтение holding-регистров (Config_common)
-  *            0x04 CmdFunc4  - чтение input-регистров   (sensors_status)
+  *          Протокол:
+  *            0x03 CmdFunc3  - чтение holding-регистров  (Config_common)
+  *            0x04 CmdFunc4  - чтение input-регистров    (sensors_status)
   *            0x10 CmdFunc16 - запись группы holding
-  *            0x0F CmdFunc15 - запись блока во внешнюю flash (как в Avis)
-  *            0x11 CmdFunc17 - чтение блока внешней flash
-  *            0x0D CmdFunc13 - стирание диапазона внешней flash
-  *            0x0B CmdFunc11 - сведения о flash и образе звуков
-  *            0x0A CmdFunc10 - COMMIT: плеер перечитывает образ, сессия закрыта
-  *            0x0E CmdFunc14 - запись прошивки во внутреннюю flash (бутлоадер, TODO)
+  *            0x0F CmdFunc15 - блочная запись во внешнюю flash (адрес 32 бита)
+  *
+  *          Управляющие регистры 0x0F00+ (COMMIT, сведения об образе, стирание
+  *          областей, окно данных) - карта ниже, работают через 0x03/0x10.
   *
   *          КОНТЕКСТ: receiver_task (command_message), не ISR.
   ******************************************************************************
@@ -31,43 +27,97 @@
 #include "main_vector.h"
 #include "Config_save_read.h"
 #include "sfmap.h"
+#include "vector_config.h"
+#include "vector_log.h"
 
 #define CMD_SOUNDS_LIMIT    0x00400000u   /* sfmap.h: выше - CONFIG/LOG        */
-#define CMD_ERASE_KEY       0xA5u         /* ключ стирания вне области SOUNDS  */
+#define CMD_ERASE_KEY       0xA5u
 
-/* --- Хуки: ставятся ОДИН раз при первом проходе command_message() --------- */
-static cmd_flash_pause_t s_pause  = 0;    /* стоп/пуск плеера на время записи  */
-static cmd_commit_t      s_commit = 0;    /* вызывается по CmdFunc10 (COMMIT)  */
-static cmd_tx_t          s_tx     = 0;    /* отправка ответа в COM             */
+#define MB_WIN_REGS         125u
+#define MB_WIN_BYTES        (MB_WIN_REGS * 2u)
 
-/* --- Накопитель кадра ----------------------------------------------------- */
-static uint8_t  s_rx[CMD_MAX_FRAME];
-static uint16_t s_rx_len = 0u;
-static uint16_t s_expect = 0u;
-static uint8_t  s_ready  = 0u;
-static uint32_t s_rx_ms  = 0u;
+/* ==========================================================================
+ * Хуки: ставятся ОДИН раз при первом проходе command_message().
+ *   hooks.pause  - стоп/пуск плеера на время записи/стирания;
+ *   hooks.commit - вызывается по регистру 0x0F00 (COMMIT);
+ *   hooks.tx     - отправка ответа в COM.
+ * ========================================================================== */
+typedef struct
+{
+  cmd_flash_pause_t pause;
+  cmd_commit_t      commit;
+  cmd_tx_t          tx;
+  uint8_t           ready;        /* хуки привязаны (одноразово) */
+} cmd_hooks_t;
 
-/* --- Сессия обмена (эхо UART и лог молчат, пока идёт загрузка) ------------ */
-static uint8_t  s_session = 0u;
-static uint32_t s_sess_ms = 0u;
+/* Накопитель кадра + состояние сессии. */
+typedef struct
+{
+  uint8_t  buf[CMD_MAX_FRAME];
+  uint16_t len;                   /* принято байт                    */
+  uint16_t expect;                /* ожидаемая длина кадра           */
+  uint8_t  ready;                 /* кадр собран, ждёт разбора       */
+  uint32_t ms;                    /* время последнего пополнения     */
+  uint8_t  session;               /* 1 = идёт обмен (эхо/лог молчат) */
+  uint32_t sess_ms;               /* время последнего кадра          */
+} cmd_rx_t;
+
+/* Фоновое стирание областей. */
+typedef struct
+{
+  uint8_t  req;                   /* маска запрошенных областей      */
+  uint8_t  busy;                  /* маска стирающейся области       */
+  uint8_t  err;                   /* маска областей с ошибкой        */
+  uint8_t  bit;                   /* бит текущей области             */
+  uint8_t  pct;                   /* прогресс текущей области, %     */
+  uint32_t cur;
+  uint32_t end;
+  uint32_t from;
+} cmd_erase_t;
+
+/* Окно данных во внешнюю flash (адрес + буфер 250 Б). */
+typedef struct
+{
+  uint32_t addr;
+  uint16_t len;                   /* чётная, <= 250                  */
+  uint16_t status;                /* код последней операции          */
+  uint8_t  autoinc;               /* адрес += len после записи       */
+  uint8_t  dirty;                 /* буфер не соответствует flash    */
+  uint8_t  buf[MB_WIN_BYTES];
+} cmd_win_t;
+
+/* Кэш заголовка образа звуков. */
+typedef struct
+{
+  audio_img_header_t hdr;
+  uint16_t rate;
+  uint8_t  ok;
+  uint8_t  valid;
+} cmd_img_t;
+
+static cmd_hooks_t hooks = { 0, 0, 0, 0u };
+static cmd_rx_t    rx;
+static cmd_erase_t era;
+static cmd_win_t   win = { 0u, 0u, 0u, 0u, 1u, { 0 } };
+static cmd_img_t   img;
 
 void Command_vector_SetPauseHook(cmd_flash_pause_t hook)
 {
-  s_pause = hook;
+  hooks.pause = hook;
 }
 
 void Command_vector_SetCommitHook(cmd_commit_t hook)
 {
-  s_commit = hook;
+  hooks.commit = hook;
 }
 
 void Command_vector_SetTx(cmd_tx_t hook)
 {
-  s_tx = hook;
+  hooks.tx = hook;
 }
 
 /* ==========================================================================
- * CRC и мелкие помощники (имена как в Avis Command.c)
+ * CRC и мелкие помощники (имена как в Avis)
  * ========================================================================== */
 uint16_t CreateCRC_out(const uint8_t *data, uint16_t len)
 {
@@ -93,7 +143,6 @@ uint16_t CreateCRC_out(const uint8_t *data, uint16_t len)
   return crc;
 }
 
-/* Дописывает CRC в конец пакета (Modbus: младший байт первый). */
 uint16_t CreateCRC(uint8_t *data, uint16_t len)
 {
   uint16_t crc = CreateCRC_out(data, len);
@@ -103,23 +152,10 @@ uint16_t CreateCRC(uint8_t *data, uint16_t len)
   return crc;
 }
 
-uint16_t Command_vector_CRC16(const uint8_t *data, uint16_t len)
-{
-  return CreateCRC_out(data, len);
-}
-
 static uint32_t rd32(const uint8_t *p)
 {
   return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
          ((uint32_t)p[2] << 8)  | (uint32_t)p[3];
-}
-
-static void wr32(uint8_t *p, uint32_t v)
-{
-  p[0] = (uint8_t)(v >> 24);
-  p[1] = (uint8_t)(v >> 16);
-  p[2] = (uint8_t)(v >> 8);
-  p[3] = (uint8_t)v;
 }
 
 static void wr16(uint8_t *p, uint16_t v)
@@ -128,7 +164,6 @@ static void wr16(uint8_t *p, uint16_t v)
   p[1] = (uint8_t)v;
 }
 
-/* Ответ-ошибка Modbus: [адрес][команда|0x80][код]. CRC добавит диспетчер. */
 static uint16_t CmdError(uint8_t *out, const uint8_t *mas, uint8_t code)
 {
   out[0] = mas[0];
@@ -157,28 +192,27 @@ static uint8_t program_pages(uint32_t addr, const uint8_t *src, uint32_t len)
 }
 
 /* ==========================================================================
- * Карта регистров (как sn_map/com_map/in_map в Avis): адрес задан ЯВНО,
- * между группами зазоры - чтение сквозь дыру даёт ошибку 02.
+ * Карта регистров (как sn_map/in_map в Avis): адрес задан ЯВНО, между
+ * группами зазоры - чтение сквозь дыру даёт ошибку 02.
  * ========================================================================== */
-#define MB_MAX_REGS      125u
-#define MB_MAX_BYTES     250u
-#define MB_DIV           1000.0f
+#define MB_MAX_REGS   125u
+#define MB_DIV        1000.0f
 
 enum
 {
-  T_U16 = 0,   /* uint16_t, 1 регистр                    */
-  T_U32,       /* uint32_t, 2 регистра (LO, HI)          */
-  T_U8,        /* uint8_t,  1 регистр (старший байт = 0) */
-  T_FLT,       /* float,    1 регистр, значение x1000    */
-  T_STR        /* массив байт, len/2 регистров           */
+  T_U16 = 0,
+  T_U32,
+  T_U8,
+  T_FLT,
+  T_STR
 };
 
 typedef struct
 {
-  uint16_t reg;   /* адрес первого регистра Modbus */
-  uint16_t off;   /* offsetof поля в структуре     */
-  uint8_t  type;  /* T_*                           */
-  uint8_t  len;   /* размер в байтах               */
+  uint16_t reg;
+  uint16_t off;
+  uint8_t  type;
+  uint8_t  len;
 } reg_map_t;
 
 #define CM(r, f)        { (r), (uint16_t)offsetof(SNS_CFG_Type_common, f), T_U16, 2u }
@@ -188,37 +222,31 @@ typedef struct
 static const reg_map_t com_map[] =
 {
   CM   (0x0000, Build_type),
-  CM32 (0x0001, State),                 /* 0x0001..0x0002 */
-  CM32 (0x0003, StateErr),              /* 0x0003..0x0004 */
-  /* зазор 0x0005..0x000F */
+  CM32 (0x0001, State),
+  CM32 (0x0003, StateErr),
   CM   (0x0010, TimeLedStatePulse),
   CM   (0x0011, TimeLedStatePeriod),
-  /* зазор 0x0012..0x001F */
   CM   (0x0020, battery_charge_volt_max),
   CM   (0x0021, battery_charge_volt_min),
   CM   (0x0022, battery_charge_volt_lim_1),
   CM   (0x0023, battery_charge_volt_lim_2),
-  /* зазор 0x0024..0x002F */
   CM   (0x0030, SerialLo),
   CM   (0x0031, SerialHi),
   CM   (0x0032, HardwareVersion),
-  CM32 (0x0033, ProductionDate),        /* 0x0033..0x0034 */
-  /* зазор 0x0035..0x003F */
-  CM32 (0x0040, Gps_type_nav),          /* 0x0040..0x0041 */
+  CM32 (0x0033, ProductionDate),
+  CM32 (0x0040, Gps_type_nav),
   CM   (0x0042, PeriodTimeLora),
   CM   (0x0043, Lora_Config_Flags),
-  CM32 (0x0044, Lora_freq_rx2),         /* 0x0044..0x0045 */
+  CM32 (0x0044, Lora_freq_rx2),
   CM   (0x0046, Lora_dr_rx2),
   CM   (0x0047, current_build_type),
-  /* зазор 0x0048..0x004F */
   CM   (0x0050, Immobility_Enable),
   CM   (0x0051, Immobility_Window_s),
   CM   (0x0052, Immobility_PreAlarm_s),
   CM   (0x0053, Immobility_Ths_mg),
   CM   (0x0054, Devices_Expected),
   CM   (0x0055, Alert_Flags),
-  /* зазор 0x0056..0x005F */
-  CMSTR(0x0060, Reserve, 8u),           /* 0x0060..0x0063 */
+  CMSTR(0x0060, Reserve, 8u),
 };
 
 #define IM(r, f)     { (r), (uint16_t)offsetof(sensors_status_t, f), T_U16, 2u }
@@ -235,24 +263,21 @@ static const reg_map_t in_map[] =
   IM32 (0x0008, cnt_rotation_events),
   IM32 (0x000A, cnt_read_ms),
   IM32 (0x000C, last_read_ms),
-  /* зазор 0x000E..0x000F */
-  IMF  (0x0010, Accel_x),               /* мг */
+  IMF  (0x0010, Accel_x),
   IMF  (0x0011, Accel_y),
   IMF  (0x0012, Accel_z),
   IM8  (0x0013, Orientation),
   IM8  (0x0014, Screen_rotation),
   IM8  (0x0015, fall_detected),
-  IM32 (0x0016, cnt_fall_events),       /* 0x0016..0x0017 */
-  /* зазор 0x0018..0x001F */
+  IM32 (0x0016, cnt_fall_events),
   IM   (0x0020, battery_charge_percent),
   IM   (0x0021, battery_charge_volt),
   IM8  (0x0022, Sensors_ok),
   IM8  (0x0023, Sensors_reserve),
-  /* зазор 0x0024..0x002F */
   IMF  (0x0030, Temperature_calib_offset),
-  IMF  (0x0031, Temperature),           /* м°C  */
-  IMF  (0x0032, Humidity),              /* м%   */
-  IMF  (0x0033, Pressure),              /* мкПа */
+  IMF  (0x0031, Temperature),
+  IMF  (0x0032, Humidity),
+  IMF  (0x0033, Pressure),
 };
 
 static uint16_t get_reg_span(const reg_map_t *m)
@@ -365,8 +390,7 @@ static void reg_set(void *base, const reg_map_t *m, uint16_t roff, uint16_t val)
   }
 }
 
-/* --- Курсор ответа, как в Avis (Count/Value/Countuint8_t/AnswerLen) -------
- * Пишет только receiver_task, поэтому общие переменные безопасны.          */
+/* Курсор ответа, как в Avis. Пишет только receiver_task. */
 static uint16_t  Count;
 static uint8_t  *Value;
 static uint8_t  *Countuint8_t;
@@ -390,31 +414,9 @@ static inline uint8_t CMD_SAVE(uint16_t *data)
   Count--;
   return (uint8_t)((Count == 0u) ? 1u : 0u);
 }
+
 /* ==========================================================================
- * УПРАВЛЯЮЩИЕ РЕГИСТРЫ (0x0F00+, далеко от конфигурации 0x0000..0x0063
- * и измерений 0x0000..0x0033). Всё делается штатными 0x03 (чтение) и
- * 0x10 (запись) - отдельных команд больше не нужно.
- *
- *   0x0F00 COMMIT        W: 1 = плеер перечитывает образ (audio_reload_image)
- *   0x0F01 SAVE_CFG      W: 1 = SaveConfig
- *   0x0F02 SAVE_CFGDEF   W: 1 = SaveConfigDefault
- *   0x0F03 LOAD_CFGDEF   W: 1 = ReadConfigDefault
- *
- *   0x0F10..0x0F1B       RO: сведения о flash и образе звуков
- *   0x0F1C IMG_REFRESH   W: 1 = перечитать заголовок из flash
- *
- *   0x0F20..0x0F25       W: 1 = стереть область (фоном, сектор за проход)
- *   0x0F26 BUSY / 0x0F27 ERR / 0x0F28 PROGRESS   RO
- *   0x0F29..0x0F2C       RW: адрес и длина произвольного стирания
- *   0x0F2D ERASE_KEY     RW: 0xA5 - разрешить стирание вне SOUNDS
- *   0x0F2E ERASE_START   W: 1 = запустить стирание заданного диапазона
- *
- *   0x0F30/31 WIN_ADDR   RW: адрес окна (32 бита, LO/HI)
- *   0x0F32 WIN_LEN       RW: длина окна в байтах (чётная, <= 250)
- *   0x0F33 WIN_CMD       W: 1 = прочитать окно из flash, 2 = записать + сверка
- *   0x0F34 WIN_STATUS    RO: 0 = ok, иначе код ошибки последней операции
- *   0x0F35 WIN_AUTOINC   RW: 1 = после записи адрес += WIN_LEN
- *   0x0F40..0x0FB7       RW: WIN_DATA, 125 регистров = 250 байт
+ * Управляющие регистры 0x0F00+
  * ========================================================================== */
 #define MB_REG_COMMIT         0x0F00u
 #define MB_REG_SAVE_CFG       0x0F01u
@@ -444,12 +446,6 @@ static inline uint8_t CMD_SAVE(uint16_t *data)
 #define MB_REG_ERASE_BUSY     0x0F26u
 #define MB_REG_ERASE_ERR      0x0F27u
 #define MB_REG_ERASE_PROGRESS 0x0F28u
-#define MB_REG_ERASE_ADDR_LO  0x0F29u
-#define MB_REG_ERASE_ADDR_HI  0x0F2Au
-#define MB_REG_ERASE_LEN_LO   0x0F2Bu
-#define MB_REG_ERASE_LEN_HI   0x0F2Cu
-#define MB_REG_ERASE_KEY      0x0F2Du
-#define MB_REG_ERASE_START    0x0F2Eu
 
 #define MB_REG_WIN_ADDR_LO    0x0F30u
 #define MB_REG_WIN_ADDR_HI    0x0F31u
@@ -458,8 +454,6 @@ static inline uint8_t CMD_SAVE(uint16_t *data)
 #define MB_REG_WIN_STATUS     0x0F34u
 #define MB_REG_WIN_AUTOINC    0x0F35u
 #define MB_REG_WIN_DATA       0x0F40u
-#define MB_WIN_REGS           125u
-#define MB_WIN_BYTES          (MB_WIN_REGS * 2u)
 
 #define ERASE_BIT_SOUNDS 0x01u
 #define ERASE_BIT_CONFIG 0x02u
@@ -467,19 +461,6 @@ static inline uint8_t CMD_SAVE(uint16_t *data)
 #define ERASE_BIT_LOG    0x08u
 #define ERASE_BIT_LOGPTR 0x10u
 #define ERASE_BIT_FW     0x20u
-#define ERASE_BIT_CUSTOM 0x40u
-
-static uint8_t  s_erase_req  = 0u;
-static uint8_t  s_erase_busy = 0u;
-static uint8_t  s_erase_err  = 0u;
-static uint8_t  s_erase_bit  = 0u;
-static uint8_t  s_erase_pct  = 0u;
-static uint32_t s_erase_cur  = 0u;
-static uint32_t s_erase_end  = 0u;
-static uint32_t s_erase_from = 0u;
-static uint32_t s_erase_addr = 0u;
-static uint32_t s_erase_len  = 0u;
-static uint16_t s_erase_key  = 0u;
 
 static const struct
 {
@@ -498,16 +479,16 @@ static const struct
 
 static void erase_begin(uint8_t bit, uint32_t base, uint32_t size)
 {
-  s_erase_bit  = bit;
-  s_erase_from = base;
-  s_erase_cur  = base;
-  s_erase_end  = base + size;
-  s_erase_busy = bit;
-  s_erase_pct  = 0u;
-  s_erase_err &= (uint8_t)~bit;
-  if (s_pause != 0)
+  era.bit  = bit;
+  era.from = base;
+  era.cur  = base;
+  era.end  = base + size;
+  era.busy = bit;
+  era.pct  = 0u;
+  era.err &= (uint8_t)~bit;
+  if (hooks.pause != 0)
   {
-    s_pause(1u);                  /* плеер не читает flash во время стирания */
+    hooks.pause(1u);
   }
 }
 
@@ -515,9 +496,9 @@ static void erase_start(uint8_t bit)
 {
   uint8_t i;
 
-  if ((s_erase_busy != 0u) || (s_erase_req != 0u))
+  if ((era.busy != 0u) || (era.req != 0u))
   {
-    return;                       /* одна область за раз, остальные в очереди */
+    return;
   }
   for (i = 0u; i < (uint8_t)(sizeof(s_areas) / sizeof(s_areas[0])); i++)
   {
@@ -529,131 +510,116 @@ static void erase_start(uint8_t bit)
   }
 }
 
-/* Один сектор за вызов: receiver_task не должен стоять секунды. */
 void Command_vector_EraseService(void)
 {
-  if (s_erase_busy == 0u)
+  if (era.busy == 0u)
   {
-    if (s_erase_req != 0u)
+    if (era.req != 0u)
     {
-      uint8_t bit = (uint8_t)(s_erase_req & (uint8_t)(-(int8_t)s_erase_req));
+      uint8_t bit = (uint8_t)(era.req & (uint8_t)(-(int8_t)era.req));
 
-      s_erase_req &= (uint8_t)~bit;
+      era.req &= (uint8_t)~bit;
       erase_start(bit);
     }
     return;
   }
 
-  if (sf_sector_erase(s_erase_cur) != HAL_OK)
+  if (sf_sector_erase(era.cur) != HAL_OK)
   {
-    s_erase_err |= s_erase_bit;
+    era.err |= era.bit;
   }
-  s_erase_cur += SF_SECTOR_SIZE;
+  era.cur += SF_SECTOR_SIZE;
 
-  if (s_erase_cur >= s_erase_end)
+  if (era.cur >= era.end)
   {
-    s_erase_busy = 0u;
-    s_erase_bit  = 0u;
-    s_erase_pct  = 100u;
-    if (s_pause != 0)
+    era.busy = 0u;
+    era.bit  = 0u;
+    era.pct  = 100u;
+    if (hooks.pause != 0)
     {
-      s_pause(0u);
+      hooks.pause(0u);
     }
     return;
   }
-  s_erase_pct = (uint8_t)(((s_erase_cur - s_erase_from) * 100u) / (s_erase_end - s_erase_from));
+  era.pct = (uint8_t)(((era.cur - era.from) * 100u) / (era.end - era.from));
 }
-
-/* --- Кэш сведений об образе (читается один раз, обновляется по регистру) -- */
-static audio_img_header_t s_img;
-static uint16_t           s_img_rate  = 0u;
-static uint8_t            s_img_ok    = 0u;
-static uint8_t            s_img_valid = 0u;
 
 static void img_refresh(void)
 {
   audio_img_entry_t e;
 
-  memset(&s_img, 0, sizeof(s_img));
+  memset(&img.hdr, 0, sizeof(img.hdr));
   memset(&e, 0, sizeof(e));
-  s_img_rate  = 0u;
-  s_img_ok    = 0u;
-  s_img_valid = 1u;
+  img.rate  = 0u;
+  img.ok    = 0u;
+  img.valid = 1u;
 
-  if (sf_read(AUDIO_IMG_BASE_ADDR, (uint8_t *)&s_img, sizeof(s_img)) == HAL_OK)
+  if (sf_read(AUDIO_IMG_BASE_ADDR, (uint8_t *)&img.hdr, sizeof(img.hdr)) == HAL_OK)
   {
-    if (s_img.magic == AUDIO_IMG_MAGIC)
+    if (img.hdr.magic == AUDIO_IMG_MAGIC)
     {
-      s_img_ok = 1u;
-      if (s_img.count != 0u)
+      img.ok = 1u;
+      if (img.hdr.count != 0u)
       {
-        (void)sf_read(AUDIO_IMG_BASE_ADDR + s_img.table_off, (uint8_t *)&e, sizeof(e));
-        s_img_rate = e.rate;
+        (void)sf_read(AUDIO_IMG_BASE_ADDR + img.hdr.table_off, (uint8_t *)&e, sizeof(e));
+        img.rate = e.rate;
       }
     }
   }
 }
 
-/* --- Окно данных во flash: адрес + длина + буфер 250 байт ---------------- */
-static uint32_t s_win_addr    = 0u;
-static uint16_t s_win_len     = 0u;
-static uint16_t s_win_status  = 0u;
-static uint8_t  s_win_autoinc = 0u;
-static uint8_t  s_win_dirty   = 1u;   /* буфер не соответствует адресу */
-static uint8_t  s_win[MB_WIN_BYTES];
-
 static void win_load(void)
 {
-  if (s_win_dirty == 0u)
+  if (win.dirty == 0u)
   {
     return;
   }
-  if ((s_win_len == 0u) || (s_win_len > MB_WIN_BYTES) ||
-      ((s_win_addr + s_win_len) > (uint32_t)SF_TOTAL_SIZE))
+  if ((win.len == 0u) || (win.len > MB_WIN_BYTES) ||
+      ((win.addr + win.len) > (uint32_t)SF_TOTAL_SIZE))
   {
-    s_win_status = CMD_ERR_RANGE;
+    win.status = CMD_ERR_RANGE;
     return;
   }
-  if (sf_read(s_win_addr, s_win, s_win_len) != HAL_OK)
+  if (sf_read(win.addr, win.buf, win.len) != HAL_OK)
   {
-    s_win_status = CMD_ERR_IO;
+    win.status = CMD_ERR_IO;
     return;
   }
-  s_win_status = 0u;
-  s_win_dirty  = 0u;
+  win.status = 0u;
+  win.dirty  = 0u;
 }
 
 static void win_store(void)
 {
   uint8_t rc;
 
-  if ((s_win_len == 0u) || (s_win_len > MB_WIN_BYTES) ||
-      ((s_win_addr + s_win_len) > (uint32_t)SF_TOTAL_SIZE))
+  if ((win.len == 0u) || (win.len > MB_WIN_BYTES) ||
+      ((win.addr + win.len) > (uint32_t)SF_TOTAL_SIZE))
   {
-    s_win_status = CMD_ERR_RANGE;
+    win.status = CMD_ERR_RANGE;
     return;
   }
-  if (s_pause != 0)
+  if (hooks.pause != 0)
   {
-    s_pause(1u);
+    hooks.pause(1u);
   }
-  rc = program_pages(s_win_addr, s_win, s_win_len);
+  rc = program_pages(win.addr, win.buf, win.len);
   if (rc == 0u)
   {
-    if (sf_verify(s_win_addr, s_win, s_win_len) != HAL_OK)
+    if (sf_verify(win.addr, win.buf, win.len) != HAL_OK)
     {
       rc = CMD_ERR_VERIFY;
     }
   }
-  if (s_pause != 0)
+  if (hooks.pause != 0)
   {
-    s_pause(0u);
+    hooks.pause(0u);
   }
-  s_win_status = rc;
-  if ((rc == 0u) && (s_win_autoinc != 0u))
+  win.status = rc;
+  if ((rc == 0u) && (win.autoinc != 0u))
   {
-    s_win_addr += s_win_len;
-    s_win_dirty = 1u;
+    win.addr += win.len;
+    win.dirty = 1u;
   }
 }
 
@@ -664,7 +630,7 @@ static uint8_t ctrl_reg_read(uint16_t addr, uint16_t *val)
     uint16_t off = (uint16_t)((addr - MB_REG_WIN_DATA) * 2u);
 
     win_load();
-    *val = (uint16_t)(((uint16_t)s_win[off] << 8) | s_win[off + 1u]);
+    *val = (uint16_t)(((uint16_t)win.buf[off] << 8) | win.buf[off + 1u]);
     return 1u;
   }
 
@@ -681,9 +647,8 @@ static uint8_t ctrl_reg_read(uint16_t addr, uint16_t *val)
     case MB_REG_ERASE_LOG:
     case MB_REG_ERASE_LOGPTR:
     case MB_REG_ERASE_FW:
-    case MB_REG_ERASE_START:
     case MB_REG_WIN_CMD:
-      *val = 0u;                  /* регистры-триггеры всегда читаются нулём */
+      *val = 0u;
       return 1u;
 
     case MB_REG_FLASH_LO:
@@ -707,62 +672,47 @@ static uint8_t ctrl_reg_read(uint16_t addr, uint16_t *val)
     case MB_REG_IMG_SIZE_HI:
     case MB_REG_IMG_RATE:
     case MB_REG_IMG_OK:
-      if (s_img_valid == 0u)
+      if (img.valid == 0u)
       {
         img_refresh();
       }
       switch (addr)
       {
-        case MB_REG_MAGIC_LO:    *val = (uint16_t)(s_img.magic & 0xFFFFu);      break;
-        case MB_REG_MAGIC_HI:    *val = (uint16_t)(s_img.magic >> 16);          break;
-        case MB_REG_IMG_VER:     *val = s_img.version;                          break;
-        case MB_REG_IMG_CNT:     *val = s_img.count;                            break;
-        case MB_REG_IMG_SIZE_LO: *val = (uint16_t)(s_img.total_size & 0xFFFFu); break;
-        case MB_REG_IMG_SIZE_HI: *val = (uint16_t)(s_img.total_size >> 16);     break;
-        case MB_REG_IMG_RATE:    *val = s_img_rate;                             break;
-        default:                 *val = (uint16_t)s_img_ok;                     break;
+        case MB_REG_MAGIC_LO:    *val = (uint16_t)(img.hdr.magic & 0xFFFFu);      break;
+        case MB_REG_MAGIC_HI:    *val = (uint16_t)(img.hdr.magic >> 16);          break;
+        case MB_REG_IMG_VER:     *val = img.hdr.version;                          break;
+        case MB_REG_IMG_CNT:     *val = img.hdr.count;                            break;
+        case MB_REG_IMG_SIZE_LO: *val = (uint16_t)(img.hdr.total_size & 0xFFFFu); break;
+        case MB_REG_IMG_SIZE_HI: *val = (uint16_t)(img.hdr.total_size >> 16);     break;
+        case MB_REG_IMG_RATE:    *val = img.rate;                                 break;
+        default:                 *val = (uint16_t)img.ok;                         break;
       }
       return 1u;
 
     case MB_REG_ERASE_BUSY:
-      *val = (uint16_t)(s_erase_busy | s_erase_req);
+      *val = (uint16_t)(era.busy | era.req);
       return 1u;
     case MB_REG_ERASE_ERR:
-      *val = (uint16_t)s_erase_err;
+      *val = (uint16_t)era.err;
       return 1u;
     case MB_REG_ERASE_PROGRESS:
-      *val = (uint16_t)s_erase_pct;
-      return 1u;
-    case MB_REG_ERASE_ADDR_LO:
-      *val = (uint16_t)(s_erase_addr & 0xFFFFu);
-      return 1u;
-    case MB_REG_ERASE_ADDR_HI:
-      *val = (uint16_t)(s_erase_addr >> 16);
-      return 1u;
-    case MB_REG_ERASE_LEN_LO:
-      *val = (uint16_t)(s_erase_len & 0xFFFFu);
-      return 1u;
-    case MB_REG_ERASE_LEN_HI:
-      *val = (uint16_t)(s_erase_len >> 16);
-      return 1u;
-    case MB_REG_ERASE_KEY:
-      *val = s_erase_key;
+      *val = (uint16_t)era.pct;
       return 1u;
 
     case MB_REG_WIN_ADDR_LO:
-      *val = (uint16_t)(s_win_addr & 0xFFFFu);
+      *val = (uint16_t)(win.addr & 0xFFFFu);
       return 1u;
     case MB_REG_WIN_ADDR_HI:
-      *val = (uint16_t)(s_win_addr >> 16);
+      *val = (uint16_t)(win.addr >> 16);
       return 1u;
     case MB_REG_WIN_LEN:
-      *val = s_win_len;
+      *val = win.len;
       return 1u;
     case MB_REG_WIN_STATUS:
-      *val = s_win_status;
+      *val = win.status;
       return 1u;
     case MB_REG_WIN_AUTOINC:
-      *val = (uint16_t)s_win_autoinc;
+      *val = (uint16_t)win.autoinc;
       return 1u;
 
     default:
@@ -776,17 +726,25 @@ static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
   {
     uint16_t off = (uint16_t)((addr - MB_REG_WIN_DATA) * 2u);
 
-    s_win[off]      = (uint8_t)(val >> 8);
-    s_win[off + 1u] = (uint8_t)val;
+    win.buf[off]      = (uint8_t)(val >> 8);
+    win.buf[off + 1u] = (uint8_t)val;
     return 1u;
   }
 
   switch (addr)
   {
     case MB_REG_COMMIT:
-      if ((val != 0u) && (s_commit != 0))
+      if (val != 0u)
       {
-        s_commit();
+        if (hooks.commit != 0)
+        {
+          hooks.commit();
+        }
+        /* COMMIT закрывает сессию: лог и эхо UART возвращаются. */
+        rx.session = 0u;
+#if VECTOR_LOG_ENABLE
+        Command_vector_LogMute(0u);
+#endif
       }
       return 1u;
     case MB_REG_SAVE_CFG:
@@ -822,77 +780,36 @@ static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
     case MB_REG_ERASE_FW:
       if (val != 0u)
       {
-        s_erase_req |= (uint8_t)(1u << (addr - MB_REG_ERASE_SOUNDS));
+        era.req |= (uint8_t)(1u << (addr - MB_REG_ERASE_SOUNDS));
       }
-      return 1u;
-
-    case MB_REG_ERASE_ADDR_LO:
-      s_erase_addr = (s_erase_addr & 0xFFFF0000u) | (uint32_t)val;
-      return 1u;
-    case MB_REG_ERASE_ADDR_HI:
-      s_erase_addr = (s_erase_addr & 0x0000FFFFu) | ((uint32_t)val << 16);
-      return 1u;
-    case MB_REG_ERASE_LEN_LO:
-      s_erase_len = (s_erase_len & 0xFFFF0000u) | (uint32_t)val;
-      return 1u;
-    case MB_REG_ERASE_LEN_HI:
-      s_erase_len = (s_erase_len & 0x0000FFFFu) | ((uint32_t)val << 16);
-      return 1u;
-    case MB_REG_ERASE_KEY:
-      s_erase_key = val;
-      return 1u;
-    case MB_REG_ERASE_START:
-      if (val == 0u)
-      {
-        return 1u;
-      }
-      if ((s_erase_busy != 0u) || (s_erase_req != 0u))
-      {
-        return 1u;                /* занято - команда игнорируется, BUSY покажет */
-      }
-      if ((s_erase_len == 0u) || (s_erase_addr >= (uint32_t)SF_TOTAL_SIZE) ||
-          (s_erase_len > ((uint32_t)SF_TOTAL_SIZE - s_erase_addr)))
-      {
-        s_erase_err |= ERASE_BIT_CUSTOM;
-        return 1u;
-      }
-      if (((s_erase_addr + s_erase_len) > CMD_SOUNDS_LIMIT) && (s_erase_key != CMD_ERASE_KEY))
-      {
-        s_erase_err |= ERASE_BIT_CUSTOM;
-        return 1u;
-      }
-      erase_begin(ERASE_BIT_CUSTOM,
-                  s_erase_addr - (s_erase_addr % SF_SECTOR_SIZE),
-                  (((s_erase_addr + s_erase_len - 1u) / SF_SECTOR_SIZE) + 1u) * SF_SECTOR_SIZE
-                  - (s_erase_addr - (s_erase_addr % SF_SECTOR_SIZE)));
       return 1u;
 
     case MB_REG_WIN_ADDR_LO:
-      s_win_addr = (s_win_addr & 0xFFFF0000u) | (uint32_t)val;
-      s_win_dirty = 1u;
+      win.addr = (win.addr & 0xFFFF0000u) | (uint32_t)val;
+      win.dirty = 1u;
       return 1u;
     case MB_REG_WIN_ADDR_HI:
-      s_win_addr = (s_win_addr & 0x0000FFFFu) | ((uint32_t)val << 16);
-      s_win_dirty = 1u;
+      win.addr = (win.addr & 0x0000FFFFu) | ((uint32_t)val << 16);
+      win.dirty = 1u;
       return 1u;
     case MB_REG_WIN_LEN:
       if ((val <= MB_WIN_BYTES) && ((val & 1u) == 0u))
       {
-        s_win_len = val;
-        s_win_dirty = 1u;
+        win.len = val;
+        win.dirty = 1u;
       }
       else
       {
-        s_win_status = CMD_ERR_VALUE;
+        win.status = CMD_ERR_VALUE;
       }
       return 1u;
     case MB_REG_WIN_AUTOINC:
-      s_win_autoinc = (uint8_t)((val != 0u) ? 1u : 0u);
+      win.autoinc = (uint8_t)((val != 0u) ? 1u : 0u);
       return 1u;
     case MB_REG_WIN_CMD:
       if (val == 1u)
       {
-        s_win_dirty = 1u;
+        win.dirty = 1u;
         win_load();
       }
       else if (val == 2u)
@@ -905,7 +822,6 @@ static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
       return 0u;
   }
 }
-
 
 /* ==========================================================================
  * CmdFunc3 / CmdFunc4 - чтение группы регистров
@@ -923,7 +839,6 @@ static uint16_t read_regs(const uint8_t *mas, uint8_t *out, uint16_t cap,
     return CmdError(out, mas, CMD_ERR_VALUE);
   }
 
-  /* Фаза 1: провалов в диапазоне быть не должно (как в Avis). */
   for (i = 0u; i < cnt; i++)
   {
     uint16_t a = (uint16_t)(addr + i);
@@ -941,7 +856,6 @@ static uint16_t read_regs(const uint8_t *mas, uint8_t *out, uint16_t cap,
     return CmdError(out, mas, CMD_ERR_ADDR);
   }
 
-  /* Фаза 2: сбор данных через курсор CMD_PUT. */
   Count         = cnt;
   out[0]        = mas[0];
   out[1]        = mas[1];
@@ -1054,7 +968,7 @@ uint16_t CmdFunc16(const uint8_t *mas, uint16_t len, uint8_t *out)
 }
 
 /* ==========================================================================
- * CmdFunc15 - запись блока во внешнюю flash (адрес 32 бита, как в Avis)
+ * CmdFunc15 - блочная запись во внешнюю flash (как в Avis)
  * Кадр: [sl][0F][addr32 BE][size16 BE][data][CRC]
  * ========================================================================== */
 uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
@@ -1076,9 +990,9 @@ uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
     return CmdError(out, mas, CMD_ERR_RANGE);
   }
 
-  if (s_pause != 0)
+  if (hooks.pause != 0)
   {
-    s_pause(1u);
+    hooks.pause(1u);
   }
   rc = program_pages(addr, &mas[8], size);
   if (rc == 0u)
@@ -1088,9 +1002,9 @@ uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
       rc = CMD_ERR_VERIFY;
     }
   }
-  if (s_pause != 0)
+  if (hooks.pause != 0)
   {
-    s_pause(0u);
+    hooks.pause(0u);
   }
   if (rc != 0u)
   {
@@ -1101,47 +1015,8 @@ uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
   return CMD_FRAME_HDR;
 }
 
-/* CmdFunc17 - чтение блока внешней flash (для сверки и выгрузки). */
-uint16_t CmdFunc17(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
-{
-  (void)len;
-  (void)cap;
-  return CmdError(out, mas, CMD_ERR_UNKNOWN);
-}
-
-/* CmdFunc13 - стирание диапазона внешней flash (синхронно, малыми блоками). */
-uint16_t CmdFunc13(const uint8_t *mas, uint16_t len, uint8_t *out)
-{
-  (void)len;
-  return CmdError(out, mas, CMD_ERR_UNKNOWN);
-}
-
-/* CmdFunc11 - геометрия flash и заголовок образа звуков (23 байта). */
-uint16_t CmdFunc11(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
-{
-  (void)len;
-  (void)cap;
-  return CmdError(out, mas, CMD_ERR_UNKNOWN);
-}
-
-/* CmdFunc10 - COMMIT: образ залит, плеер перечитывает заголовок. */
-uint16_t CmdFunc10(const uint8_t *mas, uint16_t len, uint8_t *out)
-{
-  (void)len;
-  return CmdError(out, mas, CMD_ERR_UNKNOWN);
-}
-
-/* CmdFunc14 - запись прошивки во внутреннюю flash: место под бутлоадер.
- * Пока не реализовано (нет бутлоадера) - отвечаем ошибкой, чтобы ПК не думал,
- * что прошивка легла.                                                      */
-uint16_t CmdFunc14(const uint8_t *mas, uint16_t len, uint8_t *out)
-{
-  (void)len;
-  return CmdError(out, mas, CMD_ERR_UNKNOWN);
-}
-
 /* ==========================================================================
- * Диспетчер (как parsing_command в Avis): CRC добавляется ЗДЕСЬ.
+ * Диспетчер: проверяет CRC, зовёт CmdFuncN, дописывает CRC ответа.
  * ========================================================================== */
 uint16_t parsing_command(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 {
@@ -1184,12 +1059,7 @@ uint16_t parsing_command(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_
       answer = CmdFunc16(mas, len, out);
       break;
 
-    case CMD_OP_COMMIT:
-    case CMD_OP_INFO:
-    case CMD_OP_ERASE:
     case CMD_OP_WRITE:
-    case CMD_OP_READ_FLASH:
-    case CMD_OP_WRITE_MCU:
       if (len < (CMD_FRAME_HDR + 2u))
       {
         return 0u;
@@ -1199,27 +1069,7 @@ uint16_t parsing_command(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_
       {
         return 0u;
       }
-      switch (cmd)
-      {
-        case CMD_OP_COMMIT:
-          answer = CmdFunc10(mas, len, out);
-          break;
-        case CMD_OP_INFO:
-          answer = CmdFunc11(mas, len, out, cap);
-          break;
-        case CMD_OP_ERASE:
-          answer = CmdFunc13(mas, len, out);
-          break;
-        case CMD_OP_WRITE:
-          answer = CmdFunc15(mas, len, out);
-          break;
-        case CMD_OP_READ_FLASH:
-          answer = CmdFunc17(mas, len, out, cap);
-          break;
-        default:
-          answer = CmdFunc14(mas, len, out);
-          break;
-      }
+      answer = CmdFunc15(mas, len, out);
       break;
 
     default:
@@ -1235,18 +1085,8 @@ uint16_t parsing_command(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_
   return 0u;
 }
 
-uint16_t Command_vector_Frame(const uint8_t *req, uint16_t req_len, uint8_t *rsp, uint16_t rsp_cap)
-{
-  return parsing_command(req, req_len, rsp, rsp_cap);
-}
-
 /* ==========================================================================
- * Накопитель кадра. Конец кадра - по ДЛИНЕ из шапки, а не по паузе в линии:
- * сервис зовётся раз в 10 мс, тайминг отдельных байтов недоступен.
- *   Modbus 3/4    : кадр всегда 8 байт;
- *   Modbus 16     : 9 + nb (шапка 7 + данные nb + CRC 2);
- *   flash-команды : 8 + size16 + 2.
- * CMD_RESYNC_MS нужен только чтобы выбросить недобитый кадр.
+ * Накопитель кадра. Конец кадра - по длине из шапки, не по паузе в линии.
  * ========================================================================== */
 void Command_vector_RxFeed(const uint8_t *data, uint16_t len, uint32_t now_ms)
 {
@@ -1258,62 +1098,62 @@ void Command_vector_RxFeed(const uint8_t *data, uint16_t len, uint32_t now_ms)
   }
   for (i = 0u; i < len; i++)
   {
-    if (s_ready != 0u)
+    if (rx.ready != 0u)
     {
-      break;                      /* прошлый кадр ещё не разобран */
+      break;
     }
-    if (s_rx_len >= CMD_MAX_FRAME)
+    if (rx.len >= CMD_MAX_FRAME)
     {
-      s_rx_len = 0u;
-      s_expect = 0u;
+      rx.len    = 0u;
+      rx.expect = 0u;
     }
-    s_rx[s_rx_len] = data[i];
-    s_rx_len++;
+    rx.buf[rx.len] = data[i];
+    rx.len++;
 
-    if (s_rx_len == 2u)
+    if (rx.len == 2u)
     {
-      uint8_t op = s_rx[1];
+      uint8_t op = rx.buf[1];
 
       if ((op == CMD_OP_READ_HOLD) || (op == CMD_OP_READ_IN))
       {
-        s_expect = 8u;
+        rx.expect = 8u;
       }
     }
-    if ((s_rx_len == 7u) && (s_rx[1] == CMD_OP_WRITE_MULTI))
+    if ((rx.len == 7u) && (rx.buf[1] == CMD_OP_WRITE_MULTI))
     {
-      uint8_t nb = s_rx[6];
+      uint8_t nb = rx.buf[6];
 
-      if (nb > MB_MAX_BYTES)
+      if (nb > 250u)
       {
-        s_rx_len = 0u;
-        s_expect = 0u;
+        rx.len    = 0u;
+        rx.expect = 0u;
       }
       else
       {
-        s_expect = (uint16_t)(9u + nb);
+        rx.expect = (uint16_t)(9u + nb);
       }
     }
-    if ((s_rx_len == CMD_FRAME_HDR) && (s_expect == 0u))
+    if ((rx.len == CMD_FRAME_HDR) && (rx.expect == 0u))
     {
-      uint16_t sz = (uint16_t)(((uint16_t)s_rx[6] << 8) | s_rx[7]);
+      uint16_t sz = (uint16_t)(((uint16_t)rx.buf[6] << 8) | rx.buf[7]);
 
       if (sz > CMD_MAX_PAYLOAD)
       {
-        s_rx_len = 0u;
-        s_expect = 0u;
+        rx.len    = 0u;
+        rx.expect = 0u;
       }
       else
       {
-        s_expect = (uint16_t)(CMD_FRAME_HDR + sz + 2u);
+        rx.expect = (uint16_t)(CMD_FRAME_HDR + sz + 2u);
       }
     }
-    if ((s_expect != 0u) && (s_rx_len >= s_expect))
+    if ((rx.expect != 0u) && (rx.len >= rx.expect))
     {
-      s_ready  = 1u;
-      s_expect = 0u;
+      rx.ready  = 1u;
+      rx.expect = 0u;
     }
   }
-  s_rx_ms = now_ms;
+  rx.ms = now_ms;
 }
 
 void Command_vector_Poll(uint32_t now_ms)
@@ -1321,72 +1161,80 @@ void Command_vector_Poll(uint32_t now_ms)
   uint8_t  rsp[CMD_MAX_FRAME];
   uint16_t n;
 
-  if (s_ready != 0u)
+  if (rx.ready != 0u)
   {
-    uint8_t op = s_rx[1];
-
-    /* Сессию открываем ДО обработки: эхо UART и лог должны замолчать раньше,
-       чем уйдёт первый ответ. Закрывает её CmdFunc10 (COMMIT) или простой. */
-    if (s_session == 0u)
+    /* Сессию открываем ДО обработки: лог и эхо замолкают раньше первого ответа.
+       Закрывает её запись в регистр 0x0F00 (COMMIT) или простой.            */
+    if (rx.session == 0u)
     {
-      s_session = 1u;
+      rx.session = 1u;
+#if VECTOR_LOG_ENABLE
       Command_vector_LogMute(1u);
+#endif
     }
-    s_sess_ms = now_ms;
+    rx.sess_ms = now_ms;
 
-    n = parsing_command(s_rx, s_rx_len, rsp, (uint16_t)sizeof(rsp));
-    s_rx_len = 0u;
-    s_expect = 0u;
-    s_ready  = 0u;
+    n = parsing_command(rx.buf, rx.len, rsp, (uint16_t)sizeof(rsp));
+    rx.len   = 0u;
+    rx.expect = 0u;
+    rx.ready = 0u;
 
-    if ((n != 0u) && (s_tx != 0))
+    if ((n != 0u) && (hooks.tx != 0))
     {
-      s_tx(rsp, n);
-    }
-    if (op == CMD_OP_COMMIT)
-    {
-      s_session = 0u;
-      Command_vector_LogMute(0u);
+      hooks.tx(rsp, n);
     }
     return;
   }
 
-  if ((s_rx_len != 0u) && ((uint32_t)(now_ms - s_rx_ms) >= CMD_RESYNC_MS))
+  if ((rx.len != 0u) && ((uint32_t)(now_ms - rx.ms) >= CMD_RESYNC_MS))
   {
-    s_rx_len = 0u;
-    s_expect = 0u;
+    rx.len    = 0u;
+    rx.expect = 0u;
   }
-  if ((s_session != 0u) && ((uint32_t)(now_ms - s_sess_ms) >= CMD_SESSION_IDLE_MS))
+  if ((rx.session != 0u) && ((uint32_t)(now_ms - rx.sess_ms) >= CMD_SESSION_IDLE_MS))
   {
-    s_session = 0u;
+    rx.session = 0u;
+#if VECTOR_LOG_ENABLE
     Command_vector_LogMute(0u);
+#endif
   }
 }
 
 uint8_t Command_vector_SessionActive(void)
 {
-  return s_session;
+  return rx.session;
 }
 
-/* Слабая заглушка: перекрывается сильным определением под конкретный vlog. */
-__attribute__((weak)) void Command_vector_LogMute(uint8_t mute)
+#if VECTOR_LOG_ENABLE
+void Command_vector_LogMute(uint8_t mute)
+{
+  static uint8_t level_saved = 0xFFu;
+
+  if (mute != 0u)
+  {
+    if (level_saved == 0xFFu)
+    {
+      level_saved = vlog_get_level();
+    }
+    vlog_set_level(0u);
+  }
+  else if (level_saved != 0xFFu)
+  {
+    vlog_set_level(level_saved);
+    level_saved = 0xFFu;
+  }
+}
+#else
+void Command_vector_LogMute(uint8_t mute)
 {
   (void)mute;
 }
+#endif
 
 #if CMD_VECTOR_COM
 #include "buffer.h"
 #include "audio_player.h"
 #include "vector_tick.h"
-
-/* s_hooks_ready - ОДНОРАЗОВАЯ привязка хуков к железу.
- * Статик инициализируется нулём при старте, ставится в 1 на первом проходе
- * command_message() и БОЛЬШЕ НЕ СБРАСЫВАЕТСЯ: SetTx/SetPauseHook/SetCommitHook
- * просто запоминают указатели на функции, вызывать их каждый тик незачем.
- * Дальше эти указатели ИСПОЛЬЗУЮТСЯ: s_tx - на каждый ответ, s_pause - на
- * время записи/стирания, s_commit - только когда придёт CmdFunc10 (COMMIT),
- * т.е. один раз в конце заливки: плеер перечитывает заголовок образа.       */
-static uint8_t s_hooks_ready = 0u;
 
 static void cmd_tx_com(const uint8_t *data, uint16_t len)
 {
@@ -1397,19 +1245,18 @@ static void cmd_pause_com(uint8_t pause)
 {
   if (pause != 0u)
   {
-    audio_stop();                 /* образ читать нельзя, пока пишем/стираем */
+    audio_stop();
   }
 }
 
 static void cmd_commit_com(void)
 {
-  audio_reload_image();           /* плеер перечитает заголовок после заливки */
+  audio_reload_image();
 }
 
-/* Сильное определение вместо weak-заглушки main_vector.c: вызывается из
- * receiver_task каждые VECTOR_TASKS_RECEIVER_DELAY_MS (10 мс). Кольцо
- * InputBuffer[TYPE_USART] наполняет USART3_IRQHandler - здесь только читаем.
- * Кольцо 254 Б при 115200 заполняется за ~22 мс, вычитываем его целиком.   */
+/* Сильное определение вместо weak-заглушки main_vector.c. Вызывается из
+ * receiver_task каждые ~10 мс. Кольцо InputBuffer[TYPE_USART] наполняет
+ * USART3_IRQHandler, здесь только читаем.                                  */
 void command_message(void)
 {
   uint8_t  batch[64];
@@ -1417,12 +1264,12 @@ void command_message(void)
   uint8_t  b;
   uint32_t now = VTICK_MS();
 
-  if (s_hooks_ready == 0u)
+  if (hooks.ready == 0u)
   {
     Command_vector_SetTx(cmd_tx_com);
     Command_vector_SetPauseHook(cmd_pause_com);
     Command_vector_SetCommitHook(cmd_commit_com);
-    s_hooks_ready = 1u;
+    hooks.ready = 1u;
   }
 
   while (check_buffer(&InputBuffer[TYPE_USART]) != 0u)
@@ -1445,6 +1292,6 @@ void command_message(void)
   }
 
   Command_vector_Poll(now);
-  Command_vector_EraseService();  /* один сектор за проход, поток не блокируем */
+  Command_vector_EraseService();
 }
 #endif
