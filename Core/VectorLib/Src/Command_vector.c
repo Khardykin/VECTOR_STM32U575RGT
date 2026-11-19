@@ -390,24 +390,76 @@ static inline uint8_t CMD_SAVE(uint16_t *data)
   Count--;
   return (uint8_t)((Count == 0u) ? 1u : 0u);
 }
-
 /* ==========================================================================
- * Управляющие регистры: запись 1 = действие, статус читается отдельно.
- * Стирание идёт ФОНОМ (Command_vector_EraseService, сектор за проход),
- * чтобы receiver_task не стоял секунды и Modbus-ответ ушёл сразу.
+ * УПРАВЛЯЮЩИЕ РЕГИСТРЫ (0x0F00+, далеко от конфигурации 0x0000..0x0063
+ * и измерений 0x0000..0x0033). Всё делается штатными 0x03 (чтение) и
+ * 0x10 (запись) - отдельных команд больше не нужно.
+ *
+ *   0x0F00 COMMIT        W: 1 = плеер перечитывает образ (audio_reload_image)
+ *   0x0F01 SAVE_CFG      W: 1 = SaveConfig
+ *   0x0F02 SAVE_CFGDEF   W: 1 = SaveConfigDefault
+ *   0x0F03 LOAD_CFGDEF   W: 1 = ReadConfigDefault
+ *
+ *   0x0F10..0x0F1B       RO: сведения о flash и образе звуков
+ *   0x0F1C IMG_REFRESH   W: 1 = перечитать заголовок из flash
+ *
+ *   0x0F20..0x0F25       W: 1 = стереть область (фоном, сектор за проход)
+ *   0x0F26 BUSY / 0x0F27 ERR / 0x0F28 PROGRESS   RO
+ *   0x0F29..0x0F2C       RW: адрес и длина произвольного стирания
+ *   0x0F2D ERASE_KEY     RW: 0xA5 - разрешить стирание вне SOUNDS
+ *   0x0F2E ERASE_START   W: 1 = запустить стирание заданного диапазона
+ *
+ *   0x0F30/31 WIN_ADDR   RW: адрес окна (32 бита, LO/HI)
+ *   0x0F32 WIN_LEN       RW: длина окна в байтах (чётная, <= 250)
+ *   0x0F33 WIN_CMD       W: 1 = прочитать окно из flash, 2 = записать + сверка
+ *   0x0F34 WIN_STATUS    RO: 0 = ok, иначе код ошибки последней операции
+ *   0x0F35 WIN_AUTOINC   RW: 1 = после записи адрес += WIN_LEN
+ *   0x0F40..0x0FB7       RW: WIN_DATA, 125 регистров = 250 байт
  * ========================================================================== */
-#define MB_REG_ERASE_SOUNDS   0x00F0u
-#define MB_REG_ERASE_CONFIG   0x00F1u
-#define MB_REG_ERASE_CFGDEF   0x00F2u
-#define MB_REG_ERASE_LOG      0x00F3u
-#define MB_REG_ERASE_LOGPTR   0x00F4u
-#define MB_REG_ERASE_FW       0x00F5u
-#define MB_REG_ERASE_BUSY     0x00F6u
-#define MB_REG_ERASE_ERR      0x00F7u
-#define MB_REG_ERASE_PROGRESS 0x00F8u
-#define MB_REG_SAVE_CFG       0x00F9u
-#define MB_REG_SAVE_CFGDEF    0x00FAu
-#define MB_REG_LOAD_CFGDEF    0x00FBu
+#define MB_REG_COMMIT         0x0F00u
+#define MB_REG_SAVE_CFG       0x0F01u
+#define MB_REG_SAVE_CFGDEF    0x0F02u
+#define MB_REG_LOAD_CFGDEF    0x0F03u
+
+#define MB_REG_FLASH_LO       0x0F10u
+#define MB_REG_FLASH_HI       0x0F11u
+#define MB_REG_SECTOR         0x0F12u
+#define MB_REG_PAGE           0x0F13u
+#define MB_REG_MAGIC_LO       0x0F14u
+#define MB_REG_MAGIC_HI       0x0F15u
+#define MB_REG_IMG_VER        0x0F16u
+#define MB_REG_IMG_CNT        0x0F17u
+#define MB_REG_IMG_SIZE_LO    0x0F18u
+#define MB_REG_IMG_SIZE_HI    0x0F19u
+#define MB_REG_IMG_RATE       0x0F1Au
+#define MB_REG_IMG_OK         0x0F1Bu
+#define MB_REG_IMG_REFRESH    0x0F1Cu
+
+#define MB_REG_ERASE_SOUNDS   0x0F20u
+#define MB_REG_ERASE_CONFIG   0x0F21u
+#define MB_REG_ERASE_CFGDEF   0x0F22u
+#define MB_REG_ERASE_LOG      0x0F23u
+#define MB_REG_ERASE_LOGPTR   0x0F24u
+#define MB_REG_ERASE_FW       0x0F25u
+#define MB_REG_ERASE_BUSY     0x0F26u
+#define MB_REG_ERASE_ERR      0x0F27u
+#define MB_REG_ERASE_PROGRESS 0x0F28u
+#define MB_REG_ERASE_ADDR_LO  0x0F29u
+#define MB_REG_ERASE_ADDR_HI  0x0F2Au
+#define MB_REG_ERASE_LEN_LO   0x0F2Bu
+#define MB_REG_ERASE_LEN_HI   0x0F2Cu
+#define MB_REG_ERASE_KEY      0x0F2Du
+#define MB_REG_ERASE_START    0x0F2Eu
+
+#define MB_REG_WIN_ADDR_LO    0x0F30u
+#define MB_REG_WIN_ADDR_HI    0x0F31u
+#define MB_REG_WIN_LEN        0x0F32u
+#define MB_REG_WIN_CMD        0x0F33u
+#define MB_REG_WIN_STATUS     0x0F34u
+#define MB_REG_WIN_AUTOINC    0x0F35u
+#define MB_REG_WIN_DATA       0x0F40u
+#define MB_WIN_REGS           125u
+#define MB_WIN_BYTES          (MB_WIN_REGS * 2u)
 
 #define ERASE_BIT_SOUNDS 0x01u
 #define ERASE_BIT_CONFIG 0x02u
@@ -415,6 +467,7 @@ static inline uint8_t CMD_SAVE(uint16_t *data)
 #define ERASE_BIT_LOG    0x08u
 #define ERASE_BIT_LOGPTR 0x10u
 #define ERASE_BIT_FW     0x20u
+#define ERASE_BIT_CUSTOM 0x40u
 
 static uint8_t  s_erase_req  = 0u;
 static uint8_t  s_erase_busy = 0u;
@@ -424,6 +477,9 @@ static uint8_t  s_erase_pct  = 0u;
 static uint32_t s_erase_cur  = 0u;
 static uint32_t s_erase_end  = 0u;
 static uint32_t s_erase_from = 0u;
+static uint32_t s_erase_addr = 0u;
+static uint32_t s_erase_len  = 0u;
+static uint16_t s_erase_key  = 0u;
 
 static const struct
 {
@@ -440,34 +496,40 @@ static const struct
   { ERASE_BIT_FW,     CMD_FW_BASE,       CMD_FW_SIZE            },
 };
 
+static void erase_begin(uint8_t bit, uint32_t base, uint32_t size)
+{
+  s_erase_bit  = bit;
+  s_erase_from = base;
+  s_erase_cur  = base;
+  s_erase_end  = base + size;
+  s_erase_busy = bit;
+  s_erase_pct  = 0u;
+  s_erase_err &= (uint8_t)~bit;
+  if (s_pause != 0)
+  {
+    s_pause(1u);                  /* плеер не читает flash во время стирания */
+  }
+}
+
 static void erase_start(uint8_t bit)
 {
   uint8_t i;
 
   if ((s_erase_busy != 0u) || (s_erase_req != 0u))
   {
-    return;
+    return;                       /* одна область за раз, остальные в очереди */
   }
   for (i = 0u; i < (uint8_t)(sizeof(s_areas) / sizeof(s_areas[0])); i++)
   {
     if (s_areas[i].bit == bit)
     {
-      s_erase_bit  = bit;
-      s_erase_from = s_areas[i].base;
-      s_erase_cur  = s_areas[i].base;
-      s_erase_end  = s_areas[i].base + s_areas[i].size;
-      s_erase_busy = bit;
-      s_erase_pct  = 0u;
-      s_erase_err &= (uint8_t)~bit;
-      if (s_pause != 0)
-      {
-        s_pause(1u);
-      }
+      erase_begin(bit, s_areas[i].base, s_areas[i].size);
       return;
     }
   }
 }
 
+/* Один сектор за вызов: receiver_task не должен стоять секунды. */
 void Command_vector_EraseService(void)
 {
   if (s_erase_busy == 0u)
@@ -502,32 +564,205 @@ void Command_vector_EraseService(void)
   s_erase_pct = (uint8_t)(((s_erase_cur - s_erase_from) * 100u) / (s_erase_end - s_erase_from));
 }
 
+/* --- Кэш сведений об образе (читается один раз, обновляется по регистру) -- */
+static audio_img_header_t s_img;
+static uint16_t           s_img_rate  = 0u;
+static uint8_t            s_img_ok    = 0u;
+static uint8_t            s_img_valid = 0u;
+
+static void img_refresh(void)
+{
+  audio_img_entry_t e;
+
+  memset(&s_img, 0, sizeof(s_img));
+  memset(&e, 0, sizeof(e));
+  s_img_rate  = 0u;
+  s_img_ok    = 0u;
+  s_img_valid = 1u;
+
+  if (sf_read(AUDIO_IMG_BASE_ADDR, (uint8_t *)&s_img, sizeof(s_img)) == HAL_OK)
+  {
+    if (s_img.magic == AUDIO_IMG_MAGIC)
+    {
+      s_img_ok = 1u;
+      if (s_img.count != 0u)
+      {
+        (void)sf_read(AUDIO_IMG_BASE_ADDR + s_img.table_off, (uint8_t *)&e, sizeof(e));
+        s_img_rate = e.rate;
+      }
+    }
+  }
+}
+
+/* --- Окно данных во flash: адрес + длина + буфер 250 байт ---------------- */
+static uint32_t s_win_addr    = 0u;
+static uint16_t s_win_len     = 0u;
+static uint16_t s_win_status  = 0u;
+static uint8_t  s_win_autoinc = 0u;
+static uint8_t  s_win_dirty   = 1u;   /* буфер не соответствует адресу */
+static uint8_t  s_win[MB_WIN_BYTES];
+
+static void win_load(void)
+{
+  if (s_win_dirty == 0u)
+  {
+    return;
+  }
+  if ((s_win_len == 0u) || (s_win_len > MB_WIN_BYTES) ||
+      ((s_win_addr + s_win_len) > (uint32_t)SF_TOTAL_SIZE))
+  {
+    s_win_status = CMD_ERR_RANGE;
+    return;
+  }
+  if (sf_read(s_win_addr, s_win, s_win_len) != HAL_OK)
+  {
+    s_win_status = CMD_ERR_IO;
+    return;
+  }
+  s_win_status = 0u;
+  s_win_dirty  = 0u;
+}
+
+static void win_store(void)
+{
+  uint8_t rc;
+
+  if ((s_win_len == 0u) || (s_win_len > MB_WIN_BYTES) ||
+      ((s_win_addr + s_win_len) > (uint32_t)SF_TOTAL_SIZE))
+  {
+    s_win_status = CMD_ERR_RANGE;
+    return;
+  }
+  if (s_pause != 0)
+  {
+    s_pause(1u);
+  }
+  rc = program_pages(s_win_addr, s_win, s_win_len);
+  if (rc == 0u)
+  {
+    if (sf_verify(s_win_addr, s_win, s_win_len) != HAL_OK)
+    {
+      rc = CMD_ERR_VERIFY;
+    }
+  }
+  if (s_pause != 0)
+  {
+    s_pause(0u);
+  }
+  s_win_status = rc;
+  if ((rc == 0u) && (s_win_autoinc != 0u))
+  {
+    s_win_addr += s_win_len;
+    s_win_dirty = 1u;
+  }
+}
+
 static uint8_t ctrl_reg_read(uint16_t addr, uint16_t *val)
 {
+  if ((addr >= MB_REG_WIN_DATA) && (addr < (uint16_t)(MB_REG_WIN_DATA + MB_WIN_REGS)))
+  {
+    uint16_t off = (uint16_t)((addr - MB_REG_WIN_DATA) * 2u);
+
+    win_load();
+    *val = (uint16_t)(((uint16_t)s_win[off] << 8) | s_win[off + 1u]);
+    return 1u;
+  }
+
   switch (addr)
   {
+    case MB_REG_COMMIT:
+    case MB_REG_SAVE_CFG:
+    case MB_REG_SAVE_CFGDEF:
+    case MB_REG_LOAD_CFGDEF:
+    case MB_REG_IMG_REFRESH:
     case MB_REG_ERASE_SOUNDS:
     case MB_REG_ERASE_CONFIG:
     case MB_REG_ERASE_CFGDEF:
     case MB_REG_ERASE_LOG:
     case MB_REG_ERASE_LOGPTR:
     case MB_REG_ERASE_FW:
-    case MB_REG_SAVE_CFG:
-    case MB_REG_SAVE_CFGDEF:
-    case MB_REG_LOAD_CFGDEF:
-      *val = 0u;
+    case MB_REG_ERASE_START:
+    case MB_REG_WIN_CMD:
+      *val = 0u;                  /* регистры-триггеры всегда читаются нулём */
+      return 1u;
+
+    case MB_REG_FLASH_LO:
+      *val = (uint16_t)((uint32_t)SF_TOTAL_SIZE & 0xFFFFu);
+      return 1u;
+    case MB_REG_FLASH_HI:
+      *val = (uint16_t)((uint32_t)SF_TOTAL_SIZE >> 16);
+      return 1u;
+    case MB_REG_SECTOR:
+      *val = (uint16_t)SF_SECTOR_SIZE;
+      return 1u;
+    case MB_REG_PAGE:
+      *val = (uint16_t)SF_PAGE_SIZE;
+      return 1u;
+
+    case MB_REG_MAGIC_LO:
+    case MB_REG_MAGIC_HI:
+    case MB_REG_IMG_VER:
+    case MB_REG_IMG_CNT:
+    case MB_REG_IMG_SIZE_LO:
+    case MB_REG_IMG_SIZE_HI:
+    case MB_REG_IMG_RATE:
+    case MB_REG_IMG_OK:
+      if (s_img_valid == 0u)
+      {
+        img_refresh();
+      }
+      switch (addr)
+      {
+        case MB_REG_MAGIC_LO:    *val = (uint16_t)(s_img.magic & 0xFFFFu);      break;
+        case MB_REG_MAGIC_HI:    *val = (uint16_t)(s_img.magic >> 16);          break;
+        case MB_REG_IMG_VER:     *val = s_img.version;                          break;
+        case MB_REG_IMG_CNT:     *val = s_img.count;                            break;
+        case MB_REG_IMG_SIZE_LO: *val = (uint16_t)(s_img.total_size & 0xFFFFu); break;
+        case MB_REG_IMG_SIZE_HI: *val = (uint16_t)(s_img.total_size >> 16);     break;
+        case MB_REG_IMG_RATE:    *val = s_img_rate;                             break;
+        default:                 *val = (uint16_t)s_img_ok;                     break;
+      }
       return 1u;
 
     case MB_REG_ERASE_BUSY:
       *val = (uint16_t)(s_erase_busy | s_erase_req);
       return 1u;
-
     case MB_REG_ERASE_ERR:
       *val = (uint16_t)s_erase_err;
       return 1u;
-
     case MB_REG_ERASE_PROGRESS:
       *val = (uint16_t)s_erase_pct;
+      return 1u;
+    case MB_REG_ERASE_ADDR_LO:
+      *val = (uint16_t)(s_erase_addr & 0xFFFFu);
+      return 1u;
+    case MB_REG_ERASE_ADDR_HI:
+      *val = (uint16_t)(s_erase_addr >> 16);
+      return 1u;
+    case MB_REG_ERASE_LEN_LO:
+      *val = (uint16_t)(s_erase_len & 0xFFFFu);
+      return 1u;
+    case MB_REG_ERASE_LEN_HI:
+      *val = (uint16_t)(s_erase_len >> 16);
+      return 1u;
+    case MB_REG_ERASE_KEY:
+      *val = s_erase_key;
+      return 1u;
+
+    case MB_REG_WIN_ADDR_LO:
+      *val = (uint16_t)(s_win_addr & 0xFFFFu);
+      return 1u;
+    case MB_REG_WIN_ADDR_HI:
+      *val = (uint16_t)(s_win_addr >> 16);
+      return 1u;
+    case MB_REG_WIN_LEN:
+      *val = s_win_len;
+      return 1u;
+    case MB_REG_WIN_STATUS:
+      *val = s_win_status;
+      return 1u;
+    case MB_REG_WIN_AUTOINC:
+      *val = (uint16_t)s_win_autoinc;
       return 1u;
 
     default:
@@ -537,43 +772,140 @@ static uint8_t ctrl_reg_read(uint16_t addr, uint16_t *val)
 
 static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
 {
-  if (val == 0u)
+  if ((addr >= MB_REG_WIN_DATA) && (addr < (uint16_t)(MB_REG_WIN_DATA + MB_WIN_REGS)))
   {
+    uint16_t off = (uint16_t)((addr - MB_REG_WIN_DATA) * 2u);
+
+    s_win[off]      = (uint8_t)(val >> 8);
+    s_win[off + 1u] = (uint8_t)val;
     return 1u;
   }
+
   switch (addr)
   {
-    case MB_REG_ERASE_SOUNDS:
-      s_erase_req |= ERASE_BIT_SOUNDS;
-      return 1u;
-    case MB_REG_ERASE_CONFIG:
-      s_erase_req |= ERASE_BIT_CONFIG;
-      return 1u;
-    case MB_REG_ERASE_CFGDEF:
-      s_erase_req |= ERASE_BIT_CFGDEF;
-      return 1u;
-    case MB_REG_ERASE_LOG:
-      s_erase_req |= ERASE_BIT_LOG;
-      return 1u;
-    case MB_REG_ERASE_LOGPTR:
-      s_erase_req |= ERASE_BIT_LOGPTR;
-      return 1u;
-    case MB_REG_ERASE_FW:
-      s_erase_req |= ERASE_BIT_FW;
+    case MB_REG_COMMIT:
+      if ((val != 0u) && (s_commit != 0))
+      {
+        s_commit();
+      }
       return 1u;
     case MB_REG_SAVE_CFG:
-      SaveConfig = 1u;
+      if (val != 0u)
+      {
+        SaveConfig = 1u;
+      }
       return 1u;
     case MB_REG_SAVE_CFGDEF:
-      SaveConfigDefault = 1u;
+      if (val != 0u)
+      {
+        SaveConfigDefault = 1u;
+      }
       return 1u;
     case MB_REG_LOAD_CFGDEF:
-      ReadConfigDefault = 1u;
+      if (val != 0u)
+      {
+        ReadConfigDefault = 1u;
+      }
       return 1u;
+    case MB_REG_IMG_REFRESH:
+      if (val != 0u)
+      {
+        img_refresh();
+      }
+      return 1u;
+
+    case MB_REG_ERASE_SOUNDS:
+    case MB_REG_ERASE_CONFIG:
+    case MB_REG_ERASE_CFGDEF:
+    case MB_REG_ERASE_LOG:
+    case MB_REG_ERASE_LOGPTR:
+    case MB_REG_ERASE_FW:
+      if (val != 0u)
+      {
+        s_erase_req |= (uint8_t)(1u << (addr - MB_REG_ERASE_SOUNDS));
+      }
+      return 1u;
+
+    case MB_REG_ERASE_ADDR_LO:
+      s_erase_addr = (s_erase_addr & 0xFFFF0000u) | (uint32_t)val;
+      return 1u;
+    case MB_REG_ERASE_ADDR_HI:
+      s_erase_addr = (s_erase_addr & 0x0000FFFFu) | ((uint32_t)val << 16);
+      return 1u;
+    case MB_REG_ERASE_LEN_LO:
+      s_erase_len = (s_erase_len & 0xFFFF0000u) | (uint32_t)val;
+      return 1u;
+    case MB_REG_ERASE_LEN_HI:
+      s_erase_len = (s_erase_len & 0x0000FFFFu) | ((uint32_t)val << 16);
+      return 1u;
+    case MB_REG_ERASE_KEY:
+      s_erase_key = val;
+      return 1u;
+    case MB_REG_ERASE_START:
+      if (val == 0u)
+      {
+        return 1u;
+      }
+      if ((s_erase_busy != 0u) || (s_erase_req != 0u))
+      {
+        return 1u;                /* занято - команда игнорируется, BUSY покажет */
+      }
+      if ((s_erase_len == 0u) || (s_erase_addr >= (uint32_t)SF_TOTAL_SIZE) ||
+          (s_erase_len > ((uint32_t)SF_TOTAL_SIZE - s_erase_addr)))
+      {
+        s_erase_err |= ERASE_BIT_CUSTOM;
+        return 1u;
+      }
+      if (((s_erase_addr + s_erase_len) > CMD_SOUNDS_LIMIT) && (s_erase_key != CMD_ERASE_KEY))
+      {
+        s_erase_err |= ERASE_BIT_CUSTOM;
+        return 1u;
+      }
+      erase_begin(ERASE_BIT_CUSTOM,
+                  s_erase_addr - (s_erase_addr % SF_SECTOR_SIZE),
+                  (((s_erase_addr + s_erase_len - 1u) / SF_SECTOR_SIZE) + 1u) * SF_SECTOR_SIZE
+                  - (s_erase_addr - (s_erase_addr % SF_SECTOR_SIZE)));
+      return 1u;
+
+    case MB_REG_WIN_ADDR_LO:
+      s_win_addr = (s_win_addr & 0xFFFF0000u) | (uint32_t)val;
+      s_win_dirty = 1u;
+      return 1u;
+    case MB_REG_WIN_ADDR_HI:
+      s_win_addr = (s_win_addr & 0x0000FFFFu) | ((uint32_t)val << 16);
+      s_win_dirty = 1u;
+      return 1u;
+    case MB_REG_WIN_LEN:
+      if ((val <= MB_WIN_BYTES) && ((val & 1u) == 0u))
+      {
+        s_win_len = val;
+        s_win_dirty = 1u;
+      }
+      else
+      {
+        s_win_status = CMD_ERR_VALUE;
+      }
+      return 1u;
+    case MB_REG_WIN_AUTOINC:
+      s_win_autoinc = (uint8_t)((val != 0u) ? 1u : 0u);
+      return 1u;
+    case MB_REG_WIN_CMD:
+      if (val == 1u)
+      {
+        s_win_dirty = 1u;
+        win_load();
+      }
+      else if (val == 2u)
+      {
+        win_store();
+      }
+      return 1u;
+
     default:
       return 0u;
   }
 }
+
 
 /* ==========================================================================
  * CmdFunc3 / CmdFunc4 - чтение группы регистров
@@ -772,147 +1104,31 @@ uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
 /* CmdFunc17 - чтение блока внешней flash (для сверки и выгрузки). */
 uint16_t CmdFunc17(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 {
-  uint32_t addr = rd32(&mas[2]);
-  uint16_t size = (uint16_t)(((uint16_t)mas[6] << 8) | mas[7]);
-  uint16_t want;
-
   (void)len;
-  memcpy(out, mas, CMD_FRAME_HDR);
-
-  if (size != 2u)
-  {
-    return CmdError(out, mas, CMD_ERR_LENGTH);
-  }
-  want = (uint16_t)(((uint16_t)mas[8] << 8) | mas[9]);
-  if ((want == 0u) || (want > CMD_MAX_PAYLOAD))
-  {
-    return CmdError(out, mas, CMD_ERR_LENGTH);
-  }
-  if (cap < (uint16_t)(CMD_FRAME_HDR + want + 2u))
-  {
-    return CmdError(out, mas, CMD_ERR_LENGTH);
-  }
-  if ((addr >= (uint32_t)SF_TOTAL_SIZE) ||
-      ((uint32_t)want > ((uint32_t)SF_TOTAL_SIZE - addr)))
-  {
-    return CmdError(out, mas, CMD_ERR_RANGE);
-  }
-  if (sf_read(addr, &out[CMD_FRAME_HDR], want) != HAL_OK)
-  {
-    return CmdError(out, mas, CMD_ERR_IO);
-  }
-
-  wr16(&out[6], want);
-  return (uint16_t)(CMD_FRAME_HDR + want);
+  (void)cap;
+  return CmdError(out, mas, CMD_ERR_UNKNOWN);
 }
 
 /* CmdFunc13 - стирание диапазона внешней flash (синхронно, малыми блоками). */
 uint16_t CmdFunc13(const uint8_t *mas, uint16_t len, uint8_t *out)
 {
-  uint32_t addr = rd32(&mas[2]);
-  uint16_t size = (uint16_t)(((uint16_t)mas[6] << 8) | mas[7]);
-  uint32_t length;
-  uint32_t first;
-  uint32_t last;
-  uint32_t a;
-
   (void)len;
-  memcpy(out, mas, CMD_FRAME_HDR);
-
-  if (size != 5u)
-  {
-    return CmdError(out, mas, CMD_ERR_LENGTH);
-  }
-  length = rd32(&mas[8]);
-  if ((length == 0u) || (addr >= (uint32_t)SF_TOTAL_SIZE) ||
-      (length > ((uint32_t)SF_TOTAL_SIZE - addr)))
-  {
-    return CmdError(out, mas, CMD_ERR_RANGE);
-  }
-  if (((addr + length) > CMD_SOUNDS_LIMIT) && (mas[12] != CMD_ERASE_KEY))
-  {
-    return CmdError(out, mas, CMD_ERR_PROTECTED);
-  }
-
-  first = addr - (addr % SF_SECTOR_SIZE);
-  last  = (addr + length) - 1u;
-  last  = last - (last % SF_SECTOR_SIZE);
-
-  if (s_pause != 0)
-  {
-    s_pause(1u);
-  }
-  for (a = first; a <= last; a += SF_SECTOR_SIZE)
-  {
-    if (sf_sector_erase(a) != HAL_OK)
-    {
-      if (s_pause != 0)
-      {
-        s_pause(0u);
-      }
-      return CmdError(out, mas, CMD_ERR_IO);
-    }
-  }
-  if (s_pause != 0)
-  {
-    s_pause(0u);
-  }
-
-  wr16(&out[6], 0u);
-  return CMD_FRAME_HDR;
+  return CmdError(out, mas, CMD_ERR_UNKNOWN);
 }
 
 /* CmdFunc11 - геометрия flash и заголовок образа звуков (23 байта). */
 uint16_t CmdFunc11(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 {
-  audio_img_header_t h;
-  audio_img_entry_t  e;
-  uint8_t  ok   = 0u;
-  uint16_t rate = 0u;
-
   (void)len;
-  if (cap < (CMD_FRAME_HDR + 23u + 2u))
-  {
-    return CmdError(out, mas, CMD_ERR_LENGTH);
-  }
-  memcpy(out, mas, CMD_FRAME_HDR);
-  memset(&h, 0, sizeof(h));
-  memset(&e, 0, sizeof(e));
-
-  if (sf_read(AUDIO_IMG_BASE_ADDR, (uint8_t *)&h, sizeof(h)) == HAL_OK)
-  {
-    ok = (h.magic == AUDIO_IMG_MAGIC) ? 1u : 0u;
-    if ((ok != 0u) && (h.count != 0u))
-    {
-      (void)sf_read(AUDIO_IMG_BASE_ADDR + h.table_off, (uint8_t *)&e, sizeof(e));
-      rate = e.rate;
-    }
-  }
-
-  wr32(&out[8],  (uint32_t)SF_TOTAL_SIZE);
-  wr16(&out[12], (uint16_t)SF_SECTOR_SIZE);
-  wr16(&out[14], (uint16_t)SF_PAGE_SIZE);
-  wr32(&out[16], h.magic);
-  wr16(&out[20], h.version);
-  wr16(&out[22], h.count);
-  wr32(&out[24], h.total_size);
-  wr16(&out[28], rate);
-  out[30] = ok;
-  wr16(&out[6], 23u);
-  return (uint16_t)(CMD_FRAME_HDR + 23u);
+  (void)cap;
+  return CmdError(out, mas, CMD_ERR_UNKNOWN);
 }
 
 /* CmdFunc10 - COMMIT: образ залит, плеер перечитывает заголовок. */
 uint16_t CmdFunc10(const uint8_t *mas, uint16_t len, uint8_t *out)
 {
   (void)len;
-  memcpy(out, mas, CMD_FRAME_HDR);
-  if (s_commit != 0)
-  {
-    s_commit();
-  }
-  wr16(&out[6], 0u);
-  return CMD_FRAME_HDR;
+  return CmdError(out, mas, CMD_ERR_UNKNOWN);
 }
 
 /* CmdFunc14 - запись прошивки во внутреннюю flash: место под бутлоадер.

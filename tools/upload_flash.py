@@ -13,9 +13,28 @@ upload_flash.py - загрузка данных во внешнюю SPI flash п
 """
 import argparse, struct, sys, time
 
-CMD_COMMIT, CMD_INFO, CMD_ERASE, CMD_READ, CMD_WRITE = 0x0A, 0x0B, 0x0D, 0x0E, 0x0F
+CMD_WRITE = 0x0F                 # CmdFunc15: блочная запись во flash (Avis)
+REG_COMMIT      = 0x0F00
+REG_SAVE_CFG    = 0x0F01
+REG_FLASH_LO    = 0x0F10
+REG_IMG_OK      = 0x0F1B
+REG_IMG_REFRESH = 0x0F1C
+REG_ERASE_BASE  = 0x0F20
+REG_ERASE_BUSY  = 0x0F26
+REG_ERASE_ERR   = 0x0F27
+REG_ERASE_PCT   = 0x0F28
+REG_ERASE_ADDR  = 0x0F29
+REG_ERASE_LEN   = 0x0F2B
+REG_ERASE_KEY   = 0x0F2D
+REG_ERASE_START = 0x0F2E
+REG_WIN_ADDR    = 0x0F30
+REG_WIN_LEN     = 0x0F32
+REG_WIN_CMD     = 0x0F33
+REG_WIN_STATUS  = 0x0F34
+REG_WIN_AUTOINC = 0x0F35
+REG_WIN_DATA    = 0x0F40
 MAX_PAYLOAD = 1024
-VERIFY_READ = 256          # ответ READ ограничен таймаутом HAL_UART_Transmit(100 мс)
+VERIFY_READ = 250          # ответ READ ограничен таймаутом HAL_UART_Transmit(100 мс)
 ERASE_STEP = 16 * 1024     # 4 сектора за команду - не держим receiver_task надолго
 SOUNDS_LIMIT = 0x00400000
 ERASE_KEY = 0xA5
@@ -92,33 +111,96 @@ class FlashClient:
                 time.sleep(0.05)
         raise FlashError("нет ответа после %d попыток: %s" % (self.retries, last))
 
+    # --- Modbus 0x03 / 0x10 -----------------------------------------------
+    def _mb(self, func, addr, count, data=b"", timeout=None):
+        body = struct.pack(">BBHH", self.slave, func, addr, count)
+        if func == 0x10:
+            body += struct.pack("B", len(data)) + data
+        frame = body + struct.pack("<H", crc16(body))
+        to = timeout or self.timeout
+        last = None
+        for attempt in range(self.retries):
+            try:
+                self.t.reset()
+                self.t.write(frame)
+                head = self._read_exact(2, to)
+                if head[1] & 0x80:
+                    rest = self._read_exact(3, to)
+                    raise FlashError("устройство: %s (код %d)" %
+                                     (ERR_TEXT.get(rest[0], "неизвестно"), rest[0]))
+                if func == 0x10:
+                    rest = self._read_exact(6, to)
+                    if crc16(head + rest[:4]) != struct.unpack("<H", rest[4:])[0]:
+                        raise FlashError("CRC ответа")
+                    return []
+                bc = self._read_exact(1, to)[0]
+                body_r = self._read_exact(bc + 2, to)
+                if crc16(head + bytes([bc]) + body_r[:bc]) != struct.unpack("<H", body_r[bc:])[0]:
+                    raise FlashError("CRC ответа")
+                return [struct.unpack(">H", body_r[i*2:i*2+2])[0] for i in range(bc // 2)]
+            except FlashError:
+                raise
+            except Exception as e:
+                last = e
+                self.log("  повтор %d/%d: %s" % (attempt + 1, self.retries, e))
+                time.sleep(0.05)
+        raise FlashError("нет ответа после %d попыток: %s" % (self.retries, last))
+
+    def read_regs(self, addr, count):
+        return self._mb(0x03, addr, count)
+
+    def write_regs(self, addr, values):
+        data = b"".join(struct.pack(">H", v & 0xFFFF) for v in values)
+        self._mb(0x10, addr, len(values), data)
+
     def info(self):
-        d = self._xfer(CMD_INFO, 0)
-        total, sector, page, magic, ver, count, img, rate = struct.unpack(">IHHIHHIH", d[:22])
-        return dict(flash_size=total, sector=sector, page=page,
-                    magic=struct.pack("<I", magic), image_ok=bool(d[22]),
-                    version=ver, sounds=count, image_size=img, rate=rate)
+        r = self.read_regs(REG_FLASH_LO, 12)      # 0x0F10..0x0F1B
+        total = (r[1] << 16) | r[0]
+        magic = (r[5] << 16) | r[4]
+        img   = (r[9] << 16) | r[8]
+        return dict(flash_size=total, sector=r[2], page=r[3],
+                    magic=struct.pack("<I", magic), image_ok=bool(r[11]),
+                    version=r[6], sounds=r[7], image_size=img, rate=r[10])
 
     def commit(self):
-        self._xfer(CMD_COMMIT, 0)
+        self.write_regs(REG_COMMIT, [1])
 
     def erase(self, addr, length, force=False, progress=None):
-        done = 0
-        while done < length:
-            n = min(ERASE_STEP, length - done)
-            self._xfer(CMD_ERASE, addr + done,
-                       struct.pack(">IB", n, ERASE_KEY if force else 0), timeout=15.0)
-            done += n
+        # Диапазон стирается ФОНОМ в приборе, мы опрашиваем BUSY/PROGRESS.
+        self.write_regs(REG_ERASE_ADDR, [addr & 0xFFFF, (addr >> 16) & 0xFFFF])
+        self.write_regs(REG_ERASE_LEN,  [length & 0xFFFF, (length >> 16) & 0xFFFF])
+        self.write_regs(REG_ERASE_KEY,  [ERASE_KEY if force else 0])
+        self.write_regs(REG_ERASE_START, [1])
+        deadline = time.time() + 300.0
+        while True:
+            st = self.read_regs(REG_ERASE_BUSY, 3)   # BUSY, ERR, PCT
+            if st[1] & 0x40:
+                raise FlashError("стирание отклонено (адрес/длина или нужен --force)")
             if progress:
-                progress(done, length)
+                progress(length * st[2] // 100, length)
+            if st[0] == 0:
+                break
+            if time.time() > deadline:
+                raise FlashError("таймаут стирания")
+            time.sleep(0.2)
+        if progress:
+            progress(length, length)
 
     def write(self, addr, data):
         self._xfer(CMD_WRITE, addr, data)
 
     def read(self, addr, n):
-        if not 1 <= n <= MAX_PAYLOAD:
-            raise ValueError("read: 1..%d" % MAX_PAYLOAD)
-        return self._xfer(CMD_READ, addr, struct.pack(">H", n))
+        if not 1 <= n <= 250:
+            raise ValueError("read: 1..250")
+        even = n + (n & 1)
+        self.write_regs(REG_WIN_ADDR, [addr & 0xFFFF, (addr >> 16) & 0xFFFF])
+        self.write_regs(REG_WIN_LEN,  [even])
+        self.write_regs(REG_WIN_CMD,  [1])
+        st = self.read_regs(REG_WIN_STATUS, 1)[0]
+        if st:
+            raise FlashError("чтение окна: %s (код %d)" % (ERR_TEXT.get(st, "?"), st))
+        regs = self.read_regs(REG_WIN_DATA, even // 2)
+        return b"".join(struct.pack(">H", v) for v in regs)[:n]
 
     def upload(self, path, addr=0, chunk=1024, do_erase=True, do_verify=True,
                force=False, progress=None):
