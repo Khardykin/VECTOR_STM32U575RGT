@@ -211,6 +211,7 @@ extern volatile uint8_t state_screen;
    (Menu_vector.c), проверяет Menu_Run(). В Avis этой паре соответствовал
    TIME_RTC_WARM из Screen_status_flip/Warm_Screen_statuses.               */
 #define TIME_RTC_START				(6u)
+#define TIME_RTC_SOFT_RESET_PROGRAM	(2u)	/* 2 сек на завершение операций перед сбросом */
 /* Чередование страницы измерений со строкой ошибки (режим MEAS_ERR), с: пока
    error_queue_count != 0, LCD_MeasureScreen() раз в TIME_RTC_DISP_FLASHING_ERR
    секунд показывает вместо текущей страницы ошибку (и обратно). Таймер -

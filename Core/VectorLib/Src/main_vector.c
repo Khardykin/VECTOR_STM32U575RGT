@@ -57,7 +57,6 @@
    (stdlib), sf_probe/SF_CONFIG_BASE (spiflash/sfmap), TFT_Rotation (TFT.h),
    button1..3 (stm32u5xx_it.h), TX_DISABLE (tx_api) - всё из агрегатора.   */
 #include "main_vector.h"
-#include "fw_update.h"
 
 /* ============================================================================
  *                                 МАКРОСЫ
@@ -1088,10 +1087,10 @@ void Vector_Options_System(void)
   /* Очищаем флаг обновления при старте приложения.
      Если флаг установлен - значит бутлоадер уже применил прошивку,
      и мы не должны снова уходить в бутлоадер. */
-//  if (bkp_read_flag() == BKP_FLAG_APPLY)
-//  {
-//    bkp_clear_flag();
-//  }
+  if (fw_bkp_read() == BKP_FLAG_APPLY)
+  {
+    fw_bkp_clear();
+  }
 
   /* Реализовано (автор): мягкая перезагрузка прошивки (SoftResetProgram
      + таймер TIMER_RTC_SOFT_RESET_PROGRAM -> событие TYPE_FW_UPDATE ->
@@ -1114,7 +1113,7 @@ void Vector_Options_System(void)
 #endif
 //			Go_To_User_App();
 			HAL_TIM_Base_Stop_IT(&htim3);
-//			bkp_write_flag(BKP_FLAG_APPLY);  /* Флаг для бутлоадера: применить прошивку */
+			fw_bkp_write(BKP_FLAG_APPLY);  /* Флаг для бутлоадера: применить прошивку */
 			NVIC_SystemReset();
 		}
 	}

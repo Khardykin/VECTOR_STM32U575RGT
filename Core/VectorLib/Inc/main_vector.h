@@ -98,6 +98,7 @@
 #include "TFT.h"            /* LCD_Init()/TFT_Rotation + ui.h (LVGL/SquareLine) */
 #include "LCD_platform.h"   /* backlight_set(), низкий уровень SPI панели */
 #include "TFT_indicator.h"  /* слой индикации: LCD_* API (экраны/меню/виджеты) */
+#include "fw_update.h"
 #endif
 //===========================================================================================================================
 

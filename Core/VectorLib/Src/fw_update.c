@@ -1,4 +1,6 @@
 #include "fw_update.h"
+#include "main_vector.h"
+#include "shared_macros.h"
 #include "rtc.h"
 #include "stm32u5xx_hal.h"
 
@@ -20,7 +22,7 @@ void fw_bkp_write(uint32_t value)
 uint32_t fw_bkp_read(void)
 {
     if (s_bkp_inited == 0u) fw_update_init();
-    return HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0);  /* STM32U5: возвращает значение напрямую */
+    return HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0);
 }
 
 void fw_bkp_clear(void)
@@ -30,25 +32,20 @@ void fw_bkp_clear(void)
 
 void fw_apply_request(void)
 {
-//    fw_bkp_write(BKP_FLAG_APPLY);
-    HAL_Delay(100);
-    NVIC_SystemReset();
-}
-
-void fw_reboot_request(void)
-{
-    NVIC_SystemReset();
-}
-
-uint8_t fw_verify_image(void)
-{
-    return FW_STATUS_IDLE;
+    /* Устанавливаем флаг и запускаем таймер.
+       Vector_Options_System при срабатывании таймера:
+       1. Запишет событие TYPE_FW_UPDATE в лог
+       2. Остановит TIM3
+       3. Запишет BKP_FLAG_APPLY
+       4. Сделает NVIC_SystemReset() */
+    SoftResetProgram = 1;
+    START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, TIME_RTC_SOFT_RESET_PROGRAM);
 }
 
 void fw_boot_complete(void)
 {
-//    if (fw_bkp_read() == BKP_FLAG_APPLY)
+    if (fw_bkp_read() == BKP_FLAG_APPLY)
     {
-//        fw_bkp_clear();
+        fw_bkp_clear();
     }
 }

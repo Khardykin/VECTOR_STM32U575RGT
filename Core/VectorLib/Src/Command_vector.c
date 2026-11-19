@@ -748,20 +748,6 @@ static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
       }
       return 1u;
 
-    case MB_REG_FW_REBOOT:
-      if (val != 0u)
-      {
-        fw_reboot_request();
-      }
-      return 1u;
-
-    case MB_REG_FW_VERIFY:
-      if (val != 0u)
-      {
-        fw_verify_image();
-      }
-      return 1u;
-
     case MB_REG_COMMIT:
       if (val != 0u)
       {
@@ -769,7 +755,7 @@ static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
         {
           hooks.commit();
         }
-        /* COMMIT закрывает сессию: лог и эхо UART возвращаются. */
+        /* COMMIT закрывает сессию обмена: снимаем глушение лога UART. */
         rx.session = 0u;
 #if VECTOR_LOG_ENABLE
         Command_vector_LogMute(0u);

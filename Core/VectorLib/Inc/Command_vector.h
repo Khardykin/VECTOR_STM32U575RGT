@@ -97,8 +97,6 @@ void    Command_vector_LogMute(uint8_t mute);
 #define MB_REG_FW_VERSION       0x0F50u
 #define MB_REG_FW_STATUS        0x0F53u
 #define MB_REG_FW_APPLY         0x0F54u
-#define MB_REG_FW_REBOOT        0x0F55u
-#define MB_REG_FW_VERIFY        0x0F56u
 #define MB_REG_FW_IMG_MAGIC     0x0F57u
 #define MB_REG_FW_IMG_VERSION   0x0F58u
 #define MB_REG_FW_IMG_SIZE_LO   0x0F59u
