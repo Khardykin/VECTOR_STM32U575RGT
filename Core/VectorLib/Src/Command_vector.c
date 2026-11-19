@@ -29,6 +29,8 @@
 #include "sfmap.h"
 #include "vector_config.h"
 #include "vector_log.h"
+#include "fw_update.h"
+#include "bkp.h"
 
 #define CMD_SOUNDS_LIMIT    0x00400000u   /* sfmap.h: выше - CONFIG/LOG        */
 #define CMD_ERASE_KEY       0xA5u
@@ -733,6 +735,27 @@ static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
 
   switch (addr)
   {
+    case MB_REG_FW_APPLY:
+      if (val != 0u)
+      {
+        fw_apply_request();
+      }
+      return 1u;
+
+    case MB_REG_FW_REBOOT:
+      if (val != 0u)
+      {
+        fw_reboot_request();
+      }
+      return 1u;
+
+    case MB_REG_FW_VERIFY:
+      if (val != 0u)
+      {
+        fw_verify_image();
+      }
+      return 1u;
+
     case MB_REG_COMMIT:
       if (val != 0u)
       {

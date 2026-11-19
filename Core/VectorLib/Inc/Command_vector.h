@@ -92,4 +92,18 @@ void    Command_vector_LogMute(uint8_t mute);
 #ifdef __cplusplus
 }
 #endif
+
+/* Регистры управления прошивкой (0x0F50+) */
+#define MB_REG_FW_VERSION       0x0F50u
+#define MB_REG_FW_STATUS        0x0F53u
+#define MB_REG_FW_APPLY         0x0F54u
+#define MB_REG_FW_REBOOT        0x0F55u
+#define MB_REG_FW_VERIFY        0x0F56u
+#define MB_REG_FW_IMG_MAGIC     0x0F57u
+#define MB_REG_FW_IMG_VERSION   0x0F58u
+#define MB_REG_FW_IMG_SIZE_LO   0x0F59u
+#define MB_REG_FW_IMG_SIZE_HI   0x0F5Au
+#define MB_REG_FW_IMG_CRC       0x0F5Bu
+#define MB_REG_FW_IMG_CALC_CRC  0x0F5Cu
+
 #endif /* COMMAND_VECTOR_H */
