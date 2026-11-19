@@ -869,7 +869,7 @@
  *   становятся ((void)0), vector_log.c пустой, в прошивке не остаётся ни
  *   кода, ни строк. Это главный выключатель "для серии".                    */
 #ifndef VECTOR_LOG_ENABLE
-#define VECTOR_LOG_ENABLE         0
+#define VECTOR_LOG_ENABLE         1
 #endif
 
 #ifndef VECTOR_LOG_ITM
