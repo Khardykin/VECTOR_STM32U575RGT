@@ -96,6 +96,10 @@ extern "C" {
 #define SF_LOG_PTR_BASE     (SF_LOG_BASE + SF_LOG_SIZE)           /* 0x00602000 */
 #define SF_LOG_PTR_SIZE     0x00001000u     /* 4 КБ = одна страница стирания */
 
+/* Образ бутлоадера для перезаписи внутренней flash (CmdFunc14 / FlashErase=2). */
+#define SF_BOOT_BASE        0x00703000u     /* за CMD_FW (1 МБ), свободно ~1 МБ */
+#define SF_BOOT_SIZE        0x00005000u     /* 20 КБ = область бутлоадера        */
+
 /* Проверка карты на этапе компиляции */
 typedef char sfmap_assert_bounds
     [(SF_SOUNDS_BASE + SF_SOUNDS_SIZE == SF_CONFIG_BASE) ? 1 : -1];

@@ -42,6 +42,7 @@
 //--------------------------------------------------------------------------------------------------------------
 /* 4. Ядро проекта: общие типы/макросы, время (тик RTOS), лог, ThreadX */
 #include "shared_types.h"
+#include "boot_flash.h"
 #include "shared_macros.h"
 #include "vector_macros.h"
 #include "vector_tick.h"    /* VTICK_MS/VTICK_ELAPSED_MS: время ТОЛЬКО тик RTOS */

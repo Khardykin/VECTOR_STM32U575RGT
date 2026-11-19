@@ -158,6 +158,14 @@ static uint32_t rd32(const uint8_t *p)
   return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
          ((uint32_t)p[2] << 8)  | (uint32_t)p[3];
 }
+static void wr32le(uint8_t *p, uint32_t v)
+{
+  p[0] = (uint8_t)v;
+  p[1] = (uint8_t)(v >> 8);
+  p[2] = (uint8_t)(v >> 16);
+  p[3] = (uint8_t)(v >> 24);
+}
+
 
 static void wr16(uint8_t *p, uint16_t v)
 {
@@ -640,6 +648,15 @@ static uint8_t ctrl_reg_read(uint16_t addr, uint16_t *val)
     case MB_REG_FW_VERSION:
       *val = (uint16_t)(FIRMWARE_VERSION & 0xFFFFu);
       return 1u;
+    case MB_REG_BOOT_STATUS:
+      *val = (uint16_t)boot_flash_status;
+      return 1u;
+    case MB_REG_BOOT_ALLOWED:
+      *val = (uint16_t)boot_flash_allowed();
+      return 1u;
+    case MB_REG_BOOT_ERASE:
+      *val = 0u;
+      return 1u;
     case MB_REG_FW_STATUS:
       *val = (uint16_t)sys_state.process;
       return 1u;
@@ -741,6 +758,19 @@ static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
 
   switch (addr)
   {
+    case MB_REG_BOOT_ERASE:
+      if ((val == 1u) || (val == 2u))
+      {
+        if (boot_flash_allowed() == 0)
+        {
+          boot_flash_status = BOOT_ST_PROTECTED;
+        }
+        else
+        {
+          FlashErase = val;
+        }
+      }
+      return 1u;
     case MB_REG_FW_APPLY:
       if (val != 0u)
       {
@@ -1033,6 +1063,139 @@ uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
   return CMD_FRAME_HDR;
 }
 
+
+/* ==========================================================================
+ * CmdFunc12 (0x0C) - чтение журнала по номеру записи и количеству.
+ * ========================================================================== */
+uint16_t CmdFunc12(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
+{
+  uint32_t ptr;
+  uint16_t cnt;
+  uint16_t i;
+  uint16_t maxrec;
+  uint32_t cur = Sns_Cfg_struct.Config_archive.CurrentAddrFile;
+  uint32_t beg = Sns_Cfg_struct.Config_archive.BegginAddrFile;
+  EVENT_LOG rec;
+
+  (void)len;
+  if (cap < (uint16_t)(3u + LOG_SLOT_SIZE + 2u))
+  {
+    return CmdError(out, mas, CMD_ERR_LENGTH);
+  }
+  ptr = rd32(&mas[2]);
+  cnt = (uint16_t)(((uint16_t)mas[6] << 8) | mas[7]);
+  maxrec = (uint16_t)((cap - 5u) / LOG_SLOT_SIZE);
+
+  if ((cnt == 0u) || (cnt > maxrec))
+  {
+    return CmdError(out, mas, CMD_ERR_VALUE);
+  }
+  if ((cur == beg) || ((uint32_t)(ptr - beg) >= (uint32_t)(cur - beg)) ||
+      ((uint32_t)(cur - ptr) < (uint32_t)cnt))
+  {
+    return CmdError(out, mas, CMD_ERR_ADDR);
+  }
+
+  sys_state.process = SYS_PROC_ARCHIVE;
+
+  out[0] = mas[0];
+  out[1] = mas[1];
+  out[2] = (uint8_t)cnt;
+
+  for (i = 0u; i < cnt; i++)
+  {
+    int rc = log_read(&Sns_Cfg_struct, (uint32_t)(ptr + i), &rec);
+
+    if (rc != 0)
+    {
+      return CmdError(out, mas,
+                      (rc == 1) ? CMD_ERR_ADDR :
+                      (rc == 2) ? CMD_ERR_VERIFY : CMD_ERR_IO);
+    }
+    memcpy(&out[3u + (i * LOG_SLOT_SIZE)], &rec, LOG_SLOT_SIZE);
+  }
+  return (uint16_t)(3u + (cnt * LOG_SLOT_SIZE));
+}
+
+/* ==========================================================================
+ * CmdFunc20 (0x14) - поиск границ журнала по интервалу времени.
+ * ========================================================================== */
+uint16_t CmdFunc20(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
+{
+  uint32_t t_from;
+  uint32_t t_to;
+  uint32_t pf = 0u;
+  uint32_t pt = 0u;
+  int rc;
+
+  (void)len;
+  if (cap < 12u)
+  {
+    return CmdError(out, mas, CMD_ERR_LENGTH);
+  }
+  t_from = rd32(&mas[2]);
+  t_to   = rd32(&mas[6]);
+  if (t_to < t_from)
+  {
+    return CmdError(out, mas, CMD_ERR_VALUE);
+  }
+
+  sys_state.process = SYS_PROC_ARCHIVE;
+
+  rc = log_find_by_time(&Sns_Cfg_struct, t_from, t_to, &pf, &pt);
+  if (rc < 0)
+  {
+    return CmdError(out, mas, CMD_ERR_IO);
+  }
+  if (rc == 2)
+  {
+    return CmdError(out, mas, CMD_ERR_VERIFY);
+  }
+
+  out[0] = mas[0];
+  out[1] = mas[1];
+  wr32le(&out[2], pf);
+  wr32le(&out[6], pt);
+  return 10u;
+}
+
+/* ==========================================================================
+ * CmdFunc14 (0x0E) - запись во ВНУТРЕННЮЮ flash (область бутлоадера).
+ * ========================================================================== */
+uint16_t CmdFunc14(const uint8_t *mas, uint16_t len, uint8_t *out)
+{
+  uint32_t addr = rd32(&mas[2]);
+  uint8_t  size = mas[6];
+  int rc;
+
+  (void)len;
+  memcpy(out, mas, 6u);
+
+  if (boot_flash_allowed() == 0)
+  {
+    return CmdError(out, mas, CMD_ERR_PROTECTED);
+  }
+  if ((addr < FLASH_ADDRESS_START_BOOTLOADER) ||
+      ((uint64_t)addr + size) > (uint64_t)FLASH_ADDRESS_STOP_BOOTLOADER)
+  {
+    return CmdError(out, mas, CMD_ERR_RANGE);
+  }
+  if ((size == 0u) || ((size & 0x0Fu) != 0u) || ((addr & 0x0Fu) != 0u))
+  {
+    return CmdError(out, mas, CMD_ERR_VALUE);
+  }
+
+  sys_state.process = SYS_PROC_FW;
+
+  rc = boot_flash_write(addr, &mas[7], size);
+  if (rc != 0)
+  {
+    return CmdError(out, mas, (rc == -2) ? CMD_ERR_VERIFY : CMD_ERR_IO);
+  }
+  return 6u;
+}
+
+
 /* ==========================================================================
  * Диспетчер: проверяет CRC, зовёт CmdFuncN, дописывает CRC ответа.
  * ========================================================================== */
@@ -1090,6 +1253,33 @@ uint16_t parsing_command(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_
       answer = CmdFunc15(mas, len, out);
       break;
 
+    case CMD_OP_READ_LOG:
+      if (len != 10u)
+      {
+        answer = CmdError(out, mas, CMD_ERR_LENGTH);
+        break;
+      }
+      answer = CmdFunc12(mas, len, out, cap);
+      break;
+
+    case CMD_OP_FIND_LOG:
+      if (len != 12u)
+      {
+        answer = CmdError(out, mas, CMD_ERR_LENGTH);
+        break;
+      }
+      answer = CmdFunc20(mas, len, out, cap);
+      break;
+
+    case CMD_OP_WRITE_MCU:
+      if ((len < 9u) || ((uint32_t)len != (7u + (uint32_t)mas[6] + 2u)))
+      {
+        answer = CmdError(out, mas, CMD_ERR_LENGTH);
+        break;
+      }
+      answer = CmdFunc14(mas, len, out);
+      break;
+
     default:
       answer = CmdError(out, mas, CMD_ERR_UNKNOWN);
       break;
@@ -1136,6 +1326,14 @@ void Command_vector_RxFeed(const uint8_t *data, uint16_t len, uint32_t now_ms)
       {
         rx.expect = 8u;
       }
+      else if (op == CMD_OP_READ_LOG)
+      {
+        rx.expect = 10u;
+      }
+      else if (op == CMD_OP_FIND_LOG)
+      {
+        rx.expect = 12u;
+      }
     }
     if ((rx.len == 7u) && (rx.buf[1] == CMD_OP_WRITE_MULTI))
     {
@@ -1150,6 +1348,10 @@ void Command_vector_RxFeed(const uint8_t *data, uint16_t len, uint32_t now_ms)
       {
         rx.expect = (uint16_t)(9u + nb);
       }
+    }
+    if ((rx.len == 7u) && (rx.buf[1] == CMD_OP_WRITE_MCU))
+    {
+      rx.expect = (uint16_t)(7u + (uint16_t)rx.buf[6] + 2u);
     }
     if ((rx.len == CMD_FRAME_HDR) && (rx.expect == 0u))
     {
@@ -1253,6 +1455,7 @@ void Command_vector_LogMute(uint8_t mute)
 #include "buffer.h"
 #include "audio_player.h"
 #include "vector_tick.h"
+#include "boot_flash.h"
 
 static void cmd_tx_com(const uint8_t *data, uint16_t len)
 {

@@ -46,7 +46,10 @@ typedef enum
   CMD_OP_READ_HOLD   = 0x03,   /* чтение holding-регистров        */
   CMD_OP_READ_IN     = 0x04,   /* чтение input-регистров          */
   CMD_OP_WRITE       = 0x0F,   /* блочная запись во внешнюю flash */
-  CMD_OP_WRITE_MULTI = 0x10    /* запись группы holding           */
+  CMD_OP_WRITE_MULTI = 0x10,   /* запись группы holding           */
+  CMD_OP_READ_LOG    = 0x0C,   /* чтение журнала по номеру        */
+  CMD_OP_WRITE_MCU   = 0x0E,   /* запись во внутреннюю flash       */
+  CMD_OP_FIND_LOG    = 0x14    /* поиск журнала по времени        */
 } cmd_op_t;
 
 /* Коды ошибок. У Modbus и у flash смысл одного числа разный,
@@ -79,6 +82,9 @@ uint16_t CmdFunc3 (const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 uint16_t CmdFunc4 (const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap);
 uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out);
 uint16_t CmdFunc16(const uint8_t *mas, uint16_t len, uint8_t *out);
+uint16_t CmdFunc12(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap);
+uint16_t CmdFunc20(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap);
+uint16_t CmdFunc14(const uint8_t *mas, uint16_t len, uint8_t *out);
 
 uint16_t CreateCRC(uint8_t *data, uint16_t len);
 uint16_t CreateCRC_out(const uint8_t *data, uint16_t len);
@@ -103,5 +109,11 @@ void    Command_vector_LogMute(uint8_t mute);
 #define MB_REG_FW_IMG_SIZE_HI   0x0F5Au
 #define MB_REG_FW_IMG_CRC       0x0F5Bu
 #define MB_REG_FW_IMG_CALC_CRC  0x0F5Cu
+
+
+/* Бутлоадер: стирание/перезапись внутренней flash (0x0F5D+) */
+#define MB_REG_BOOT_ERASE       0x0F5Du   /* W: 1 = стереть, 2 = стереть + образ из SF_BOOT */
+#define MB_REG_BOOT_STATUS      0x0F5Eu   /* RO: BOOT_ST_* */
+#define MB_REG_BOOT_ALLOWED     0x0F5Fu   /* RO: 1 = операции разрешены */
 
 #endif /* COMMAND_VECTOR_H */
