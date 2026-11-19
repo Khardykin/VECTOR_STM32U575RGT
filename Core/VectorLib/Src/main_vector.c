@@ -353,14 +353,6 @@ void Timer_Tick_1s(void)
 	   При включении Pre_Init читает BKP0 ПОСЛЕ конфигурации.                */
 
 	Countdown_Timer_Rtc();
-
-#if CONFIG_UART
-	if(timer_end_data_exchange){
-		timer_end_data_exchange --;
-		if(!timer_end_data_exchange){
-		}
-	}
-#endif
 }
 
 /* Таймаут кадра COM-порта. Weak-заглушка: реализация появится вместе с

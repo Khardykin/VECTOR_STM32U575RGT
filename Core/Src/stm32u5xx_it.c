@@ -52,8 +52,6 @@
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-uint32_t 			timer_end_data_exchange = 0;   			// Таймер автоматического окончания режима передачи данных
-
 Button_variables 	button1 = {0};
 Button_variables 	button2 = {0};
 Button_variables 	button3 = {0};
