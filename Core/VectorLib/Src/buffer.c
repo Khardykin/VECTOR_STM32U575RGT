@@ -81,7 +81,6 @@ void transmit_buffer(uint8_t *pData, uint16_t Size, uint8_t type_transmit)
 
 	if(type_transmit == TYPE_USART){
 		huart_ptr  = &USART_COM;
-		HAL_HalfDuplex_EnableTransmitter(&USART_COM);
 	}
 #if CONFIG_BLE
     else if (type_transmit == TYPE_BLE) {
