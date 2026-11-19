@@ -442,4 +442,52 @@ extern TEMPSENSOR_CALIB tempsensor_calib;
 //===========================================================================================================================
 
 
+
+/* ==========================================================================
+ * Единое состояние системы (заменяет device_turn/SoftResetProgram/StateProg)
+ * ========================================================================== */
+
+/* Состояние питания (бывший device_turn) */
+typedef enum
+{
+  SYS_POWER_OFF_PRE_INIT = 0,
+  SYS_POWER_ON           = 1,
+  SYS_POWER_OFF          = 2,
+  SYS_POWER_SLEEP        = 3
+} sys_power_t;
+
+/* Процесс обмена с внешней flash (бывший StateProg из Avis).
+   По нему экран показывает что происходит. */
+typedef enum
+{
+  SYS_PROC_IDLE = 0,        /* ничего не происходит */
+  SYS_PROC_DATA_EXCHANGE,   /* общий обмен по COM */
+  SYS_PROC_FW_UPLOAD,       /* загрузка прошивки */
+  SYS_PROC_FW_VERIFY,       /* проверка образа */
+  SYS_PROC_FW_APPLY,        /* применение прошивки */
+  SYS_PROC_LOG_READ,        /* чтение логов */
+  SYS_PROC_LOG_ERASE,       /* стирание логов */
+  SYS_PROC_CFG_READ,        /* чтение конфигурации */
+  SYS_PROC_CFG_WRITE,       /* запись конфигурации */
+  SYS_PROC_SOUND_UPLOAD,    /* загрузка звуков */
+  SYS_PROC_SOUND_ERASE,     /* стирание звуков */
+  SYS_PROC_FLASH_ERASE      /* стирание области flash */
+} sys_process_t;
+
+typedef struct
+{
+  volatile sys_power_t   power;         /* было device_turn */
+  volatile sys_process_t process;       /* было StateProg */
+  volatile uint8_t       soft_reset;    /* было SoftResetProgram */
+  volatile uint8_t       data_exchange; /* 1 = идёт обмен */
+  volatile uint8_t       block_sound;   /* 1 = звук заблокирован */
+  volatile uint8_t       fw_pending;    /* 1 = прошивка ждёт применения */
+} sys_state_t;
+
+extern sys_state_t sys_state;
+
+/* Совместимость со старыми константами device_turn */
+#define DEVICE_TURNED_OFF_PRE_INIT  SYS_POWER_OFF_PRE_INIT
+#define DEVICE_TURNED_ON            SYS_POWER_ON
+
 #endif /* __SHARED_TYPES_H */

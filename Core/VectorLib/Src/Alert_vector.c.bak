@@ -48,6 +48,7 @@
    lis3dh.h (CONFIG_LIS3DH), Lora_S7678S.h (CONFIG_LORA), Ble_vector.h
    (CONFIG_BLE).                                                            */
 #include "main_vector.h"
+#include "sys_state.h"
 
 /* ============================================================================
  *                                 МАКРОСЫ
@@ -842,7 +843,7 @@ static void alert_indication_arbitrate(void)
      (неподвижность, свежесть устройств, ошибки и батарея от экрана и звука не
      зависят). Флаг indication у статусов не трогаем - после включения прибор
      снова начнёт оповещать, а квитирование не «проглатывается» втихую.      */
-  if (device_turn == DEVICE_TURNED_OFF)
+  if (sys_state.power == DEVICE_TURNED_OFF)
   {
     if (s_ind_owner != (uint8_t)ALERT_NONE)
     {
@@ -851,7 +852,7 @@ static void alert_indication_arbitrate(void)
     return;
   }
 
-  if (device_turn == DEVICE_TURNED_ON_1)
+  if (sys_state.power == DEVICE_TURNED_ON_1)
   {
     /* Прогрев: если активный статус не из разрешённого списка (SHUTDOWN,
        SOS_COUNTDOWN) - сбрасываем его indication, чтобы arbitrate не запустил.
@@ -1610,7 +1611,7 @@ uint8_t Alert_AckButton(void)
      состоянии индикация не идёт, гасить нечего, а флаг indication должен
      дожить до включения - иначе тревога потеряется. Возврат ALERT_NONE
      отдаёт жест обратно в навигацию меню (Menu_vector.c).                   */
-  if (device_turn != DEVICE_TURNED_ON) { return (uint8_t)ALERT_NONE; }
+  if (sys_state.power != DEVICE_TURNED_ON) { return (uint8_t)ALERT_NONE; }
 
   top = alert_top_indication();
   if (top == ALERT_NONE) { return (uint8_t)ALERT_NONE; }

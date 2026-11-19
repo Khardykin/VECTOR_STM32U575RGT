@@ -59,7 +59,6 @@
    лог, Alert_vector.h (AlertSeq_PowerOn - сценарий включения прибора), экран LCD_Init/backlight_set/
    LCD_* (TFT.h/LCD_platform.h/TFT_indicator.h при CONFIG_TYPE_LCD_TFT).   */
 #include "main_vector.h"
-#include "sys_state.h"
 
 #if CONFIG_DISPLAY
 

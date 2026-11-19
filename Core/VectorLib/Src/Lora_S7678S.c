@@ -3,7 +3,6 @@
    (AT-команды), string (memcpy), math (cosf/lround: GPS-дельты в метры),
    Lora_S7678S.h (при CONFIG_LORA).                                          */
 #include "main_vector.h"
-#include "sys_state.h"
 
 #if CONFIG_LORA
 

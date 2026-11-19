@@ -78,6 +78,7 @@
    tx_api.h (TX_DISABLE: целые снимки Connected_device/Ble_telemetry, п.65),
    stdio/string.                                                            */
 #include "main_vector.h"
+#include "sys_state.h"
 
 #if CONFIG_BLE
 
@@ -1070,7 +1071,7 @@ void Ble_Receive(void)
  */
 void Ble_Run(void)
 {
-	if (device_turn != DEVICE_TURNED_OFF) {
+	if (sys_state.power != DEVICE_TURNED_OFF) {
 		Ble_UpdateInputData();					/* входной мост (п.66) */
 		if (ble_in.turn_on != 0u) {
 			if ((get_state_init_flag_ble() == 0u) &&

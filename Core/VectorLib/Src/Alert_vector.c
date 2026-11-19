@@ -48,7 +48,6 @@
    lis3dh.h (CONFIG_LIS3DH), Lora_S7678S.h (CONFIG_LORA), Ble_vector.h
    (CONFIG_BLE).                                                            */
 #include "main_vector.h"
-#include "sys_state.h"
 
 /* ============================================================================
  *                                 МАКРОСЫ

@@ -57,7 +57,15 @@
    (stdlib), sf_probe/SF_CONFIG_BASE (spiflash/sfmap), TFT_Rotation (TFT.h),
    button1..3 (stm32u5xx_it.h), TX_DISABLE (tx_api) - всё из агрегатора.   */
 #include "main_vector.h"
-#include "sys_state.h"
+
+sys_state_t sys_state = {
+  .power         = SYS_POWER_OFF_PRE_INIT,
+  .process       = SYS_PROC_IDLE,
+  .soft_reset    = 0,
+  .data_exchange = 0,
+  .block_sound   = 0,
+  .fw_pending    = 0
+};
 
 /* ============================================================================
  *                                 МАКРОСЫ
@@ -118,7 +126,6 @@ static uint32_t alert_tick_ms = 0;
 SNS_CFG          Sns_Cfg_struct;
 SNS_CFG          Cfg_structdef_read;
 TEMPSENSOR_CALIB tempsensor_calib;
-uint8_t          StateProg = 0;             /* 1 = режим обмена завершён */
 SNS_Dev_Type     Connected_device;   /* свод подключённого под-устройства AVIS*/
 BLE_TELEMETRY    Ble_telemetry;      /* телеметрия BLE-окружения (маяки/СИЗ/признак AVIS)*/
 uint8_t          deveui_com[8];      /* копия DevEUI для модулей COM/LTE*/
@@ -371,8 +378,6 @@ __attribute__((weak)) void Uart_Command_Receive_Timer_Inc(void)
  * ============================================================================ */
 void Vector_Run_Board_Init(void)
 {
-  sys_state_init();
-
   fw_update_init();  /* PWR + BKP-доступ */
 
 #if VECTOR_AUDIO_SELFTEST
@@ -1128,14 +1133,13 @@ void Vector_Options_System(void)
 	//----------------------------------------------------------------------------
 
 #if CONFIG_UART
-	/* Окончание режима обмена по таймауту неактивности.
-	   Таймер перезапускается в USART3_IRQHandler при каждом принятом байте.
-	   Если байтов нет дольше TIME_RTC_UART_RX_WAKE_UP - сбрасываем биты. */
-	if(TEST_TIMER_RTC(TIMER_RTC_UART_RX_WAKE_UP)){
-		RESET_TIMER_RTC(TIMER_RTC_UART_RX_WAKE_UP);
+	/* Окончание режима обмена по таймауту неактивности (30 сек).
+	   Таймер перезапускается в USART3_IRQHandler при каждом принятом байте. */
+	if(TEST_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END)){
+		RESET_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END);
 		CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);
 		CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);
-		StateProg = 1;
+		sys_state.process = SYS_PROC_IDLE;
 	}
 #endif
 }

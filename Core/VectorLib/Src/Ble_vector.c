@@ -78,7 +78,6 @@
    tx_api.h (TX_DISABLE: целые снимки Connected_device/Ble_telemetry, п.65),
    stdio/string.                                                            */
 #include "main_vector.h"
-#include "sys_state.h"
 
 #if CONFIG_BLE
 

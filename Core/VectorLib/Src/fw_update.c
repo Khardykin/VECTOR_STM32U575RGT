@@ -3,7 +3,6 @@
 #include "shared_macros.h"
 #include "rtc.h"
 #include "stm32u5xx_hal.h"
-#include "sys_state.h"
 
 static uint8_t s_bkp_inited = 0u;
 

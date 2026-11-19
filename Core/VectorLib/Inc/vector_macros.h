@@ -24,7 +24,6 @@
 #include <stdint.h>
 #include "vector_tick.h"
 #include "shared_types.h"    /* DEVICE_TURNED, SNS_CFG */
-#include "sys_state.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -75,7 +75,6 @@
 #include "rtc.h"               /* hrtc - диагностика RTC WakeUp (прогон 2)     */
 #include "vector_log.h"        /* LOG_I / LOG_W                                */
 #include "snd_log_test.h"
-#include "sys_state.h"
 
 #if VECTOR_SND_LOG_TEST
 

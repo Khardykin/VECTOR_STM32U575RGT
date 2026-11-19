@@ -22,7 +22,7 @@
   *               ТОЛЬКО выключение (LONG Button3 -> Menu_TurnOff, аналог Avis
   *               TurnOffSystem) и SOS (удержание Button1 3 с, button_sos ->
   *               Button_Sos); выход с экрана - по истечении TIMER_RTC_WARM
-  *               (TIME_RTC_START, 60 с): device_turn = DEVICE_TURNED_ON и
+  *               (TIME_RTC_START, 60 с): sys_state.power = DEVICE_TURNED_ON и
   *               SCREEN_MEASURE. Авто-возврат на этом экране отключён.
   *               Включение и выключение прибора - ОДНА кнопка Button3:
   *               выключен -> Button_Run_Start (LONG), включён -> Menu_TurnOff;
@@ -46,7 +46,7 @@
   *          indication_task_function из Avis_main.c): Menu_Init() - Measure
   *          Task (Vector_Run_Pre_Init, один раз); Vector_Run_Indication() -
   *          поток LVGL Task (main_vector.c) по timer.flag_100ms (100 мс),
-  *          внутри по device_turn -> Menu_Run(). В Measure Task меню НЕ живёт.
+  *          внутри по sys_state.power -> Menu_Run(). В Measure Task меню НЕ живёт.
   *          Из ISR не вызывать (тут таймеры прибора и SaveConfig).
   *
   *           (замечание автора п.3): приоритет жестов ПОСТОЯННЫЙ -
@@ -59,6 +59,7 @@
    лог, Alert_vector.h (AlertSeq_PowerOn - сценарий включения прибора), экран LCD_Init/backlight_set/
    LCD_* (TFT.h/LCD_platform.h/TFT_indicator.h при CONFIG_TYPE_LCD_TFT).   */
 #include "main_vector.h"
+#include "sys_state.h"
 
 #if CONFIG_DISPLAY
 
@@ -600,7 +601,7 @@ void Menu_ResetButtons(void)
 /* Выключение прибора - аналог TurnOffSystem() из Avis
    (docs/Avis_Menu_Functionality.c.md): индикация гасится, статусы обмена/звука
    и общие ошибки сбрасываются, ставится бит «прибор выключен», в журнал уходит
-   TYPE_TURN_OFF, модули обмена деинициализируются, device_turn =
+   TYPE_TURN_OFF, модули обмена деинициализируются, sys_state.power =
    DEVICE_TURNED_OFF. Дальше Vector_Run_Indication() в состоянии OFF вызывает
    Button_Run_Start() - включение долгим нажатием Button3 (как в Avis, где
    DisplayIndication при выключенном приборе крутит Button_Run_Start/TurnOffPower).
@@ -620,7 +621,7 @@ void Menu_ResetButtons(void)
    КОНТЕКСТ: поток LVGL Task (menu_navigate).                                */
 static void Menu_TurnOff(void)
 {
-  if (device_turn == DEVICE_TURNED_OFF){
+  if (sys_state.power == DEVICE_TURNED_OFF){
     return;
   }
   Alert_Stop();   /* выключение - гасим любую индикацию */
@@ -661,7 +662,7 @@ static void Menu_TurnOff(void)
      кнопку не отпустят, повторного LONG не будет (флаг тоже погашен).     */
   Menu_ResetButtons();
 
-  device_turn = DEVICE_TURNED_OFF;
+  sys_state.power = DEVICE_TURNED_OFF;
   /* Следующее включение снова начинается с заставки/прогрева: Menu_GoTo дёшево -
      LCD_DeInit уже выполнен, Menu_Draw() выйдет по флагу инициализации.   */
   Menu_GoTo((uint8_t)SCREEN_START);
@@ -690,7 +691,7 @@ static void countdown_cancel(void)
 
 static void countdown_start_shutdown(void)
 {
-  if ((device_turn == DEVICE_TURNED_OFF) || (s_cnt_kind != 0u)) { return; }
+  if ((sys_state.power == DEVICE_TURNED_OFF) || (s_cnt_kind != 0u)) { return; }
   s_cnt_return = menu_status.screen;
   s_cnt_kind = 1u;
   s_cnt_final = 0u;   /* начинаем с обычной фазы */
@@ -1028,15 +1029,15 @@ void Menu_Run(void)
 
   /* Заставка/прогрев: TIMER_RTC_WARM взведён при включении прибора
      (Button_Run_Start, TIME_RTC_START = 60 с). По истечении прибор переходит в
-     рабочий режим - device_turn = DEVICE_TURNED_ON и экран измерений (Avis:
+     рабочий режим - sys_state.power = DEVICE_TURNED_ON и экран измерений (Avis:
      Screen_status_flip case 7 - TO_GO_STATE_SCREEN(STATE_SCREEN_MEASURE) +
-     device_turn = DEVICE_TURNED_ON). Всё время прогрева device_turn =
+     sys_state.power = DEVICE_TURNED_ON). Всё время прогрева sys_state.power =
      DEVICE_TURNED_ON_1 («включён без звука/вибро - используется для прогрева и
      авто-выключения», shared_types.h): Menu_Run() при этом вызывается, но
      оповещения не запускаются.                                            */
   if ((menu_status.screen == (uint8_t)SCREEN_START) && (TEST_TIMER_RTC(TIMER_RTC_WARM) != 0)){
     RESET_TIMER_RTC(TIMER_RTC_WARM);
-    device_turn = DEVICE_TURNED_ON;
+    sys_state.power = DEVICE_TURNED_ON;
     LOG_I(VLOG_M_SYS, "menu: warm-up %u s done -> SCREEN_MEASURE", (uint32_t)TIME_RTC_START);
     Menu_GoTo((uint8_t)SCREEN_MEASURE);
   }
@@ -1169,7 +1170,7 @@ void Button_Run_Start(void)
 	       DEVICE_TURNED_ON_1 «используется для прогрева и авт выкл.»). Экран -
 	       SCREEN_START (заставка), рабочий режим включит Menu_Run() по
 	       истечении TIMER_RTC_WARM.                                        */
-	    device_turn = DEVICE_TURNED_ON_1;
+	    sys_state.power = DEVICE_TURNED_ON_1;
 	    START_TIMER_RTC(TIMER_RTC_WARM, TIME_RTC_START);
 	    //вход в обычный режим работы!!!!!!!!!!!
 	    START_TIMER_RTC(TIMER_RTC_LIGHT_RESET, TIME_RTC_LIGHT_RESET*12);
@@ -1186,15 +1187,15 @@ void Button_Run_Start(void)
 
 /* Аналог Avis_Run_Indication (Avis_main.c) - вызывается из потока LVGL Task
    (main_vector.c) по timer.flag_100ms. КОНТЕКСТ: поток LVGL Task.
-   device_turn: ON/ON_1 -> Menu_Run() (кнопки/меню/отрисовка); OFF и
+   sys_state.power: ON/ON_1 -> Menu_Run() (кнопки/меню/отрисовка); OFF и
    OFF_PRE_INIT -> ничего (в Avis при OFF здесь DisplayChargeIndicationTurnOff
    + Button_Run_Start - экран заряда при выключенном приборе, появится с
    продуктовой кнопкой включения, PLAN этап 6). PRE_INIT сюда не попадает:
    LVGL Task (когда будет создан) ждёт завершения Vector_Run_Pre_Init
-   (device_turn/cnt_pre_init) - как receiver в main_vector.c (PLAN п.60).     */
+   (sys_state.power/cnt_pre_init) - как receiver в main_vector.c (PLAN п.60).     */
 void Vector_Run_Indication(void)
 {
-  switch (device_turn)
+  switch (sys_state.power)
   {
     case DEVICE_TURNED_ON:
     case DEVICE_TURNED_ON_1:      /* включён без звука/вибро (прогрев) */

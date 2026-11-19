@@ -1255,7 +1255,6 @@ void Command_vector_LogMute(uint8_t mute)
 #include "buffer.h"
 #include "audio_player.h"
 #include "vector_tick.h"
-#include "sys_state.h"
 
 static void cmd_tx_com(const uint8_t *data, uint16_t len)
 {

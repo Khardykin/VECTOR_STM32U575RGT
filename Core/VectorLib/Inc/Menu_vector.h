@@ -42,7 +42,6 @@
 #include <stdint.h>
 #include "config_device.h"   /* CONFIG_DISPLAY */
 #include "vector_config.h"   /* VECTOR_MENU_* */
-#include "sys_state.h"
 
 #ifdef __cplusplus
 extern "C" {
