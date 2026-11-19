@@ -24,13 +24,14 @@
 #include <stdint.h>
 #include "vector_tick.h"
 #include "shared_types.h"    /* DEVICE_TURNED, SNS_CFG */
+#include "sys_state.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* Прибор включён (не в режиме TURN_OFF). */
-#define VECTOR_DEVICE_IS_ON()   (device_turn != DEVICE_TURNED_OFF)
+#define VECTOR_DEVICE_IS_ON()   (sys_state.power != DEVICE_TURNED_OFF)
 
 /* --- тики таймеров приёма модулей ------------------------------------------
  * TIME_DEL_1 - период, с которым вызываются Uart_Gps_Receive_Timer_Inc() и

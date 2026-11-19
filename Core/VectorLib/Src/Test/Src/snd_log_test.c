@@ -75,6 +75,7 @@
 #include "rtc.h"               /* hrtc - диагностика RTC WakeUp (прогон 2)     */
 #include "vector_log.h"        /* LOG_I / LOG_W                                */
 #include "snd_log_test.h"
+#include "sys_state.h"
 
 #if VECTOR_SND_LOG_TEST
 
@@ -176,7 +177,7 @@ void SndLogTest_Run1s(void)
   if (slt_sec == 2u)
   {
     /* В календарь напрямую НЕ пишем: wh перенесёт в него штатная сверка
-       (device_turn = DEVICE_TURNED_ON к этому моменту - Pre_Init завершён,
+       (sys_state.power = DEVICE_TURNED_ON к этому моменту - Pre_Init завершён,
        receiver работает). Гонка с RTC-ISR (+1) допустима - точность
        секундная.                                                          */
     Sns_Cfg_struct.Working_data.working_hours = (uint32_t)SLT_SET_WH_UNIX;

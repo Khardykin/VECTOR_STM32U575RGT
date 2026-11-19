@@ -3,6 +3,7 @@
    (AT-команды), string (memcpy), math (cosf/lround: GPS-дельты в метры),
    Lora_S7678S.h (при CONFIG_LORA).                                          */
 #include "main_vector.h"
+#include "sys_state.h"
 
 #if CONFIG_LORA
 
@@ -1509,7 +1510,7 @@ static void Lora_Control_States_Update(str_lora_data_get_t *rx_data, uint32_t po
            (Working_data.working_hours; в Avis поле жило в Config_common).
            Offset ВЫЧИТАЕМ: в протоколе/журнале время = offset + working_hours.
            Календарь RTC подхватит wh штатная секундная сверка
-           (Vector_Options_System) - приёмник device_turn-гейта (PLAN п.59). */
+           (Vector_Options_System) - приёмник sys_state.power-гейта (PLAN п.59). */
         Sys_Cfg_Lock();
         Sns_Cfg_struct.Working_data.working_hours =
             rx_data->UnixTime - Sns_Cfg_struct.Working_data.working_hours_offset;

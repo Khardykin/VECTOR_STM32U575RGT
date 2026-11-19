@@ -87,7 +87,7 @@ typedef enum {
 // Определение - main_vector.c. Старт: DEVICE_TURNED_OFF_PRE_INIT;
 // DEVICE_TURNED_ON - в конце Vector_Run_Pre_Init(); DEVICE_TURNED_OFF -
 // обработчик выключения (PLAN этап 6); DEVICE_TURNED_ON_1 - прогрев/авто-выкл.
-extern DEVICE_TURNED device_turn;
+extern DEVICE_TURNED sys_state.power;
 
 //===========================================================================================================================
 //Для статусного байта ошибок, биты ошибок
@@ -206,11 +206,13 @@ extern volatile uint8_t state_screen;
 #define TIME_RTC_LED_STATE_RUN_PERIOD	(5u)	// период зеленого светодиода, с
 #define TIME_RTC_DISP_FLASHING_CHARGE	(1u)	// период мигания зарядки/ошибок на экране, с (Avis: TIME_RTC_DISP_FLASHING_ERR)
 /* Заставка/прогрев (SCREEN_START): сколько прибор стоит на стартовом экране до
-   перехода в рабочий режим (device_turn = DEVICE_TURNED_ON + SCREEN_MEASURE).
+   перехода в рабочий режим (sys_state.power = DEVICE_TURNED_ON + SCREEN_MEASURE).
    Таймер - TIMER_RTC_WARM, взводит Button_Run_Start() при включении прибора
    (Menu_vector.c), проверяет Menu_Run(). В Avis этой паре соответствовал
    TIME_RTC_WARM из Screen_status_flip/Warm_Screen_statuses.               */
 #define TIME_RTC_START				(6u)
+#define TIME_RTC_DATA_EXCHANGE_END	(30u)	/* 30 сек без байтов -> окончание обмена */
+#define TIME_RTC_UART_RX_WAKE_UP	(5u)	/* 5 сек без байтов -> выход из режима обмена */
 #define TIME_RTC_SOFT_RESET_PROGRAM	(2u)	/* 2 сек на завершение операций перед сбросом */
 /* Чередование страницы измерений со строкой ошибки (режим MEAS_ERR), с: пока
    error_queue_count != 0, LCD_MeasureScreen() раз в TIME_RTC_DISP_FLASHING_ERR

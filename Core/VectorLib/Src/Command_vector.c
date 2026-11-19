@@ -652,9 +652,11 @@ static uint8_t ctrl_reg_read(uint16_t addr, uint16_t *val)
     case MB_REG_ERASE_SOUNDS:
     case MB_REG_ERASE_CONFIG:
     case MB_REG_ERASE_CFGDEF:
+    sys_state.process = SYS_PROC_ARCHIVE;
     case MB_REG_ERASE_LOG:
     case MB_REG_ERASE_LOGPTR:
     case MB_REG_ERASE_FW:
+      sys_state.process = SYS_PROC_FW;
     case MB_REG_WIN_CMD:
       *val = 0u;
       return 1u;
@@ -744,6 +746,7 @@ static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
     case MB_REG_FW_APPLY:
       if (val != 0u)
       {
+        sys_state.process = SYS_PROC_FW;
         fw_apply_request();
       }
       return 1u;
@@ -790,9 +793,11 @@ static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
     case MB_REG_ERASE_SOUNDS:
     case MB_REG_ERASE_CONFIG:
     case MB_REG_ERASE_CFGDEF:
+    sys_state.process = SYS_PROC_ARCHIVE;
     case MB_REG_ERASE_LOG:
     case MB_REG_ERASE_LOGPTR:
     case MB_REG_ERASE_FW:
+      sys_state.process = SYS_PROC_FW;
       if (val != 0u)
       {
         era.req |= (uint8_t)(1u << (addr - MB_REG_ERASE_SOUNDS));
@@ -1250,6 +1255,7 @@ void Command_vector_LogMute(uint8_t mute)
 #include "buffer.h"
 #include "audio_player.h"
 #include "vector_tick.h"
+#include "sys_state.h"
 
 static void cmd_tx_com(const uint8_t *data, uint16_t len)
 {

@@ -3,6 +3,7 @@
 #include "shared_macros.h"
 #include "rtc.h"
 #include "stm32u5xx_hal.h"
+#include "sys_state.h"
 
 static uint8_t s_bkp_inited = 0u;
 
@@ -38,7 +39,7 @@ void fw_apply_request(void)
        2. Остановит TIM3
        3. Запишет BKP_FLAG_APPLY
        4. Сделает NVIC_SystemReset() */
-    SoftResetProgram = 1;
+    sys_state.soft_reset = 1;
     START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, TIME_RTC_SOFT_RESET_PROGRAM);
 }
 

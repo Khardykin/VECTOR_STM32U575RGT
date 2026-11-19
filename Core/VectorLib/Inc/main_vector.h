@@ -99,6 +99,7 @@
 #include "LCD_platform.h"   /* backlight_set(), низкий уровень SPI панели */
 #include "TFT_indicator.h"  /* слой индикации: LCD_* API (экраны/меню/виджеты) */
 #include "fw_update.h"
+#include "sys_state.h"
 #endif
 //===========================================================================================================================
 
@@ -182,9 +183,9 @@ typedef struct
 extern volatile sensors_status_t sensors_status;
 
 /* --- сервис (по образцу Avis) ------------------------------------------
- * SoftResetProgram: 1 = команда мягкой перезагрузки прошивки (взводит COM/
+ * sys_state.soft_reset: 1 = команда мягкой перезагрузки прошивки (взводит COM/
  *   BLE-модуль ВМЕСТЕ с START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, N)); */
-extern uint8_t SoftResetProgram;
+extern uint8_t StateProg;
 
 /* --- общие данные модулей обмена -------------------------------------- */
 extern uint8_t deveui_com[8];

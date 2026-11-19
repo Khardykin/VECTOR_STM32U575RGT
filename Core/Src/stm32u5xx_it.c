@@ -52,7 +52,6 @@
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-uint8_t 			flag_end_data_exchange = 0;
 uint32_t 			timer_end_data_exchange = 0;   			// Таймер автоматического окончания режима передачи данных
 
 Button_variables 	button1 = {0};
@@ -525,9 +524,11 @@ void USART3_IRQHandler(void)
 #endif
 //		buffer_uart[TYPE_USART].TimeRX = TIME_OUT_UART;
 #if CONFIG_UART
-//		SET_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);
-//		timer_end_data_exchange = TIME_END_DATA_EXCHANGE;                       // Запуск таймера автоматического окончания режима передачи данных
-//		START_TIMER_RTC(TIMER_RTC_UART_RX_WAKE_UP, TIME_RTC_UART_RX_WAKE_UP);	// Запуск таймера на вход в сон, когда передача не активна, но включена
+		/* Режим обмена: устанавливаем биты и перезапускаем таймер.
+		   Сброс - в Vector_Options_System по таймауту. */
+		SET_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);
+		SET_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);
+		START_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END, TIME_RTC_DATA_EXCHANGE_END);
 #endif
 //#if BLE_DEBUG
 //		USART_DEBUG.Instance->TDR = data_uart;
@@ -569,7 +570,7 @@ void UART4_IRQHandler(void)
 //#if CONFIG_UART
 ////		SET_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);
 ////		timer_end_data_exchange = TIME_END_DATA_EXCHANGE;                       // Запуск таймера автоматического окончания режима передачи данных
-////		START_TIMER_RTC(TIMER_RTC_UART_RX_WAKE_UP, TIME_RTC_UART_RX_WAKE_UP);	// Запуск таймера на вход в сон, когда передача не активна, но включена
+////		START_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END, TIME_RTC_DATA_EXCHANGE_END);	// Запуск таймера на вход в сон, когда передача не активна, но включена
 //#endif
 	}
 	else{

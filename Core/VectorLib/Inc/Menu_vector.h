@@ -30,7 +30,7 @@
   *          Button_Menu()). Вызовы (замечание автора п.5 - по образцу
   *          indication_task_function из Avis_main.c): Menu_Init() - из
   *          Vector_Run_Pre_Init(); Vector_Run_Indication() - из потока LVGL
-  *          Task (main_vector.c) по timer.flag_100ms, внутри по device_turn
+  *          Task (main_vector.c) по timer.flag_100ms, внутри по sys_state.power
   *          вызывает Menu_Run(). В Measure Task меню больше не живёт.
   *          Приоритет жестов ПОСТОЯННЫЙ (замечание автора п.3):
   *          Button1 > Button2 > Button3, внутри кнопки LONG > SHORT.
@@ -42,6 +42,7 @@
 #include <stdint.h>
 #include "config_device.h"   /* CONFIG_DISPLAY */
 #include "vector_config.h"   /* VECTOR_MENU_* */
+#include "sys_state.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -148,7 +149,7 @@ void Menu_ResetButtons(void);
                         экрана/поворот/язык, LCD_Battery с фазой мигания,
                         покранный switch LCD_Menu/LCD_SubMenuInfo/
                         LCD_SubMenuSetting, ui_apply_visibility).
-   Vector_Run_Indication() - аналог Avis_Run_Indication: switch(device_turn),
+   Vector_Run_Indication() - аналог Avis_Run_Indication: switch(sys_state.power),
                         ON/ON_1 -> Menu_Run(); OFF -> Button_Run_Start()
                         (включение долгим нажатием + ui_lv_init); вызывается
                         из LVGL Task по timer.flag_100ms (100 мс).          */

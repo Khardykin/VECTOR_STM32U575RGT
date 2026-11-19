@@ -32,7 +32,6 @@ extern "C" {
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
-extern uint8_t 				flag_end_data_exchange;
 extern uint32_t         	timer_end_data_exchange;
 
 /* timer / countdown_time / countdown_time_rtc и тип Timer_variables

@@ -57,6 +57,7 @@
    (stdlib), sf_probe/SF_CONFIG_BASE (spiflash/sfmap), TFT_Rotation (TFT.h),
    button1..3 (stm32u5xx_it.h), TX_DISABLE (tx_api) - всё из агрегатора.   */
 #include "main_vector.h"
+#include "sys_state.h"
 
 /* ============================================================================
  *                                 МАКРОСЫ
@@ -73,7 +74,7 @@
  * такты в начале, данные прибора и потоки в середине, датчики в конце).
  * Порядок блоков: такты/таймеры -> данные прибора -> потоки (дескрипторы,
  * стеки, мьютекс конфига, состояние) -> датчики -> объявления функций.
- * Внешние объявления: shared_types.h (Sns_Cfg_struct, device_turn, ...),
+ * Внешние объявления: shared_types.h (Sns_Cfg_struct, sys_state.power, ...),
  * vector_tasks.h (tasks_status), main_vector.h (sensors_status).
  * ============================================================================ */
 
@@ -108,7 +109,7 @@ static uint32_t alert_tick_ms = 0;
  *                       bme280_measure(), отсюда читают модули обмена.
  *   tempsensor_calib    калибровка температуры BME280 (VECTOR_BME_CALIBRATION 0
  *                       -> пока не используется).
- *   device_turn         прибор включён/выключен (DEVICE_TURNED).
+ *   sys_state.power         прибор включён/выключен (DEVICE_TURNED).
  *
  * ВАЖНО: до Vector_Run_Pre_Init() Sns_Cfg_struct zero-init (статусы сброшены).
  * Pre_Init грузит конфиг из внешней flash (read_param, CRC) либо пишет
@@ -117,8 +118,7 @@ static uint32_t alert_tick_ms = 0;
 SNS_CFG          Sns_Cfg_struct;
 SNS_CFG          Cfg_structdef_read;
 TEMPSENSOR_CALIB tempsensor_calib;
-DEVICE_TURNED    device_turn = DEVICE_TURNED_OFF_PRE_INIT;
-uint8_t          SoftResetProgram = 0;   /* 1 = команда мягкой перезагрузки прошивки: */
+uint8_t          StateProg = 0;             /* 1 = режим обмена завершён */
 SNS_Dev_Type     Connected_device;   /* свод подключённого под-устройства AVIS*/
 BLE_TELEMETRY    Ble_telemetry;      /* телеметрия BLE-окружения (маяки/СИЗ/признак AVIS)*/
 uint8_t          deveui_com[8];      /* копия DevEUI для модулей COM/LTE*/
@@ -351,7 +351,6 @@ void Timer_Tick_1s(void)
 	if(timer_end_data_exchange){
 		timer_end_data_exchange --;
 		if(!timer_end_data_exchange){
-			flag_end_data_exchange = 1;
 		}
 	}
 #endif
@@ -372,6 +371,8 @@ __attribute__((weak)) void Uart_Command_Receive_Timer_Inc(void)
  * ============================================================================ */
 void Vector_Run_Board_Init(void)
 {
+  sys_state_init();
+
   fw_update_init();  /* PWR + BKP-доступ */
 
 #if VECTOR_AUDIO_SELFTEST
@@ -497,7 +498,7 @@ static void receiver_task_function(ULONG thread_input)
      не начинается: working_hours ещё может нести ПРОШЛОЕ значение из конфига,
      и сверка отравила бы backup-домен (стартовая гонка, PLAN п.59); в measure
      порядок гарантирован вызовом Pre_Init в том же потоке до цикла.        */
-  while (device_turn == DEVICE_TURNED_OFF_PRE_INIT)
+  while (sys_state.power == DEVICE_TURNED_OFF_PRE_INIT)
   {
     VTICK_SLEEP_MS(VECTOR_TASKS_RECEIVER_DELAY_MS);
   }
@@ -580,7 +581,7 @@ static void measure_task_function(ULONG thread_input)
   {
     tasks_status.cnt_measure_passes++;
 
-    if(device_turn != DEVICE_TURNED_OFF){
+    if(sys_state.power != DEVICE_TURNED_OFF){
 		/* Такт 1 с ставит Timer_Tick_1ms() (TIM3); флаг сбрасываем сами - как в
 		   measure_task_function на других приборах.                            */
 		if (timer.flag_1s)
@@ -651,9 +652,9 @@ static void ble_task_function(ULONG thread_input)
 {
   (void)thread_input;
 
-  /* В рабочий режим НЕ входим до конца Vector_Run_Pre_Init (device_turn,
+  /* В рабочий режим НЕ входим до конца Vector_Run_Pre_Init (sys_state.power,
      п.60) - как receiver.                                                    */
-  while (device_turn == DEVICE_TURNED_OFF_PRE_INIT)
+  while (sys_state.power == DEVICE_TURNED_OFF_PRE_INIT)
   {
     VTICK_SLEEP_MS(VECTOR_TASKS_BLE_DELAY_MS);
   }
@@ -681,7 +682,7 @@ static void lora_task_function(ULONG thread_input)
 {
   (void)thread_input;
 
-  while (device_turn == DEVICE_TURNED_OFF_PRE_INIT)
+  while (sys_state.power == DEVICE_TURNED_OFF_PRE_INIT)
   {
     VTICK_SLEEP_MS(VECTOR_TASKS_LORA_DELAY_MS);
   }
@@ -709,7 +710,7 @@ static void lte_task_function(ULONG thread_input)
 {
   (void)thread_input;
 
-  while (device_turn == DEVICE_TURNED_OFF_PRE_INIT)
+  while (sys_state.power == DEVICE_TURNED_OFF_PRE_INIT)
   {
     VTICK_SLEEP_MS(VECTOR_TASKS_LTE_DELAY_MS);
   }
@@ -837,7 +838,7 @@ void Vector_Run_Pre_Init(void)
 
   Sns_Cfg_struct.Working_data.working_hours = RTC_ReadTime();
   /* Часы перекрыты календарём - с этого момента сверка в receiver безопасна;
-     сам receiver ещё спит на гейте device_turn (включится в конце Pre_Init,
+     сам receiver ещё спит на гейте sys_state.power (включится в конце Pre_Init,
      ниже) - стартовая гонка «старый wh из конфига -> календарь» закрыта
      состоянием прибора (PLAN п.59-60).                                    */
 
@@ -901,18 +902,18 @@ void Vector_Run_Pre_Init(void)
      Порядок важен: сначала журнал/часы, потом состояние.
      Прибор ВЫКЛЮЧЕН (указание автора к SCREEN_START): включение - долгое
      нажатие Button1, его обрабатывает Button_Run_Start() (Menu_vector.c) из
-     Vector_Run_Indication() при device_turn == DEVICE_TURNED_OFF - там же
+     Vector_Run_Indication() при sys_state.power == DEVICE_TURNED_OFF - там же
      инициализируется ПАНЕЛЬ (LCD_Init; сам LVGL/UI создан выше, до потоков),
      звучит AlertSeq_PowerOn и взводится TIMER_RTC_WARM (TIME_RTC_START, 60 с).
-     До конца прогрева device_turn = DEVICE_TURNED_ON_1 и экран SCREEN_START,
+     До конца прогрева sys_state.power = DEVICE_TURNED_ON_1 и экран SCREEN_START,
      по истечении Menu_Run() ставит DEVICE_TURNED_ON и SCREEN_MEASURE.
      Прежнее DEVICE_TURNED_ON здесь означало бы «включён без инициализации
      экрана»: LCD_Init() кроме Button_Run_Start не зовёт никто, а Menu_Draw()
      при LCD_Get_flag_init() == 0 выходит сразу - картинки бы не было.     */
 #if 1
-  device_turn = DEVICE_TURNED_OFF;
+  sys_state.power = DEVICE_TURNED_OFF;
 #else
-  device_turn = DEVICE_TURNED_ON;
+  sys_state.power = DEVICE_TURNED_ON;
 #if (CONFIG_TYPE_LCD_TFT != 0)
 		if (LCD_Get_flag_init() == 0u){
 			LCD_Init();
@@ -1092,7 +1093,7 @@ void Vector_Options_System(void)
     fw_bkp_clear();
   }
 
-  /* Реализовано (автор): мягкая перезагрузка прошивки (SoftResetProgram
+  /* Реализовано (автор): мягкая перезагрузка прошивки (sys_state.soft_reset
      + таймер TIMER_RTC_SOFT_RESET_PROGRAM -> событие TYPE_FW_UPDATE ->
      NVIC_SystemReset) и секундное обслуживание батареи (Avis_Battery_System,
      weak-заглушка) со сверкой часов с календарём RTC (RTC_ReadTime/WriteTime).
@@ -1105,7 +1106,7 @@ void Vector_Options_System(void)
      правило «во flash пишет только Measure Task» соблюдается; «предсмертная»
      запись перед NVIC_SystemReset остаётся best-effort (EXT_BUSY -> короткий
      ретрай внутри).                                                          */
-	if(SoftResetProgram){
+	if(sys_state.soft_reset){
 		if(TEST_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM)){
 			RESET_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM);
 #if CONFIG_SAVE_PARAM_LOG
@@ -1125,6 +1126,18 @@ void Vector_Options_System(void)
 		}
 	}
 	//----------------------------------------------------------------------------
+
+#if CONFIG_UART
+	/* Окончание режима обмена по таймауту неактивности.
+	   Таймер перезапускается в USART3_IRQHandler при каждом принятом байте.
+	   Если байтов нет дольше TIME_RTC_UART_RX_WAKE_UP - сбрасываем биты. */
+	if(TEST_TIMER_RTC(TIMER_RTC_UART_RX_WAKE_UP)){
+		RESET_TIMER_RTC(TIMER_RTC_UART_RX_WAKE_UP);
+		CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);
+		CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);
+		StateProg = 1;
+	}
+#endif
 }
 
 //==============================================================================
@@ -1277,7 +1290,7 @@ __attribute__((weak)) void Ble_Run(void)
 __attribute__((weak)) void Lora_Run(void)
 {
 #if CONFIG_LORA
-	if((device_turn != DEVICE_TURNED_OFF) || (Lora_system_msg_read() == 1))
+	if((sys_state.power != DEVICE_TURNED_OFF) || (Lora_system_msg_read() == 1))
 	{
 		/* ЕДИНСТВЕННЫЙ мост внешних данных в LoRa-модуль (решение автора,
 		   PLAN п.63): раз в секунду обновить lora_in (время/батарея/периоды/
