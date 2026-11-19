@@ -58,6 +58,10 @@
    button1..3 (stm32u5xx_it.h), TX_DISABLE (tx_api) - всё из агрегатора.   */
 #include "main_vector.h"
 
+/* Глобальные переменные состояния */
+uint16_t FlashErase = 0;   /* 1 = стереть, 2 = стереть + перезаписать */
+
+
 sys_state_t sys_state = {
   .power         = DEVICE_TURNED_OFF_PRE_INIT,
   .process       = SYS_PROC_IDLE,
@@ -1116,6 +1120,19 @@ void Vector_Options_System(void)
 		}
 	}
 	//----------------------------------------------------------------------------
+	/* Стирание/перезапись бутлоадера (аналог if(FlashErase) в Avis_Options_System).
+	   Выполняется здесь: стирание страницы того же банка останавливает CPU
+	   на единицы мс - звук к этому моменту уже заблокирован режимом обмена. */
+	if(FlashErase){
+		uint16_t mode = FlashErase;
+		FlashErase = 0;
+		if(mode == 2u){
+			(void)boot_flash_restore();
+		}
+		else{
+			(void)boot_flash_erase();
+		}
+	}
 	if(timer.flag_start_work_bat_sys){
 		timer.flag_start_work_bat_sys = 0;
 		if(RTC_ReadTime() != Sns_Cfg_struct.Working_data.working_hours){

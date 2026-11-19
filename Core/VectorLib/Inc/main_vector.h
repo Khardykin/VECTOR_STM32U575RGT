@@ -223,4 +223,7 @@ void Vector_Run_Board_Init(void);
    с command_message(). Зовётся из Timer_Tick_1ms().                        */
 void Uart_Command_Receive_Timer_Inc(void); /* 1 = экран надо повернуть (сброс)  */
 
+/* Стирание/перезапись внутренней flash (бутлоадер) */
+extern uint16_t FlashErase;
+
 #endif /* VECTORLIB_INC_MAIN_VECTOR_H_ */
