@@ -514,11 +514,11 @@ static void receiver_task_function(ULONG thread_input)
     /* if (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE)) */
     {
       mod_receive_call(TASK_MOD_COM);
-      uint8_t test_req[] = {0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x84, 0x0A};
-      for (int i = 0; i < sizeof(test_req); i++) {
-          InputBuffer[TYPE_USART].buffer[InputBuffer[TYPE_USART].end] = test_req[i];
-          InputBuffer[TYPE_USART].end = (InputBuffer[TYPE_USART].end + 1) % 255;
-      }
+//      uint8_t test_req[] = {0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x84, 0x0A};
+//      for (int i = 0; i < sizeof(test_req); i++) {
+//          InputBuffer[TYPE_USART].buffer[InputBuffer[TYPE_USART].end] = test_req[i];
+//          InputBuffer[TYPE_USART].end = (InputBuffer[TYPE_USART].end + 1) % 255;
+//      }
       command_message();
     }
 #endif
