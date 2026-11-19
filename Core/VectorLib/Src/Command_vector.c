@@ -30,7 +30,6 @@
 #include "vector_config.h"
 #include "vector_log.h"
 #include "fw_update.h"
-#include "bkp.h"
 
 #define CMD_SOUNDS_LIMIT    0x00400000u   /* sfmap.h: выше - CONFIG/LOG        */
 #define CMD_ERASE_KEY       0xA5u
@@ -638,6 +637,13 @@ static uint8_t ctrl_reg_read(uint16_t addr, uint16_t *val)
 
   switch (addr)
   {
+    case MB_REG_FW_VERSION:
+      *val = (uint16_t)(FIRMWARE_VERSION & 0xFFFFu);
+      return 1u;
+    case MB_REG_FW_STATUS:
+      *val = (uint16_t)fw_verify_image();
+      return 1u;
+
     case MB_REG_COMMIT:
     case MB_REG_SAVE_CFG:
     case MB_REG_SAVE_CFGDEF:

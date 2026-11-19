@@ -57,7 +57,7 @@
    (stdlib), sf_probe/SF_CONFIG_BASE (spiflash/sfmap), TFT_Rotation (TFT.h),
    button1..3 (stm32u5xx_it.h), TX_DISABLE (tx_api) - всё из агрегатора.   */
 #include "main_vector.h"
-#include "bkp.h"
+#include "fw_update.h"
 
 /* ============================================================================
  *                                 МАКРОСЫ
@@ -373,6 +373,8 @@ __attribute__((weak)) void Uart_Command_Receive_Timer_Inc(void)
  * ============================================================================ */
 void Vector_Run_Board_Init(void)
 {
+  fw_update_init();  /* PWR + BKP-доступ */
+
 #if VECTOR_AUDIO_SELFTEST
   uint32_t i;
 #endif
@@ -515,11 +517,11 @@ static void receiver_task_function(ULONG thread_input)
     /* if (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE)) */
     {
       mod_receive_call(TASK_MOD_COM);
-//      uint8_t test_req[] = {0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x84, 0x0A};
-//      for (int i = 0; i < sizeof(test_req); i++) {
-//          InputBuffer[TYPE_USART].buffer[InputBuffer[TYPE_USART].end] = test_req[i];
-//          InputBuffer[TYPE_USART].end = (InputBuffer[TYPE_USART].end + 1) % 255;
-//      }
+      uint8_t test_req[] = {0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x84, 0x0A};
+      for (int i = 0; i < sizeof(test_req); i++) {
+          InputBuffer[TYPE_USART].buffer[InputBuffer[TYPE_USART].end] = test_req[i];
+          InputBuffer[TYPE_USART].end = (InputBuffer[TYPE_USART].end + 1) % 255;
+      }
       command_message();
     }
 #endif
@@ -1081,13 +1083,15 @@ void Vector_RunFlashMemory(void)
    receiver_task решением автора).                                            */
 void Vector_Options_System(void)
 {
+  fw_boot_complete();  /* Очистка флага APPLI после перезагрузки бутлоадера */
+
   /* Очищаем флаг обновления при старте приложения.
      Если флаг установлен - значит бутлоадер уже применил прошивку,
      и мы не должны снова уходить в бутлоадер. */
-  if (bkp_read_flag() == BKP_FLAG_APPLY)
-  {
-    bkp_clear_flag();
-  }
+//  if (bkp_read_flag() == BKP_FLAG_APPLY)
+//  {
+//    bkp_clear_flag();
+//  }
 
   /* Реализовано (автор): мягкая перезагрузка прошивки (SoftResetProgram
      + таймер TIMER_RTC_SOFT_RESET_PROGRAM -> событие TYPE_FW_UPDATE ->
@@ -1110,7 +1114,7 @@ void Vector_Options_System(void)
 #endif
 //			Go_To_User_App();
 			HAL_TIM_Base_Stop_IT(&htim3);
-			bkp_write_flag(BKP_FLAG_APPLY);  /* Флаг для бутлоадера: применить прошивку */
+//			bkp_write_flag(BKP_FLAG_APPLY);  /* Флаг для бутлоадера: применить прошивку */
 			NVIC_SystemReset();
 		}
 	}
