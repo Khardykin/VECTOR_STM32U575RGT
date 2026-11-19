@@ -59,7 +59,7 @@
 #include "main_vector.h"
 
 sys_state_t sys_state = {
-  .power         = SYS_POWER_OFF_PRE_INIT,
+  .power         = DEVICE_TURNED_OFF_PRE_INIT,
   .process       = SYS_PROC_IDLE,
   .soft_reset    = 0,
   .data_exchange = 0,

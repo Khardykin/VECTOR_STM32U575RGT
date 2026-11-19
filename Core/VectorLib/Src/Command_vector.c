@@ -641,7 +641,7 @@ static uint8_t ctrl_reg_read(uint16_t addr, uint16_t *val)
       *val = (uint16_t)(FIRMWARE_VERSION & 0xFFFFu);
       return 1u;
     case MB_REG_FW_STATUS:
-      *val = (uint16_t)fw_verify_image();
+      *val = (uint16_t)sys_state.process;
       return 1u;
 
     case MB_REG_COMMIT:
@@ -652,11 +652,9 @@ static uint8_t ctrl_reg_read(uint16_t addr, uint16_t *val)
     case MB_REG_ERASE_SOUNDS:
     case MB_REG_ERASE_CONFIG:
     case MB_REG_ERASE_CFGDEF:
-    sys_state.process = SYS_PROC_ARCHIVE;
     case MB_REG_ERASE_LOG:
     case MB_REG_ERASE_LOGPTR:
     case MB_REG_ERASE_FW:
-      sys_state.process = SYS_PROC_FW;
     case MB_REG_WIN_CMD:
       *val = 0u;
       return 1u;
@@ -793,13 +791,13 @@ static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
     case MB_REG_ERASE_SOUNDS:
     case MB_REG_ERASE_CONFIG:
     case MB_REG_ERASE_CFGDEF:
-    sys_state.process = SYS_PROC_ARCHIVE;
     case MB_REG_ERASE_LOG:
     case MB_REG_ERASE_LOGPTR:
     case MB_REG_ERASE_FW:
-      sys_state.process = SYS_PROC_FW;
       if (val != 0u)
       {
+        /* FW - прошивка, остальное - архив (логи/конфиг/звуки). */
+        sys_state.process = (addr == MB_REG_ERASE_FW) ? SYS_PROC_FW : SYS_PROC_ARCHIVE;
         era.req |= (uint8_t)(1u << (addr - MB_REG_ERASE_SOUNDS));
       }
       return 1u;

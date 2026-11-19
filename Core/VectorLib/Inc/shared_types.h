@@ -32,7 +32,7 @@ enum{
 //Таймера в 1S
 enum{
 	TIMER_RTC_LOG = 0,	                        	// Таймер на старта записи лога
-	TIMER_RTC_UART_RX_WAKE_UP,                      // Таймер на вход в сон, когда передача не активна, но включена
+	TIMER_RTC_DATA_EXCHANGE_END,                      // Таймер на вход в сон, когда передача не активна, но включена
 	TIMER_RTC_MAIN_RESET,                           // Таймер возврата на главный экран
 	TIMER_RTC_WARM,	                                // Таймер
 	TIMER_RTC_LOW_BAT,	                            // Таймер индикации низкого уровня батареи
@@ -68,27 +68,6 @@ typedef enum {
 	EN,
 }APPLICATIONLANGUAGE;
   
-// Состояние прибора (машина состояний автора, как в Avis).
-// СТАРТОВОЕ значение - DEVICE_TURNED_OFF_PRE_INIT: ни один поток НЕ входит в
-// рабочий цикл, пока Vector_Run_Pre_Init() не завершится и не выставит
-// DEVICE_TURNED_ON (в Avis эту роль играл device_turn_to_freertos).
-// Конкретно это закрывает стартовую гонку сверки календаря RTC (PLAN п.59):
-// receiver (Vector_Options_System) не может записать в календарь working_hours
-// ДО того, как Pre_Init перекрыл его значением RTC_ReadTime().
-typedef enum {
-	DEVICE_TURNED_ON = 0,	             			// Включен
-	DEVICE_TURNED_OFF,		                        // Выключен
-	DEVICE_TURNED_OFF_PRE_INIT,                     // Выключен: предварительная инициализация (старт; потоки ждут)
-	DEVICE_TURNED_ON_1,		                        // Включен, без индикации(звук, вибро..)Используется для прогрева и авт выкл.
-//    DEVICE_TURNED_SAVE_BATTERY_POWER,             // Включен, Используется для режима сохранения энергии
-//  DEVICE_TURNED_END,
-}DEVICE_TURNED;
-  
-// Определение - main_vector.c. Старт: DEVICE_TURNED_OFF_PRE_INIT;
-// DEVICE_TURNED_ON - в конце Vector_Run_Pre_Init(); DEVICE_TURNED_OFF -
-// обработчик выключения (PLAN этап 6); DEVICE_TURNED_ON_1 - прогрев/авто-выкл.
-extern DEVICE_TURNED sys_state.power;
-
 //===========================================================================================================================
 //Для статусного байта ошибок, биты ошибок
 enum ST_GA_ERR
@@ -212,7 +191,6 @@ extern volatile uint8_t state_screen;
    TIME_RTC_WARM из Screen_status_flip/Warm_Screen_statuses.               */
 #define TIME_RTC_START				(6u)
 #define TIME_RTC_DATA_EXCHANGE_END	(30u)	/* 30 сек без байтов -> окончание обмена */
-#define TIME_RTC_UART_RX_WAKE_UP	(5u)	/* 5 сек без байтов -> выход из режима обмена */
 #define TIME_RTC_SOFT_RESET_PROGRAM	(2u)	/* 2 сек на завершение операций перед сбросом */
 /* Чередование страницы измерений со строкой ошибки (режим MEAS_ERR), с: пока
    error_queue_count != 0, LCD_MeasureScreen() раз в TIME_RTC_DISP_FLASHING_ERR
@@ -440,43 +418,37 @@ typedef struct//
 }TEMPSENSOR_CALIB;
 extern TEMPSENSOR_CALIB tempsensor_calib;
 //===========================================================================================================================
-
-
-
 /* ==========================================================================
  * Единое состояние системы (заменяет device_turn/SoftResetProgram/StateProg)
  * ========================================================================== */
+// Состояние прибора (машина состояний).
+// СТАРТОВОЕ значение - DEVICE_TURNED_OFF_PRE_INIT: ни один поток НЕ входит в
+// рабочий цикл, пока Vector_Run_Pre_Init() не завершится и не выставит
+// DEVICE_TURNED_ON (в Avis эту роль играл device_turn_to_freertos).
+// Конкретно это закрывает стартовую гонку сверки календаря RTC (PLAN п.59):
+// receiver (Vector_Options_System) не может записать в календарь working_hours
+// ДО того, как Pre_Init перекрыл его значением RTC_ReadTime().
+typedef enum {
+	DEVICE_TURNED_ON = 0,	             			// Включен
+	DEVICE_TURNED_OFF,		                        // Выключен
+	DEVICE_TURNED_OFF_PRE_INIT,                     // Выключен: предварительная инициализация (старт; потоки ждут)
+	DEVICE_TURNED_ON_1,		                        // Включен, без индикации(звук, вибро..)Используется для прогрева и авт выкл.
+//    DEVICE_TURNED_SAVE_BATTERY_POWER,             // Включен, Используется для режима сохранения энергии
+//  DEVICE_TURNED_END,
+}DEVICE_TURNED;
 
-/* Состояние питания (бывший device_turn) */
+/* Процесс работы с внешней памятью
+   По нему экран показывает что сейчас идёт: прошивка или архив. */
 typedef enum
 {
-  SYS_POWER_OFF_PRE_INIT = 0,
-  SYS_POWER_ON           = 1,
-  SYS_POWER_OFF          = 2,
-  SYS_POWER_SLEEP        = 3
-} sys_power_t;
-
-/* Процесс обмена с внешней flash (бывший StateProg из Avis).
-   По нему экран показывает что происходит. */
-typedef enum
-{
-  SYS_PROC_IDLE = 0,        /* ничего не происходит */
-  SYS_PROC_DATA_EXCHANGE,   /* общий обмен по COM */
-  SYS_PROC_FW_UPLOAD,       /* загрузка прошивки */
-  SYS_PROC_FW_VERIFY,       /* проверка образа */
-  SYS_PROC_FW_APPLY,        /* применение прошивки */
-  SYS_PROC_LOG_READ,        /* чтение логов */
-  SYS_PROC_LOG_ERASE,       /* стирание логов */
-  SYS_PROC_CFG_READ,        /* чтение конфигурации */
-  SYS_PROC_CFG_WRITE,       /* запись конфигурации */
-  SYS_PROC_SOUND_UPLOAD,    /* загрузка звуков */
-  SYS_PROC_SOUND_ERASE,     /* стирание звуков */
-  SYS_PROC_FLASH_ERASE      /* стирание области flash */
+  SYS_PROC_IDLE = 0,      /* ничего не происходит */
+  SYS_PROC_FW,            /* прошивка: загрузка / стирание / применение */
+  SYS_PROC_ARCHIVE        /* архив: логи, конфиги, звуки */
 } sys_process_t;
 
 typedef struct
 {
-  volatile sys_power_t   power;         /* было device_turn */
+  volatile DEVICE_TURNED power;         /* было device_turn */
   volatile sys_process_t process;       /* было StateProg */
   volatile uint8_t       soft_reset;    /* было SoftResetProgram */
   volatile uint8_t       data_exchange; /* 1 = идёт обмен */
@@ -486,8 +458,5 @@ typedef struct
 
 extern sys_state_t sys_state;
 
-/* Совместимость со старыми константами device_turn */
-#define DEVICE_TURNED_OFF_PRE_INIT  SYS_POWER_OFF_PRE_INIT
-#define DEVICE_TURNED_ON            SYS_POWER_ON
 
 #endif /* __SHARED_TYPES_H */
