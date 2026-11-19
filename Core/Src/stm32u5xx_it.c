@@ -508,9 +508,6 @@ void USART2_IRQHandler(void)
 /**
   * @brief This function handles USART3 global interrupt.
   */
-/* Гейт эха на время обмена по COM (Command_vector.c). */
-extern uint8_t Command_vector_SessionActive(void);
-
 void USART3_IRQHandler(void)
 {
   /* USER CODE BEGIN USART3_IRQn 0 */

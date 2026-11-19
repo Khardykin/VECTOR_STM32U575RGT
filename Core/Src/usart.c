@@ -317,12 +317,12 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     /**USART3 GPIO Configuration
     PC10     ------> USART3_TX
     */
-    GPIO_InitStruct.Pin = USART3_TX_BLE_Pin;
+    GPIO_InitStruct.Pin = USART3_TX_RX_COM_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
-    HAL_GPIO_Init(USART3_TX_BLE_GPIO_Port, &GPIO_InitStruct);
+    HAL_GPIO_Init(USART3_TX_RX_COM_GPIO_Port, &GPIO_InitStruct);
 
     /* USART3 interrupt Init */
     HAL_NVIC_SetPriority(USART3_IRQn, 0, 0);
@@ -407,7 +407,7 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
     /**USART3 GPIO Configuration
     PC10     ------> USART3_TX
     */
-    HAL_GPIO_DeInit(USART3_TX_BLE_GPIO_Port, USART3_TX_BLE_Pin);
+    HAL_GPIO_DeInit(USART3_TX_RX_COM_GPIO_Port, USART3_TX_RX_COM_Pin);
 
     /* USART3 interrupt Deinit */
     HAL_NVIC_DisableIRQ(USART3_IRQn);

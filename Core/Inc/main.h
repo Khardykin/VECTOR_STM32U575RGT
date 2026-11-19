@@ -178,8 +178,8 @@ void Error_Handler(void);
 #define ALARM_LED_2_GPIO_Port GPIOA
 #define VIBRO_Pin GPIO_PIN_15
 #define VIBRO_GPIO_Port GPIOA
-#define USART3_TX_BLE_Pin GPIO_PIN_10
-#define USART3_TX_BLE_GPIO_Port GPIOC
+#define USART3_TX_RX_COM_Pin GPIO_PIN_10
+#define USART3_TX_RX_COM_GPIO_Port GPIOC
 #define ACCEL_INT_Pin GPIO_PIN_11
 #define ACCEL_INT_GPIO_Port GPIOC
 #define ACCEL_INT_EXTI_IRQn EXTI11_IRQn
