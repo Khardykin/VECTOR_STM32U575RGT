@@ -845,8 +845,7 @@ uint16_t parsing_command(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_
 
   op = mas[1];
 
-  if ((op == CMD_OP_READ_HOLD) || (op == CMD_OP_READ_IN) ||
-      (op == CMD_OP_WRITE_SINGLE) || (op == CMD_OP_WRITE_MULTI))
+  if ((op == CMD_OP_WRITE_SINGLE) || (op == CMD_OP_WRITE_MULTI))
   {
     Sys_Cfg_Lock();
     locked = 1u;
