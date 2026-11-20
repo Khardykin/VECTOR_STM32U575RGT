@@ -371,7 +371,7 @@ uint8_t TestSleep()
 	  return 0;
   }
   for(uint8_t chan = CHAN0; chan < COUNT_CHAN; chan++){
-	  if(device_turn == DEVICE_TURNED_ON){
+	  if(sys_state.power == DEVICE_TURNED_ON){
 		  //Если пороги и превышение диапазона и если вкл калибровка
 		  if(Sns_Cfg_struct.Sensor[chan].StateErr & ERROR_MASK_ST_1){
 			  return 0;
@@ -385,14 +385,14 @@ uint8_t TestSleep()
 	  }
   }
 
-  if((device_turn == DEVICE_TURNED_ON) || (device_turn == DEVICE_TURNED_ON_1)){
+  if((sys_state.power == DEVICE_TURNED_ON) || (sys_state.power == DEVICE_TURNED_ON_1)){
 	  if(TEST_TIMER_RUN_RTC(TIMER_RTC_UART_RX_WAKE_UP) ||
 			  TEST_TIMER_RTC(TIMER_RTC_UART_RX_WAKE_UP)){
 		  return 0;
 	  }
   }
 
-  if(device_turn == DEVICE_TURNED_ON){
+  if(sys_state.power == DEVICE_TURNED_ON){
 	  //Если пороги и превышение диапазона и если вкл калибровка
 	  if((Sns_Cfg_struct.Config_common.StateErr&ERROR_MASK_ST_2_1) ||
 			  TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_TEST_SOUND) ||
@@ -591,14 +591,14 @@ void Indication(void)
 	//----------------------------------------------------------------------------
 	LedStateIndication();
 	//----------------------------------------------------------------------------
-	if(StateProg == 0){
+	if(sys_state.process == 0){
 		LedSoundVibroPlay(0x00, 6, 2, BLINK_LED_OFF, BLOCK_SOUND_ON, BLOCK_LED_ON, TEST_SOUND_OFF);
 		return;
 	}
 	if(TEST_TIMER(TIMER_SHUTDOWN) ||
 			TEST_TIMER_RUN(TIMER_SHUTDOWN) ||
 			TEST_TIMER_RUN(TIMER_PRESS_SOS) ||
-			device_turn != DEVICE_TURNED_ON){
+			sys_state.power != DEVICE_TURNED_ON){
 		return;
 	}
 
@@ -822,7 +822,7 @@ void Indication(void)
     // 1. Предварительные проверки (Exit early)
     LedStateIndication();
 
-    if(StateProg == 0){
+    if(sys_state.process == 0){
         Indication_Manager(0, BLOCK_SOUND_ON, BLOCK_LED_ON, TEST_SOUND_OFF);
         return;
     }
@@ -830,7 +830,7 @@ void Indication(void)
     if(TEST_TIMER(TIMER_SHUTDOWN) ||
        TEST_TIMER_RUN(TIMER_SHUTDOWN) ||
        TEST_TIMER_RUN(TIMER_PRESS_SOS) ||
-       device_turn != DEVICE_TURNED_ON){
+       sys_state.power != DEVICE_TURNED_ON){
         return;
     }
 
@@ -927,7 +927,7 @@ void LedStateIndication(void)
 		}
 	}
   //------------------------------------------------------------------------
-	if(device_turn == DEVICE_TURNED_ON){
+	if(sys_state.power == DEVICE_TURNED_ON){
 		if(state_flag_err)
 		{
 #if CONFIG_CHARGE
@@ -956,7 +956,7 @@ void LedStateIndication(void)
 			SET_OFF(STATE_LED);
 		}
 	}
-	else if(TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_STATE_RUN_LED) && (device_turn == DEVICE_TURNED_ON)){
+	else if(TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_STATE_RUN_LED) && (sys_state.power == DEVICE_TURNED_ON)){
 		if(TEST_TIMER_RTC(TIMER_RTC_LED_STATE_RUN_PERIOD)){
 			RESET_TIMER_RTC(TIMER_RTC_LED_STATE_RUN_PERIOD);
 			SET_ON(STATE_LED);

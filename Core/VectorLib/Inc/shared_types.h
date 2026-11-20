@@ -275,7 +275,7 @@ extern SNS_Dev_Type		Connected_device;
 
 //--------------------------------------------------------------------------------------------------------------
 // Функция перевода вывода дискретности по настройкам (авторская, из Avis
-// Avis_Menu_Functionality.c; сигнатура адаптирована: вместо SNS_CFG_Type* -
+// Menu_vector_Functionality.c; сигнатура адаптирована: вместо SNS_CFG_Type* -
 // слово Setting канала, вместо num1 - селектор MEASURE_SEL_*). Возврат:
 // 1/10/100/1000; 0 = степень вне диапазона (невалидные биты дискретности).
 // ОПРЕДЕЛЕНИЕ - shared_types.c (замечание автора: функции в .h не держим -
@@ -347,7 +347,7 @@ typedef struct//
 	uint32_t            CurrentAddrFile;                                        // журнал: логический счётчик записей
 	uint32_t            BegginAddrFile;                                         // журнал: начало доступного диапазона
 	uint8_t             ArchiveRecording;                                       // 1 = запись архива разрешена
-	uint16_t            Archiveinterval;                                        // (мин<<8)|с - период архива, как в Avis
+	uint16_t            Archiveinterval;                                        // (мин<<8)|с - период архива, стандартный паттерн
 }SNS_Archive_Type;
 
 typedef struct//
@@ -419,12 +419,12 @@ typedef struct//
 extern TEMPSENSOR_CALIB tempsensor_calib;
 //===========================================================================================================================
 /* ==========================================================================
- * Единое состояние системы (заменяет device_turn/SoftResetProgram/StateProg)
+ * Единое состояние системы (заменяет sys_state.power/sys_state.soft_reset/sys_state.process)
  * ========================================================================== */
 // Состояние прибора (машина состояний).
 // СТАРТОВОЕ значение - DEVICE_TURNED_OFF_PRE_INIT: ни один поток НЕ входит в
 // рабочий цикл, пока Vector_Run_Pre_Init() не завершится и не выставит
-// DEVICE_TURNED_ON (в Avis эту роль играл device_turn_to_freertos).
+// DEVICE_TURNED_ON (в Avis эту роль играл sys_state.power_to_freertos).
 // Конкретно это закрывает стартовую гонку сверки календаря RTC (PLAN п.59):
 // receiver (Vector_Options_System) не может записать в календарь working_hours
 // ДО того, как Pre_Init перекрыл его значением RTC_ReadTime().
@@ -448,9 +448,9 @@ typedef enum
 
 typedef struct
 {
-  volatile DEVICE_TURNED power;         /* было device_turn */
-  volatile sys_process_t process;       /* было StateProg */
-  volatile uint8_t       soft_reset;    /* было SoftResetProgram */
+  volatile DEVICE_TURNED power;         /* было sys_state.power */
+  volatile sys_process_t process;       /* было sys_state.process */
+  volatile uint8_t       soft_reset;    /* было sys_state.soft_reset */
   volatile uint8_t       data_exchange; /* 1 = идёт обмен */
   volatile uint8_t       block_sound;   /* 1 = звук заблокирован */
   volatile uint8_t       fw_pending;    /* 1 = прошивка ждёт применения */

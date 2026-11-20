@@ -216,7 +216,7 @@ uint32_t RTC_ReadTime(void)
 
 /* Записать часы прибора (Unix-секунды) в календарь RTC. Возврат: 0 = ok,
    -1 = отказ (HAL не принял дату/время - напр. календарь не инициализирован
-   или не снят DBP). Имя/сигнатура - как в Avis.                            */
+   или не снят DBP). Имя/сигнатура - стандартный паттерн.                            */
 int RTC_WriteTime(uint32_t TimeCounter)
 {
 	error_status status = SUCCESS;

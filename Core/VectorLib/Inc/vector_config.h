@@ -257,7 +257,7 @@
 #define VECTOR_AUDIO_LOOP_PAUSE_MS 500u
 #endif
 
-/* --- РАБОЧЕЕ: потоки прибора (main_vector.c, по образцу Avis_main.c) -------
+/* --- РАБОЧЕЕ: потоки прибора (main_vector.c, стандартная практика_main.c) -------
  * Два потока, как на другом приборе:
  *   "Receiver Task" - приём и парсинг ПО КАЖДОМУ UART: command_message() (COM),
  *                     Lora_Receive() (LoRa), Ble_Receive(), Lte_Receive(),
@@ -613,7 +613,7 @@
 /* --- БАТАРЕЯ: статусы низкого и критического заряда -----------------------
  * Решение автора: Alert_vector.c сам считает уровни по напряжению MAX17048
  * (sensors_status.battery_charge_volt, мВ) и порогам конфига BAT_LIM_1 (низкий)
- * / BAT_LIM_2 (критический) - машина состояний батареи Avis_Battery_System()
+ * / BAT_LIM_2 (критический) - машина состояний батареи Battery_System()
  * в main_vector.c пока weak-заглушка, и биты StateErr никто не взводил. Alert
  * заодно ЗЕРКАЛИТ биты CRITICAL_LOW_BATTERY / CRITICAL_BATTERY в
  * Config_common.StateErr (под Sys_Cfg_Lock/Unlock), чтобы их видели экран
@@ -634,7 +634,7 @@
  * ADVMSDDATAGET (Ble_Run по TIMER_RTC_BLE_DATA_SET = 60 с); ответ модуля -
  * hex-структура str_ble_data_set_t (данные отправителя, прибора Avis) ->
  * Connected_device. Тайминги обмена (BLE_WAIT_UART_TIMEOUT/DELAY, повторы) -
- * в Ble_vector.h, все как в Avis.
+ * в Ble_vector.h, все стандартный паттерн.
  * переключатели VECTOR_BLE_FRAME_TMO_MS / VECTOR_BLE_MAX_LINE /
  * VECTOR_BLE_DEV_ID УДАЛЕНЫ: неблокирующая строковая машина больше не нужна
  * (обмен синхронный, команды фиксированные), а dev_id - поле принимаемой
@@ -642,7 +642,7 @@
 
 /* --- Основа меню (Menu_vector.c) ----------------------------------
  * Жесты кнопок декодируются из button_count (счёт в TIM3 1 кГц = мс,
- * ставит EXTI) по образцу Button_1/2/3_Menu из Avis_Menu_2.c:
+ * ставит EXTI) по образцу Button_1/2/3_Menu из Menu_vector_2.c:
  *   SHORT  - нажатие дольше антидребезга, выдаётся ОТЛОЖЕННО: на
  *            VECTOR_MENU_DOUBLE_MS после отпускания, если второй клик так и не
  *            пришёл (иначе двойное нажатие давало бы лишнее одиночное действие);

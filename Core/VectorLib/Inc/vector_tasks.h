@@ -4,7 +4,7 @@
   * @brief   Потоки прибора: receiver_task (приём/парсинг UART), measure_task
   *          (периодика прибора + сервис) и потоки модулей обмена (ble/lora/lte)
   *
-  *          Структура - как в Avis_main.c на другом приборе, только вместо
+  *          Структура - стандартный паттерн_main.c на другом приборе, только вместо
   *          FreeRTOS здесь ThreadX/Azure RTOS:
   *
   *            receiver_task_function()  приём и парсинг по КАЖДОМУ UART:

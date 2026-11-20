@@ -241,7 +241,7 @@ static void Screen_status_flip(SNS_CFG *pSnsCfg, uint8_t *state)
         }
         //----------------------------------------------------------------------
         TO_GO_STATE_SCREEN(STATE_SCREEN_MEASURE);
-        device_turn = DEVICE_TURNED_ON;
+        sys_state.power = DEVICE_TURNED_ON;
         //----------------------------------------------------------------------
 		break;
 	default:
@@ -711,7 +711,7 @@ void DisplayIndication(void)
 
 	update_and_next:
 	//------------------------------------------------------------------------
-	if(StateProg == 0){
+	if(sys_state.process == 0){
 		LCD_Firmware();
 	}
 	ui_apply_visibility();

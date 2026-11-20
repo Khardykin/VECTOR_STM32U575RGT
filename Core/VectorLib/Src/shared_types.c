@@ -19,7 +19,7 @@
 
 //===========================================================================================================================
 // Функция перевода вывода дискретности по настройкам (авторская, из Avis
-// Avis_Menu_Functionality.c; сигнатура адаптирована: вместо SNS_CFG_Type* -
+// Menu_vector_Functionality.c; сигнатура адаптирована: вместо SNS_CFG_Type* -
 // слово Setting канала, вместо num1 - селектор MEASURE_SEL_*).
 //   device_setting - поле Setting канала (SNS_DevChan_Type): биты DEVICE_SETTING_CHAN
 //                    + маски MEASURE_*/MEASURE_DISK* (shared_types.h);

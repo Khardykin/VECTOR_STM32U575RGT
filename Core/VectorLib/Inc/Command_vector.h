@@ -40,7 +40,7 @@ extern "C" {
 #define CMD_VECTOR_COM      1     /* 0 - собрать без привязки к USART3/плееру */
 #endif
 
-/* Коды команд. Имя CmdFuncN = десятичный код, как в Avis. */
+/* Коды команд. Имя CmdFuncN = десятичный код, стандартный паттерн. */
 typedef enum
 {
   CMD_OP_READ_HOLD   = 0x03,   /* чтение holding-регистров        */

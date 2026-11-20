@@ -32,7 +32,7 @@
  * (BLE_TELEMETRY_TTL_MS).
  *
  * Обмен СО СВОИМ модулем - синхронный (Ble_TransmitReceive: 4 попытки,
- * контроль OK/ERROR, как в Avis). Байты USART3 складывает ISR в ring
+ * контроль OK/ERROR, стандартный паттерн). Байты USART3 складывает ISR в ring
  * InputBuffer[TYPE_BLE] (main_vector.c); читает ring ТОЛЬКО Ble_TransmitReceive
  * - публичный Ble_Receive() (вызов из BLE Task, п.65) оставлен пустым, чтобы
  * не выедать ответы модуля (в Avis Receiver Task BLE тоже не обслуживает).
@@ -79,7 +79,7 @@ extern "C" {
 // приёма модуля 520 байт (см. Ble_vector.c).
 #define BLE_DATA_SET_MAX_SIZE	(256)
 
-#define BLE_WAIT_UART_TIMEOUT	(35u)		// мс ожидания ответа модуля (как в Avis)
+#define BLE_WAIT_UART_TIMEOUT	(35u)		// мс ожидания ответа модуля (стандартный паттерн)
 #define BLE_WAIT_UART_DELAY		(5u)		// мс добавки на дотекание хвоста ответа
 
 // Метки ответа модуля на AT-команду (в Avis - массивы AdvOK/AdvERROR;

@@ -1146,7 +1146,7 @@ void ui_apply_visibility(void)
 // ЗАДЕЛ: в Avis иконка мигала до готовности модуля - SET_LORA(
 // state_flashing_system) при get_state_start_flag_lora() == 0; у нас флагов
 // готовности модулей пока нет, поэтому мигание не делаем (при появлении -
-// параметр state_flashing и else-ветки по образцу Avis DisplayIndication).
+// параметр state_flashing и else-ветки стандартная практика DisplayIndication).
 // КОНТЕКСТ: поток LVGL Task (Menu_Draw, ПОСЛЕ LCD_Fill_Template - его
 // LCD_Image_SET(0) гасит все иконки, и ДО ui_apply_visibility).
 //===========================================================================================================================
@@ -1672,7 +1672,7 @@ void LCD_Measure(uint8_t panel, uint8_t mode, const char *value, const char *nam
 //===========================================================================================================================
 //===========================================================================================================================
 // Текущий статус LoRa для MEAS_ST_LORA: какой именно бит ControlLora активен.
-// Приоритет (как в Avis Indication): Эвакуация > SOS > SOS группы > Группа назад > Зона > Группа.
+// Приоритет (стандартный паттерн Indication): Эвакуация > SOS > SOS группы > Группа назад > Зона > Группа.
 // NULL = активного статуса нет. КОНТЕКСТ: поток LVGL Task.
 //===========================================================================================================================
 static const char *LCD_LoraStatusText(void)
@@ -1945,7 +1945,7 @@ void LCD_MeasureScreen(uint8_t num)
    state_flashing - фаза, инвертируемая раз в секунду (Menu_Draw,
                     TIMER_RTC_DISP_FLASHING_CHARGE): на каждой инверсии
                     «зарядка» добавляет сегмент +10% и гонит его до 100.
-   Зарядка = ST_COMMON_BIT_BAT_CHARGE (ставит машина батареи Avis_Battery_System);
+   Зарядка = ST_COMMON_BIT_BAT_CHARGE (ставит машина батареи Battery_System);
    после выдергивания провода анимация держится ещё LCD_BATTERY_CHARGE_HOLD_MS.
    ВРЕМЯ: тик RTOS проекта VTICK_MS() (vector_tick.h, ThreadX 10 мс) - портовские
    TickType_t/xTaskGetTickCount()/pdMS_TO_TICKS() из Avis здесь не существуют. */

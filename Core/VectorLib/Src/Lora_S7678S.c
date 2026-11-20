@@ -1134,7 +1134,7 @@ uint8_t test_state_alarm_flag_lora(SNS_CFG *Cfg_struct)
 
         if (current_state == 0) {
             if (TESTBIT(lora_in.chan[chan].setting, BIT_SET_OXYGEN_SENSOR)) {
-                /* Мёртвая зона атмосферного кислорода, как в Avis: 20.85..
+                /* Мёртвая зона атмосферного кислорода, стандартный паттерн: 20.85..
                    20.95 %O2 в единицах отправителя = %O2 × дискретность
                    (вычислена из BASIC-битов Setting, п.65).                */
                 int16_t low  = (int16_t)(20.85f * (float)lora_in.chan[chan].discreteness);

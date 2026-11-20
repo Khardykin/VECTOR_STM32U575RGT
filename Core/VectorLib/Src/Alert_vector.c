@@ -139,7 +139,7 @@ static uint32_t s_tb       = 0u;               /* VTICK последнего п�
 static uint8_t  s_owner    = (uint8_t)ALERT_NONE;  /* статус-владелец сценария */
 
 /* ВКЛЮЧЕНИЕ ПРИБОРА - дословный порт АКТИВНОЙ ветки (#else) Button_Run_Start
-   из Avis (docs/Avis_Menu_Functionality.c.md, строки 1224..1240):
+   из Avis (docs/Menu_vector_Functionality.c.md, строки 1224..1240):
 
        VIBRO_ON();  Delay(500); VIBRO_OFF();
        Delay(200);                                  <- пауза перед звуком
@@ -160,7 +160,7 @@ static uint8_t  s_owner    = (uint8_t)ALERT_NONE;  /* статус-владел�
    Avis (непрерывный тон): писк не зависит от образа внешней SPI-flash.
    Плата: клип 240 мс чуть длиннее окна 200 мс «короткого сигнала» (доигрывает
    в паузе, phase_off его не обрывает) и короче окна 800 мс «длинного» (LED2
-   горит дольше звука). Если нужен ровный тон ТОЧНО как в Avis - замените маску
+   горит дольше звука). Если нужен ровный тон ТОЧНО стандартный паттерн - замените маску
    BEEP на SOUND и sound_idx на SND_TONE_1K (3 с): тогда phase_off() оборвёт
    клип ровно концом окна (200/800 мс), как SOUND_OFF().                     */
 static const alert_phase_t s_poweron_phases[] =
@@ -177,7 +177,7 @@ const alert_seq_t AlertSeq_PowerOn =
   .ph    = s_poweron_phases,
   .n     = (uint8_t)(sizeof(s_poweron_phases) / sizeof(s_poweron_phases[0])),
   .prio  = ALERT_PRIO_UI,
-  .count = 1u                       /* один прогон, как в Avis               */
+  .count = 1u                       /* один прогон, стандартный паттерн               */
 };
 
 /* финальный звук отсчёта (выключение / SOS). Одна фаза: длинный
@@ -838,7 +838,7 @@ static void alert_indication_arbitrate(void)
   alert_id_t top = alert_top_indication();
 
   /* Прибор выключен или идёт прогрев (DEVICE_TURNED_ON_1 - «включён без
-     звука/вибро», как в Avis): индикацию не ведём, но СТАТУСЫ считаем
+     звука/вибро», стандартный паттерн): индикацию не ведём, но СТАТУСЫ считаем
      (неподвижность, свежесть устройств, ошибки и батарея от экрана и звука не
      зависят). Флаг indication у статусов не трогаем - после включения прибор
      снова начнёт оповещать, а квитирование не «проглатывается» втихую.      */
@@ -1374,7 +1374,7 @@ static void syserr_tick(void)
 /* Батарея: низкий (BAT_LIM_1) и критический (BAT_LIM_2) заряд.
    Решение автора: считать ЗДЕСЬ по напряжению MAX17048
    (sensors_status.battery_charge_volt) и порогам конфига - машина состояний
-   батареи Avis_Battery_System() в main_vector.c пока пустая weak-заглушка и
+   батареи Battery_System() в main_vector.c пока пустая weak-заглушка и
    биты StateErr никто не взводил. Alert заодно ЗЕРКАЛИТ биты
    CRITICAL_LOW_BATTERY / CRITICAL_BATTERY в Config_common.StateErr, чтобы их
    видели экран (категория 1) и сервер, как остальные ошибки.

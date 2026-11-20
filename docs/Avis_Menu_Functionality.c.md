@@ -1,5 +1,5 @@
 /*
- * Avis_Menu_Functionality.c
+ * Menu_vector_Functionality.c
  *
  *  Created on: 2025 Oct 22
  *      Author: Dmitriy
@@ -1046,7 +1046,7 @@ void CountdownToSOS(void)
 
 void TurnOffSystem(void)
 {
-	if(device_turn == DEVICE_TURNED_OFF){
+	if(sys_state.power == DEVICE_TURNED_OFF){
 		return;
 	}
 	//------------------------------------------------------------------------
@@ -1086,7 +1086,7 @@ void TurnOffSystem(void)
     Lora_g_turnoff_system_set();
 #endif
     //------------------------------------------------------------------------
-	device_turn = DEVICE_TURNED_OFF;	// Выключение
+	sys_state.power = DEVICE_TURNED_OFF;	// Выключение
 	TO_GO_STATE_SCREEN(STATE_SCREEN_MEASURE);
 	START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, TIME_RTC_SOFT_RESET_PROGRAM*2);
 	//------------------------------------------------------------------------
@@ -1256,7 +1256,7 @@ void Button_Run_Start(void)
 		for(uint8_t chan_r = CHAN0; chan_r < COUNT_CHAN; chan_r++){
 			ReinitSensor(&Sns_Cfg_struct.Sensor[chan_r], chan_r);
 		}
-		device_turn = DEVICE_TURNED_ON_1;
+		sys_state.power = DEVICE_TURNED_ON_1;
     }
     START_TIMER_RTC(TIMER_RTC_LIGHT_RESET, TIME_RTC_LIGHT_RESET*12)                     // Таймер на выключение подсветки
     //вход в обычный режим работы!!!!!!!!!!!
@@ -1316,7 +1316,7 @@ void Button_Run(void)
     	  }
       }
   }
-  if(TEST_TIMER_RTC(TIMER_RTC_MAIN_RESET) && (device_turn == DEVICE_TURNED_ON)){
+  if(TEST_TIMER_RTC(TIMER_RTC_MAIN_RESET) && (sys_state.power == DEVICE_TURNED_ON)){
 	  if((IS_STATE_SCREEN() != STATE_SCREEN_CALIB_SPAN_START) &&
 			  (IS_STATE_SCREEN() != STATE_SCREEN_CALIB_ZERO_START) &&
 			  (IS_STATE_SCREEN() != STATE_SCREEN_BUMP_TEST_START)){
@@ -1351,7 +1351,7 @@ void Button_Run(void)
 //      	  TO_GO_STATE_SCREEN(STATE_SCREEN_MEASURE);
 //        }
 //    }
-    if(TEST_TIMER_RTC(TIMER_RTC_MAIN_RESET) && (device_turn == DEVICE_TURNED_ON)){
+    if(TEST_TIMER_RTC(TIMER_RTC_MAIN_RESET) && (sys_state.power == DEVICE_TURNED_ON)){
   	  if((IS_STATE_SCREEN() != STATE_SCREEN_CALIB_SPAN_END) &&
   			  (IS_STATE_SCREEN() != STATE_SCREEN_CALIB_ZERO_END) &&
 			  (IS_STATE_SCREEN() != STATE_SCREEN_CALIB_SPAN_END_MULTI) &&

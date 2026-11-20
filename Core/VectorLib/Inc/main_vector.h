@@ -182,7 +182,7 @@ typedef struct
 
 extern volatile sensors_status_t sensors_status;
 
-/* --- сервис (по образцу Avis) ------------------------------------------
+/* --- сервис (стандартная практика) ------------------------------------------
  * sys_state.soft_reset: 1 = команда мягкой перезагрузки прошивки (взводит COM/
  *   BLE-модуль ВМЕСТЕ с START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, N)); */
 

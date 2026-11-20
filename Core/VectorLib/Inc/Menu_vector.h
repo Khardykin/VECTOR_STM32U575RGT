@@ -2,7 +2,7 @@
   ******************************************************************************
   * @file    Menu_vector.h
   * @brief ОСНОВА слоя меню: машина экранов + жесты кнопок (по образцу
-  *          Button_1/2/3_Menu и DisplayIndication из Avis_Menu_2.c, docs/)
+  *          Button_1/2/3_Menu и DisplayIndication из Menu_vector_2.c, docs/)
   *
   *          Какие экраны и статусы будут - ЕЩЁ НЕ ИЗВЕСТНО (автор), поэтому
   *          здесь только КАРКАС:
@@ -12,18 +12,18 @@
   *                         menu_screens[] в Menu_vector.c;
   *            gesture_t  - жесты кнопок (SHORT/LONG/DOUBLE/SHORT_LONG/FAKE),
   *                         декодируются из button_count (счёт в TIM3 1 кГц,
-  *                         ставит EXTI) - логика один в один Avis_Menu_2.c;
+  *                         ставит EXTI) - логика один в один Menu_vector_2.c;
   *            menu_status - ЕДИНАЯ volatile-структура состояния (стиль
   *                         проекта: в Expressions одна строка);
   *            Menu_Draw()          - WEAK-хук: отрисовку подставит LVGL-порт
   *                         (этап 2c), каркас от графики не зависит.
   *                         Хука «входа на экран» НЕТ (замечание автора
-  *                         п.1): как в Avis DisplayIndication/LCD_Fill_Template,
+  *                         п.1): стандартный паттерн DisplayIndication/LCD_Fill_Template,
   *                         экран перерисовывается ЦЕЛИКОМ каждый цикл, а
   *                         lv_screen_load порт делает внутри Menu_Draw() при
   *                         смене menu_status.screen.
   *
-  *          Роли кнопок (как в Avis): Button1 (PB1) - вход/подтверждение/назад,
+  *          Роли кнопок (стандартный паттерн): Button1 (PB1) - вход/подтверждение/назад,
   *          Button2 (PB2) - вниз/инкремент, Button3 (PB3) - вверх/декремент.
   *          Любой жест перезапускает TIMER_RTC_MAIN_RESET - авто-возврат на
   *          SCREEN_MAIN; по возврату dirty_data -> SaveConfig = 1 (Avis:

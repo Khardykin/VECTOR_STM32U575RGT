@@ -416,16 +416,16 @@ uint16_t parsing_command(uint8_t *mas, uint16_t len, uint8_t *out)
     } // switch (mas[1])
 
     if(is_state_prog){
-		if(StateProg == 1){
+		if(sys_state.process == 1){
 #if((CONFIG_TYPE_LCD == 0))
-		  StateProg = 2;
+		  sys_state.process = 2;
 #else
-		  StateProg = 0;
+		  sys_state.process = 0;
 		  if((cmd == 0x0E) || (cmd == 0x0F)){
-			  StateProgType = 1;
+			  sys_state.processType = 1;
 		  }
 		  else{
-			  StateProgType = 0;
+			  sys_state.processType = 0;
 		  }
 #endif
 		}
@@ -594,7 +594,7 @@ __attribute__((noinline)) uint16_t CmdFunc3(uint8_t *mas, uint16_t len, uint8_t 
 #endif
                     CMD_PUT(tmp); break;
                 case 0x0004: CMD_PUT(tmp1); break;
-                case 0x0005: CMD_PUT(SoftResetProgram); break;
+                case 0x0005: CMD_PUT(sys_state.soft_reset); break;
                 case 0x0006: CMD_PUT(TamperReset); break;
                 case 0x0300: CMD_PUT(pSn->adc_zero); break;
                 case 0x0301: CMD_PUT(pSn->adc_calib_value); break;
@@ -909,7 +909,7 @@ __attribute__((noinline)) uint16_t CmdFunc16(uint8_t *mas, uint16_t len, uint8_t
                 case 0x0002: CMD_SAVE(&tmp); break;
                 case 0x0003: CMD_SAVE(&state_f); break;
                 case 0x0004: CMD_SAVE(&size_f); break;
-                case 0x0005: START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, TIME_RTC_SOFT_RESET_PROGRAM); CMD_SAVE(&SoftResetProgram); break;
+                case 0x0005: START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, TIME_RTC_SOFT_RESET_PROGRAM); CMD_SAVE(&sys_state.soft_reset); break;
                 case 0x0006: CMD_SAVE(&TamperReset); break;
                 case 0x0240: CMD_SAVE(&tmp); SaveConfig = (uint8_t)tmp; break;
                 case 0x0250: CMD_SAVE(&tmp); SaveConfigDefault = (uint8_t)tmp; break;

@@ -3,7 +3,7 @@
   * @file    Menu_vector.c
   * @brief ОСНОВА слоя меню: машина экранов + декодер жестов кнопок
   *
-  *          Логика кнопок перенесена из Button_1/2/3_Menu (docs/Avis_Menu_2.c)
+  *          Логика кнопок перенесена из Button_1/2/3_Menu (docs/Menu_vector_2.c)
   *          по смыслу, но БЕЗ блокирующих ожиданий и без графики:
   *            1) декодер жеста из button_count/button_flag (EXTI ставит флаг и
   *               обнуляет счёт, Timer_Tick_1ms() на TIM3 1 кГц инкрементирует -
@@ -87,7 +87,7 @@ static uint8_t state_flashing_system = 0;
 
 /* ui_lv_init() (lv_init + lv_display_create + lv_i18n + ui_init + экраны
    SquareLine) выполняется ОДИН РАЗ и ДО ПОТОКОВ - в конце
-   Vector_Run_Pre_Init() (main_vector.c). Порядок как в Avis (указание
+   Vector_Run_Pre_Init() (main_vector.c). Порядок стандартный паттерн (указание
    автора): «сначала инициализация ui, потом потоки, а инициализация экрана -
    во время включения по кнопке». Иначе TFT_Init() -> TFT_Rotation() ->
    lv_obj_invalidate(lv_scr_act()) отрабатывал по NULL (дисплей LVGL ещё не
@@ -236,7 +236,7 @@ static uint8_t meas_page_step(uint8_t cur, int8_t dir)
 
 /* Аналог DisplayIndication из Avis: ЦЕЛИКОМ обновляет экран каждый проход.
    КОНТЕКСТ: поток LVGL Task (Menu_Run зовёт каждые 100 мс, Menu_GoTo - сразу
-   при переходе) - все вызовы LVGL из одного потока. Шаги как в Avis:
+   при переходе) - все вызовы LVGL из одного потока. Шаги стандартный паттерн:
    время -> шаблон (поворот/язык/смена экрана) -> верхняя панель (батарея с
    фазой мигания) -> текущий экран (меню/инфо/настройки) -> видимость иконок.
    Экран измерений (SCREEN_MEASURE) рисует LCD_MeasureScreen() - TFT_indicator.c,
@@ -341,7 +341,7 @@ void Menu_Draw(void)
 
 /* Перейти на экран: только состояние/счётчики/лог. Отрисовку (включая
    lv_screen_load при смене screen) делает Menu_Draw() в следующем цикле -
-   как в Avis, где DisplayIndication/LCD_Fill_Template перерисовывает всё
+   стандартный паттерн, где DisplayIndication/LCD_Fill_Template перерисовывает всё
    каждый проход (замечание автора п.1). КОНТЕКСТ: поток LVGL Task.    */
 void Menu_GoTo(uint8_t screen)
 {
@@ -598,11 +598,11 @@ void Menu_ResetButtons(void)
  * ============================================================================ */
 
 /* Выключение прибора - аналог TurnOffSystem() из Avis
-   (docs/Avis_Menu_Functionality.c.md): индикация гасится, статусы обмена/звука
+   (docs/Menu_vector_Functionality.c.md): индикация гасится, статусы обмена/звука
    и общие ошибки сбрасываются, ставится бит «прибор выключен», в журнал уходит
    TYPE_TURN_OFF, модули обмена деинициализируются, sys_state.power =
    DEVICE_TURNED_OFF. Дальше Vector_Run_Indication() в состоянии OFF вызывает
-   Button_Run_Start() - включение долгим нажатием Button3 (как в Avis, где
+   Button_Run_Start() - включение долгим нажатием Button3 (стандартный паттерн, где
    DisplayIndication при выключенном приборе крутит Button_Run_Start/TurnOffPower).
    Жест - LONG Button3 (1.5 с): он и есть подтверждение, поэтому отдельного
    обратного отсчёта нет. Включение и выключение - ОДНА кнопка Button3.
@@ -912,7 +912,7 @@ static void menu_navigate(void)
     }
 
     case SCREEN_MENU:
-      /* Button1 SHORT - вход в пункт (приоритет Button1, как в Avis
+      /* Button1 SHORT - вход в пункт (приоритет Button1, стандартный паттерн
          Button_1_Menu): пункт списка -> экран. Пункт 3 «Журнал событий» -
          экран ещё не создан (автор), пока остаёмся на месте.            */
 		  if (g3 == (uint8_t)GEST_SHORT){
@@ -997,7 +997,7 @@ void Menu_Init(void)
      выстрелил бы на первом же проходе Menu_Run().                        */
   Menu_ResetButtons();
 
-  /* Авто-возврат на главный экран: как в Avis (TIMER_RTC_MAIN_RESET). */
+  /* Авто-возврат на главный экран: стандартный паттерн (TIMER_RTC_MAIN_RESET). */
   START_TIMER_RTC(TIMER_RTC_MAIN_RESET, VECTOR_MENU_AUTO_RETURN_S);
 
   /* Прогрев (SCREEN_START): таймер взведёт Button_Run_Start() при включении

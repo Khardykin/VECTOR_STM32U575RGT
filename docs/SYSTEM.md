@@ -96,7 +96,7 @@ Inc/Ble_vector.h             Ble_mk01.c из Avis: Ble_Init (AT/имя ADVBLENAM
                            Ble_Receive пустой); состояние - ble_status
 Src/Menu_vector.c          ОСНОВА меню (CONFIG_DISPLAY): машина экранов screen_t +
 Inc/Menu_vector.h            декодер жестов кнопок (SHORT/LONG/DOUBLE/SHORT_LONG/FAKE - логика
-                           Avis_Menu_2), ПОСТОЯННЫЙ приоритет B1>B2>B3, авто-возврат
+                           Menu_vector_2), ПОСТОЯННЫЙ приоритет B1>B2>B3, авто-возврат
                            TIMER_RTC_MAIN_RESET, dirty_data -> SaveConfig; отрисовка - weak
                            Menu_Draw() (подставит LVGL-порт; хука входа на экран нет - );
                            Vector_Run_Indication() - аналог Avis_Run_Indication (поток LVGL)
@@ -199,7 +199,7 @@ main()
 | `LoRa Task` (`lora_task_function`, только CONFIG_LORA) | 12 | 2048 | `Lora_Run()`: мост `Lora_UpdateInputData()`, ритм `TIMER_RTC_LORA_DATA_*`, сборка/передача пакетов; приём `Lora_Receive()` — в Receiver Task; пауза `VECTOR_TASKS_LORA_DELAY_MS` |
 | `LTE Task` (`lte_task_function`, только CONFIG_G4) | 12 | 2048 | `Lte_Run()`: AT-диалог модема (регистрация, передача; пока weak-заглушка TODO); приём `Lte_Receive()` — в Receiver Task; NB-IoT получит такой же слот; пауза `VECTOR_TASKS_LTE_DELAY_MS` |
 | `Measure Task` (`measure_task_function`) | 13 | 4096 | `Vector_Run_Pre_Init()` один раз (`sensors_init()`, биты включения модулей), затем по флагу `timer.flag_1s` (такт 1 с от TIM3): `Vector_Run_Measure()` → `sensors_read()` (BME280/LIS3DH/MAX17048), поворот экрана по 6D-ориентации, `Gps_Run()` (BLE/LoRa/LTE Run — в своих потоках); `Vector_RunFlashMemory()` каждый проход — журнал/конфиг во внешнюю flash только в «окно тишины» (пока звучит звук, флаги живут до следующего прохода); `Vector_Options_System()` каждый проход — сервис (soft reset, батарея/сверка часов раз в секунду; перенесено из Receiver Task); меню здесь БОЛЬШЕ НЕ живёт (переехало в LVGL Task) |
-| `LVGL Task` | 15 | 4096 | ПОТОК ИНДИКАЦИИ (аналог `indication_task_function` Avis): ждёт `cnt_pre_init`, затем по `timer.flag_100ms` (100 мс) — `Vector_Run_Indication()` (switch `device_turn` → `Menu_Run()`: жесты кнопок, навигация, авто-возврат, отрисовка), при `TFT_Initialized==1` — `lv_timer_handler()`; цикл 10 мс. Стек поднять до 8–16 КБ при подключении LVGL (PLAN п.48е) |
+| `LVGL Task` | 15 | 4096 | ПОТОК ИНДИКАЦИИ (аналог `indication_task_function` Avis): ждёт `cnt_pre_init`, затем по `timer.flag_100ms` (100 мс) — `Vector_Run_Indication()` (switch `sys_state.power` → `Menu_Run()`: жесты кнопок, навигация, авто-возврат, отрисовка), при `TFT_Initialized==1` — `lv_timer_handler()`; цикл 10 мс. Стек поднять до 8–16 КБ при подключении LVGL (PLAN п.48е) |
 
 Мёртвый поток `Audio Task` и семафор `audio_done_sem` удалены: звуком владеет
 только `Audio Player`. Потоки прибора создаёт `vector_tasks_init()` (файл
@@ -310,7 +310,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback (vector_macros.c)
 записью; счётчики `log_ptr_dbg_saves/defers`). При старте `log_ptr_load()`
 сканирует страницу ВСЕГДА (позиция следующей записи), а в конфиг cur/beg
 переносятся только после успешного `read_param` — аналог
-`ReadCurrentAddrFile()` в `Avis_Run_Pre_Init`. Хвост чипа `0x603000..8 МБ` —
+`ReadCurrentAddrFile()` в `Vector_Run_Pre_Init`. Хвост чипа `0x603000..8 МБ` —
 резерв. Владелец конфигов — `Config_save_read.c`, запись
 только из потока `Measure Task` (`Vector_Run_Pre_Init` / `Vector_RunFlashMemory` /
 `Vector_Options_System` — «предсмертная» запись перед soft reset)
@@ -430,7 +430,7 @@ GPDMA1_Channel11 -> HAL_SAI_TxHalfCplt/TxCpltCallback (vector_macros.c)
 | **TIM3** (`TIM3_IRQn`, приоритет 2) | **1 кГц = 1 мс** | куб (`tim.c`) | **таймеры прибора**: `countdown_time[]` (мс), флаги `timer.flag_1ms/10ms/100ms/1s`, счётчики кнопок, таймауты кадров COM/GPS/LoRa. Обслуживает `Timer_Tick_1ms()` в `main_vector.c` |
 | **RTC WakeUp** (`RTC_IRQn`, приоритет 0) | **1 Гц = 1 с** | куб (`.ioc`: `RTC → Wakeup Interrupt` + NVIC `RTC global interrupt`); сгенерированный `rtc.c` | **секундные таймеры прибора**: `countdown_time_rtc[]`, часы `working_hours` (время, единица = 1 с), `timer.flag_start_work`. Обслуживает `Timer_Tick_1s()` в `main_vector.c` |
 
-### 7.1 Таймеры прибора (как в Avis)
+### 7.1 Таймеры прибора (стандартный паттерн)
 
 ```c
 /* секундный таймер: запуск, опрос, сброс - макросы из shared_macros.h */
@@ -780,7 +780,7 @@ switch (`SCREEN_MENU` → `LCD_Menu(state_menu)`, `SCREEN_INFO_DEVICE` →
 
 **`LCD_Battery`** (`TFT_indicator.c`): % → `ui_BarBattery`, текст →
 `ui_LabelPercent`. Зарядка = `ST_COMMON_BIT_BAT_CHARGE` (ставит машина батареи
-`Avis_Battery_System`, пока weak-пустая): сегментная анимация +10 % на каждую
+`Battery_System`, пока weak-пустая): сегментная анимация +10 % на каждую
 инверсию фазы; после выдергивания провода анимация держится ещё
 `LCD_BATTERY_CHARGE_HOLD_MS` = 2500 мс (время — тик RTOS `VTICK_MS()`,
 FreeRTOS-`xTaskGetTickCount` из Avis-порта заменён). Не заряжается и

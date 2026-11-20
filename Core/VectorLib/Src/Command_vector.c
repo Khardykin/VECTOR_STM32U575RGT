@@ -4,7 +4,7 @@
   * @brief   Обмен по COM (USART3) в стиле Avis Command.c.
   *
   *          parsing_command() - диспетчер, добавляет CRC. CmdFuncN - обработчики,
-  *          где N = десятичный код команды (как в Avis).
+  *          где N = десятичный код команды (стандартный паттерн).
   *
   *          Протокол:
   *            0x03 CmdFunc3  - чтение holding-регистров  (Config_common)
@@ -118,7 +118,7 @@ void Command_vector_SetTx(cmd_tx_t hook)
 }
 
 /* ==========================================================================
- * CRC и мелкие помощники (имена как в Avis)
+ * CRC и мелкие помощники (имена стандартный паттерн)
  * ========================================================================== */
 uint16_t CreateCRC_out(const uint8_t *data, uint16_t len)
 {
@@ -399,7 +399,7 @@ static void reg_set(void *base, const reg_map_t *m, uint16_t roff, uint16_t val)
   }
 }
 
-/* Курсор ответа, как в Avis. Пишет только receiver_task. */
+/* Курсор ответа, стандартный паттерн. Пишет только receiver_task. */
 static uint16_t  Count;
 static uint8_t  *Value;
 static uint8_t  *Countuint8_t;
@@ -1016,7 +1016,7 @@ uint16_t CmdFunc16(const uint8_t *mas, uint16_t len, uint8_t *out)
 }
 
 /* ==========================================================================
- * CmdFunc15 - блочная запись во внешнюю flash (как в Avis)
+ * CmdFunc15 - блочная запись во внешнюю flash (стандартный паттерн)
  * Кадр: [sl][0F][addr32 BE][size16 BE][data][CRC]
  * ========================================================================== */
 uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)

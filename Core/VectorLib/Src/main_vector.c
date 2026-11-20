@@ -20,12 +20,12 @@
   *            lora_task_function()       ПОТОК "LoRa Task" (CONFIG_LORA): Lora_Run
   *            lte_task_function()        ПОТОК "LTE Task" (CONFIG_G4): Lte_Run
   *            Vector_Run_Pre_Init()      однократно при старте (аналог
-  *                                       Avis_Run_Pre_Init)
+  *                                       Vector_Run_Pre_Init)
   *            Vector_Run_Measure()       измерения прибора + Gps_Run (аналог
   *                                       Avis_Run_Measure); BLE/LoRa/LTE Run -
   *                                       в своих потоках модулей
   *            Vector_RunFlashMemory()    журнал/конфиг во внешней flash
-  *            Vector_Options_System()    сервис (аналог Avis_Options_System),
+  *            Vector_Options_System()    сервис (аналог Vector_Options_System),
   *                                       поток Measure Task
   *            command_message(), Ble_Receive(), Lte_Receive(),
   *            Uart_Channel_Receive(), Ble_Run(), Lora_Run(), Lte_Run(),
@@ -321,7 +321,7 @@ void Timer_Tick_1ms(void)
 	   button_flag/button_count вместе с button1), но счётчик СВОЙ и растёт
 	   отдельно: порог SOS (VECTOR_MENU_PRESS_SOS_MS, 3 с) длиннее обычного
 	   LONG (1.5 с), а decode_button() в Menu_vector.c обнуляет button1.
-	   Читает счётчик Button_Sos() (Menu_vector.c, по образцу Avis Button_Sos). */
+	   Читает счётчик Button_Sos() (Menu_vector.c, стандартная практика Button_Sos). */
 	if(button_sos.button_flag){
 		button_sos.button_count++;
 	}
@@ -430,7 +430,7 @@ void Vector_Run_Board_Init(void)
 #if VECTOR_TASKS_ENABLE
 
 /* коэффициент пересчёта концентрации для RF-пакетов (LoRa/BLE). В Avis -
-   таблица conversion_factor_rf[] из Avis_Menu_Functionality.c (пересчёт
+   таблица conversion_factor_rf[] из Menu_vector_Functionality.c (пересчёт
    мг/м³ <-> PPM <-> %НКПР по настройкам канала); порт таблицы - за автором.
    Слабая заглушка: 1.0 (данные AVIS приходят по BLE УЖЕ масштабированными -
    Ble_CompleteDataSet отправителя применяет ту же формулу, поэтому для
@@ -826,14 +826,14 @@ void Vector_Run_Pre_Init(void)
   }
 
   /* Бренд прибора (MIRAX/BACS) из последней страницы внутренней flash -
-     первой строкой, как Init_Build_Type() в Avis_Run_Pre_Init.      */
+     первой строкой, как Init_Build_Type() в Vector_Run_Pre_Init.      */
   Init_Build_Type();
 
   /*  (замечание автора п.4): указатели архива хранятся ОТДЕЛЬНО от конфига
      в странице-кольце SF_LOG_PTR и сохраняются после каждой записи журнала.
      При старте страница сканируется всегда (позиция следующей записи), а в
      конфиг cur/beg переносятся только если конфиг прочитался - аналог
-     ReadCurrentAddrFile() в Avis_Run_Pre_Init (в else-ветке Avis он
+     ReadCurrentAddrFile() в Vector_Run_Pre_Init (в else-ветке Avis он
      закомментирован).                                                      */
   (void)log_ptr_load(&Sns_Cfg_struct, cfg_ok);
 
@@ -887,7 +887,7 @@ void Vector_Run_Pre_Init(void)
   ui_lv_init();
 #endif
 
-  /* TODO: по образцу Avis_Run_Pre_Init():
+  /* TODO: по образцу Vector_Run_Pre_Init():
      - включить питание/сброс модулей: LTE_EN, LTE_RESET, BLE_RESET, GNSS_RST;
      - инициализировать модули: Lora_Init(&Sns_Cfg_struct), Ble_Init(serial);
      - взвести статусы ST_COMMON (TURN_ON_BLE/LORA/GPS/GSM) из конфига.        */
@@ -1080,7 +1080,7 @@ void Vector_RunFlashMemory(void)
 }
 
 /* Сервисные действия: вызываются из потока измерений каждый проход (50 мс).
-   Аналог Avis_Options_System(). КОНТЕКСТ: поток measure_task (перенесено из
+   Аналог Vector_Options_System(). КОНТЕКСТ: поток measure_task (перенесено из
    receiver_task решением автора).                                            */
 void Vector_Options_System(void)
 {
@@ -1096,9 +1096,9 @@ void Vector_Options_System(void)
 
   /* Реализовано (автор): мягкая перезагрузка прошивки (sys_state.soft_reset
      + таймер TIMER_RTC_SOFT_RESET_PROGRAM -> событие TYPE_FW_UPDATE ->
-     NVIC_SystemReset) и секундное обслуживание батареи (Avis_Battery_System,
+     NVIC_SystemReset) и секундное обслуживание батареи (Battery_System,
      weak-заглушка) со сверкой часов с календарём RTC (RTC_ReadTime/WriteTime).
-     TODO: по образцу Avis_Options_System():
+     TODO: по образцу Vector_Options_System():
      - стирание внутренней flash по команде (FlashErase);
      - окончание режима обмена данными: очистить ST_COMMON_BIT_DATA_EXCHANGE
        и ST_COMMON_BIT_BLOCK_SOUND;
@@ -1120,7 +1120,7 @@ void Vector_Options_System(void)
 		}
 	}
 	//----------------------------------------------------------------------------
-	/* Стирание/перезапись бутлоадера (аналог if(FlashErase) в Avis_Options_System).
+	/* Стирание/перезапись бутлоадера (аналог if(FlashErase) в Vector_Options_System).
 	   Выполняется здесь: стирание страницы того же банка останавливает CPU
 	   на единицы мс - звук к этому моменту уже заблокирован режимом обмена. */
 	if(FlashErase){
@@ -1212,7 +1212,7 @@ void Battery_Init(void)
  * Слабые (__attribute__((weak))) заглушки. Когда перенесёте реализацию в свой
  * файл модуля (Ble.c, Lte.c, Uart_Channel.c), сильное определение заменит
  * заглушку при линковке - править main_vector.c не придётся.
- * Внутри каждой заглулки тело закрыто #if CONFIG_* - как в Avis_main.c:
+ * Внутри каждой заглулки тело закрыто #if CONFIG_* - стандартный паттерн_main.c:
  * модуль выключен конфигурацией, вызов остаётся, тело пустое.
  * ============================================================================ */
 
@@ -1231,7 +1231,7 @@ __attribute__((weak)) void command_message(void)
 /* BLE-модуль (USART3): weak-заглушка приёма. ВНИМАНИЕ: с подключённым
    Ble_vector.c (CONFIG_BLE=1) замещается ПУСТЫМ strong-символом - обмен с
    модулем синхронный внутри Ble_TransmitReceive (Measure Task), он и есть
-   единственный читатель кольца TYPE_BLE (как в Avis: Receiver Task BLE не
+   единственный читатель кольца TYPE_BLE (стандартный паттерн: Receiver Task BLE не
    обслуживает). Тело ниже - только на случай CONFIG_BLE=1 БЕЗ Ble_vector.c. */
 __attribute__((weak)) void Ble_Receive(void)
 {
@@ -1284,7 +1284,7 @@ __attribute__((weak)) void Lte_Receive(void)
 __attribute__((weak)) void Ble_Run(void)
 {
 #if CONFIG_BLE
-  /* TODO: по образцу Avis_main.c:
+  /* TODO: стандартная практика_main.c:
      if (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_ON_BLE)) {
        Ble_Init(serial) / Ble_MsdDataSet(&Sns_Cfg_struct) / Ble_MsdDataSleep()
        по таймерам TIMER_RTC_BLE_DATA_INIT / _SET / _SLEEP
