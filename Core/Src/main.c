@@ -113,6 +113,7 @@ int main(void)
   MX_RTC_Init();
   MX_TIM3_Init();
   MX_TIM8_Init();
+  MX_UART5_Init();
   /* USER CODE BEGIN 2 */
 
   /* Бортовая инициализация до RTOS одним вызовом (такт SRAM4, заморозка TIM6

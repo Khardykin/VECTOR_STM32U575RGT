@@ -71,6 +71,7 @@ extern SPI_HandleTypeDef hspi1;
 extern SPI_HandleTypeDef hspi2;
 extern TIM_HandleTypeDef htim3;
 extern UART_HandleTypeDef huart4;
+extern UART_HandleTypeDef huart5;
 extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
 extern UART_HandleTypeDef huart3;
@@ -510,24 +511,24 @@ void USART3_IRQHandler(void)
   /* USER CODE BEGIN USART3_IRQn 0 */
 	uint8_t data_uart = 0;
 	if (UART_IRQReceive(&huart3, &data_uart)){
-		add_to_buffer(&InputBuffer[TYPE_USART], data_uart);
-#if BLE_DEBUG
-		if (Command_vector_SessionActive() == 0u) { huart3.Instance->TDR = data_uart; }
-#endif
-#if LTE_DEBUG
-		if (Command_vector_SessionActive() == 0u) { huart2.Instance->TDR = data_uart; }
-#endif
-#if LORA_DEBUG
-		if (Command_vector_SessionActive() == 0u) { huart4.Instance->TDR = data_uart; }
-#endif
+//		add_to_buffer(&InputBuffer[TYPE_USART], data_uart);
+//#if BLE_DEBUG
+//		if (Command_vector_SessionActive() == 0u) { huart3.Instance->TDR = data_uart; }
+//#endif
+//#if LTE_DEBUG
+//		if (Command_vector_SessionActive() == 0u) { huart2.Instance->TDR = data_uart; }
+//#endif
+//#if LORA_DEBUG
+//		if (Command_vector_SessionActive() == 0u) { huart4.Instance->TDR = data_uart; }
+//#endif
 //		buffer_uart[TYPE_USART].TimeRX = TIME_OUT_UART;
-#if CONFIG_UART
-		/* Режим обмена: устанавливаем биты и перезапускаем таймер.
-		   Сброс - в Vector_Options_System по таймауту. */
-		SET_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);
-		SET_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);
-		START_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END, TIME_RTC_DATA_EXCHANGE_END);
-#endif
+//#if CONFIG_UART
+//		/* Режим обмена: устанавливаем биты и перезапускаем таймер.
+//		   Сброс - в Vector_Options_System по таймауту. */
+//		SET_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);
+//		SET_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);
+//		START_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END, TIME_RTC_DATA_EXCHANGE_END);
+//#endif
 //#if BLE_DEBUG
 //		USART_DEBUG.Instance->TDR = data_uart;
 //#endif
@@ -577,6 +578,31 @@ void UART4_IRQHandler(void)
   /* USER CODE BEGIN UART4_IRQn 1 */
 	}
   /* USER CODE END UART4_IRQn 1 */
+}
+
+/**
+  * @brief This function handles UART5 global interrupt.
+  */
+void UART5_IRQHandler(void)
+{
+  /* USER CODE BEGIN UART5_IRQn 0 */
+	uint8_t data_uart = 0;
+	if (UART_IRQReceive(&huart5, &data_uart)){
+		add_to_buffer(&InputBuffer[TYPE_USART], data_uart);
+#if CONFIG_UART
+		/* Режим обмена: устанавливаем биты и перезапускаем таймер.
+		   Сброс - в Vector_Options_System по таймауту. */
+		SET_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);
+		SET_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);
+		START_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END, TIME_RTC_DATA_EXCHANGE_END);
+#endif
+	}
+	else{
+  /* USER CODE END UART5_IRQn 0 */
+  HAL_UART_IRQHandler(&huart5);
+  /* USER CODE BEGIN UART5_IRQn 1 */
+	}
+  /* USER CODE END UART5_IRQn 1 */
 }
 
 /**

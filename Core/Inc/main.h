@@ -112,7 +112,7 @@ void Uart_SetBaudrate(UART_HandleTypeDef *huart, uint32_t baud);
 #define SET_ON(x)   		LL_GPIO_SetOutputPin(x##_GPIO_Port, x##_Pin);
 #define SET_TGL(x)			LL_GPIO_TogglePin(x##_GPIO_Port, x##_Pin);
 
-#define USART_COM			(huart3)
+#define USART_COM			(huart5)
 #define USART_DEBUG			(huart3)
 //#define USART_BLE			(huart3)
 #define USART_RF			(huart4)
@@ -183,8 +183,6 @@ void Error_Handler(void);
 #define ACCEL_INT_Pin GPIO_PIN_11
 #define ACCEL_INT_GPIO_Port GPIOC
 #define ACCEL_INT_EXTI_IRQn EXTI11_IRQn
-#define BLE_RESET_Pin GPIO_PIN_12
-#define BLE_RESET_GPIO_Port GPIOC
 #define BUTTON_2_Pin GPIO_PIN_3
 #define BUTTON_2_GPIO_Port GPIOB
 #define BUTTON_2_EXTI_IRQn EXTI3_IRQn
