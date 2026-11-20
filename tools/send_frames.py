@@ -1,509 +1,110 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-verify_registers.py - check that the Command_vector register map really works.
+send_frames.py - print ready-to-send Modbus frames for the Command_vector map.
 
-The map is parsed straight from Command_vector.c, so the test can never drift
-away from the firmware.
-
-Checks:
-  1. slave address discovery via broadcast (read SerialLo/SerialHi at 0x0000)
-  2. every contiguous block reads back with 0x03 (holding) / 0x04 (input)
-  3. per-register read agrees with the block read
-  4. addresses outside the map return Modbus exception 0x02
-  5. --write:  write / read back / restore for a safe whitelist
-  6. --resync: a junk byte is sent before the frame, link must survive
-
-Usage:
-  py tools/verify_registers.py COM4
-  py tools/verify_registers.py COM4 --slave 37
-  py tools/verify_registers.py COM4 --write
-  py tools/verify_registers.py COM4 --resync
-  py tools/verify_registers.py --list
+  py tools/send_frames.py                 # print hex frames only
+  py tools/send_frames.py COM3            # print AND send, show answers
+  py tools/send_frames.py COM3 --write    # also test write/restore (safe regs)
 """
-
-import argparse
-import os
-import re
-import struct
-import sys
-import time
-
+import struct, sys, time
 try:
     import serial
 except ImportError:
     serial = None
 
-DEFAULT_SRC = os.path.join("Core", "VectorLib", "Src", "Command_vector.c")
+SLAVE = 1
 
-# Byte-array sizes as they appear in the map (must match CV_*_SIZE).
-ARRAY_SIZES = {
-    "CV_APPKEY_SIZE": 16, "SZ_APPKEY": 16,
-    "CV_DEVEUI_SIZE":  8, "SZ_DEVEUI":  8,
-}
-OBJ_NAMES = {
-    "OBJ_APPKEY": "appkey", "OBJ_DEVEUI": "deveui_com",
-    "OBJ_CFG": "application_language",
-}
-
-# Plain settings, no side effects - safe to poke and restore.
-SAFE_WRITE = {
-    0x000C, 0x000D, 0x000E, 0x000F, 0x0010, 0x0011,
-    0x0012, 0x0014, 0x0015, 0x0016, 0x0018,
-    0x0019, 0x001A, 0x001B, 0x001C, 0x001D, 0x001E,
-    0x0024, 0x0025, 0x002B, 0x002D,
-}
-
-# Never touch: erase / save / apply / reset / power / identity.
-FORBIDDEN = {
-    0x0001, 0x0002, 0x0007, 0x0008, 0x0009, 0x000A,
-    0x0020, 0x0022, 0x0026, 0x0028,
-    0x0040, 0x0041, 0x0043, 0x0045, 0x0047,
-    0x0049, 0x004A, 0x004B, 0x004C, 0x004D, 0x004E, 0x004F,
-    0x0050, 0x0052, 0x0053, 0x0054, 0x0055, 0x0056, 0x0057, 0x0058,
-}
-FORBIDDEN_RANGES = [(0x002E, 0x0039)]   # appkey + deveui
-
-
-# ---------------- map parsing ----------------
-
-def array_body(text, name):
-    m = re.search(r"static\s+const\s+reg_map_t\s+" + name + r"\s*\[\s*\]\s*=\s*\{", text)
-    if not m:
-        return None
-    i = m.end() - 1
-    depth, k = 0, i
-    while k < len(text):
-        if text[k] == "{":
-            depth += 1
-        elif text[k] == "}":
-            depth -= 1
-            if depth == 0:
-                return text[i + 1:k]
-        k += 1
-    return None
-
-
-def split_top(s):
-    out, cur, depth = [], "", 0
-    for ch in s:
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        if ch == "," and depth == 0:
-            out.append(cur.strip()); cur = ""
-        else:
-            cur += ch
-    if cur.strip():
-        out.append(cur.strip())
-    return out
-
-
-def cnum(s):
-    s = s.strip().rstrip("uUlL")
-    return int(s, 16) if s.lower().startswith("0x") else int(s)
-
-
-ROW = re.compile(
-    r"^\s*(?P<mac>CM|AR|WK|TC|CS|SS|ST|DV|TC_N|ST_N|ARR)\s*\((?P<args>[^)]*)\)"
-    r"|^\s*\{\s*(?P<raw>.*?)\}\s*,", re.M | re.S)
-
-
-def parse_map(text, name):
-    body = array_body(text, name)
-    if body is None:
-        return []
-    rows = []
-    for m in ROW.finditer(body):
-        if m.group("mac"):
-            mac = m.group("mac")
-            a = split_top(m.group("args"))
-            if mac == "ARR":
-                addr, typ, n, field = a[0], a[1], a[2], a[3]
-            elif mac.endswith("_N"):
-                field, addr, typ, n = a[0], a[1], a[2], a[3]
-            else:
-                field, addr, typ = a[0], a[1], a[2]; n = "0"
-        else:
-            p = split_top(m.group("raw"))
-            if len(p) < 5:
-                continue
-            addr, _off, typ, n, field = p[:5]
-
-        try:
-            a = cnum(addr)
-        except ValueError:
-            continue
-        if a == 0:
-            continue
-
-        if n in ARRAY_SIZES:
-            cnt = ARRAY_SIZES[n]
-        else:
-            try:
-                cnt = cnum(n)
-            except ValueError:
-                cnt = 1
-
-        if typ == "T_FLT4":
-            span = 2 * (cnt or 1)
-        elif typ == "T_STR":
-            span = (cnt + 1) // 2
-        elif typ == "T_U32":
-            span = 2
-        else:
-            span = 1
-
-        rows.append({"addr": a, "span": span, "type": typ,
-                     "name": OBJ_NAMES.get(field, field), "n": cnt})
-    return rows
-
-
-def blocks_of(rows):
-    rs = sorted(rows, key=lambda r: r["addr"])
-    out, cur = [], None
-    for r in rs:
-        if cur and r["addr"] == cur[0] + cur[1]:
-            cur = (cur[0], cur[1] + r["span"])
-        else:
-            if cur:
-                out.append(cur)
-            cur = (r["addr"], r["span"])
-    if cur:
-        out.append(cur)
-    return out
-
-
-def forbidden(addr, span):
-    for a in range(addr, addr + span):
-        if a in FORBIDDEN:
-            return True
-        for lo, hi in FORBIDDEN_RANGES:
-            if lo <= a <= hi:
-                return True
-    return False
-
-
-# ---------------- Modbus RTU ----------------
-
-def crc16(data):
-    crc = 0xFFFF
-    for b in data:
-        crc ^= b
+def crc16(d):
+    c = 0xFFFF
+    for b in d:
+        c ^= b
         for _ in range(8):
-            crc = (crc >> 1) ^ 0xA001 if (crc & 1) else crc >> 1
-    return crc
+            c = (c >> 1) ^ 0xA001 if (c & 1) else c >> 1
+    return c
 
+def add_crc(b):
+    c = crc16(b)
+    return b + bytes([c & 0xFF, c >> 8])
 
-class MbError(Exception):
-    def __init__(self, code):
-        self.code = code
-        super().__init__("Modbus exception 0x%02X" % code)
+def rd(fn, addr, cnt):
+    return add_crc(bytes([SLAVE, fn, addr >> 8, addr & 0xFF, cnt >> 8, cnt & 0xFF]))
 
+def wr6(addr, val):
+    return add_crc(bytes([SLAVE, 0x06, addr >> 8, addr & 0xFF, val >> 8, val & 0xFF]))
 
-class Mb:
-    def __init__(self, ser, slave=1, gap=0.02, junk=False):
-        self.ser = ser
-        self.slave = slave
-        self.gap = gap
-        self.junk = junk
+def wr16(addr, vals):
+    data = b"".join(struct.pack(">H", v) for v in vals)
+    return add_crc(bytes([SLAVE, 0x10, addr >> 8, addr & 0xFF,
+                          len(vals) >> 8, len(vals) & 0xFF, len(data)]) + data)
 
-    def _xfer(self, req, rest_len):
-        self.ser.reset_input_buffer()
-        if self.junk:
-            self.ser.write(bytes([0xAA]))     # lost byte simulation
-            time.sleep(0.002)
-        self.ser.write(req + struct.pack("<H", crc16(req)))
-        self.ser.flush()
-        time.sleep(self.gap)
-        head = self.ser.read(2)
-        if len(head) < 2:
-            return None
-        if head[1] & 0x80:
-            tail = self.ser.read(3)
-            if len(tail) >= 1:
-                raise MbError(tail[0])
-            return None
-        rest = self.ser.read(rest_len)
-        if len(rest) < rest_len:
-            return None
-        frame = head + rest
-        if crc16(frame[:-2]) != struct.unpack("<H", frame[-2:])[0]:
-            return None
-        return frame
+def hx(b):
+    return " ".join("%02X" % x for x in b)
 
-    def read(self, func, addr, cnt):
-        req = struct.pack(">BBHH", self.slave, func, addr, cnt)
-        f = self._xfer(req, 1 + cnt * 2 + 2)
-        if f is None:
-            return None
-        if f[2] != cnt * 2:
-            return None
-        return [struct.unpack(">H", f[3 + i * 2:5 + i * 2])[0] for i in range(cnt)]
+CASES = [
+    ("link: hole 0x0000",            rd(0x03, 0x0000, 1),  "exc 02"),
+    ("com block1 0x0001 x30",        rd(0x03, 0x0001, 30), "60 data bytes"),
+    ("com block2 0x0020 x26",        rd(0x03, 0x0020, 26), "52 data bytes"),
+    ("com block3 0x0040 x25",        rd(0x03, 0x0040, 25), "50 data bytes, flags=0"),
+    ("Build_type 0x0001",            rd(0x03, 0x0001, 1),  "build id"),
+    ("working_hours 0x0020 x2",      rd(0x03, 0x0020, 2),  "u32 Lo/Hi, ticks up"),
+    ("archive ptrs 0x0026 x4",       rd(0x03, 0x0026, 4),  "Beggin/Current"),
+    ("appkey 0x002E x8",             rd(0x03, 0x002E, 8),  "16 bytes"),
+    ("deveui 0x0036 x4",             rd(0x03, 0x0036, 4),  "8 bytes"),
+    ("in_map ALL 0x0001 x44",        rd(0x04, 0x0001, 44), "88 data bytes"),
+    ("sensors T/H/P 0x0007 x6",      rd(0x04, 0x0007, 6),  "3 floats"),
+    ("battery 0x0005 x2",            rd(0x04, 0x0005, 2),  "percent, mV"),
+    ("counters 0x0015 x16",          rd(0x04, 0x0015, 16), "8 x u32"),
+    ("hole 0x001F",                  rd(0x03, 0x001F, 1),  "exc 02"),
+    ("hole 0x003A",                  rd(0x03, 0x003A, 1),  "exc 02"),
+    ("hole 0x0059",                  rd(0x03, 0x0059, 1),  "exc 02"),
+    ("hole 0x0F00",                  rd(0x03, 0x0F00, 1),  "exc 02"),
+    ("bad function 0x08",            rd(0x08, 0x0001, 1),  "exc 01"),
+    ("log read ptr0 x4",             rd(0x0C, 0x0000, 4),  "4*40 B or exc 02 if empty"),
+    ("log find time",                add_crc(bytes([SLAVE, 0x14]) +
+                                     struct.pack(">II", 0, 0xFFFFFFFF)), "ptr_from/to"),
+]
 
-    def write_multi(self, addr, values):
-        data = b"".join(struct.pack(">H", v) for v in values)
-        req = struct.pack(">BBHHB", self.slave, 0x10, addr, len(values), len(data)) + data
-        return self._xfer(req, 6) is not None
-
-    def write_single(self, addr, value):
-        req = struct.pack(">BBHH", self.slave, 0x06, addr, value)
-        return self._xfer(req, 6) is not None
-
-
-def discover_slave(ser, base_slave=0):
-    """Read SerialLo/SerialHi via broadcast, compute (sn % 100, 0 -> 100)."""
-    req = struct.pack(">BBHH", base_slave, 0x03, 0x0007, 0x0002)
-    req += struct.pack("<H", crc16(req))
-    ser.reset_input_buffer()
-    ser.write(req); ser.flush()
-    time.sleep(0.15)
-    raw = ser.read(64)
-    if len(raw) >= 7 and raw[1] == 0x03:
-        lo = (raw[3] << 8) | raw[4]
-        hi = (raw[5] << 8) | raw[6]
-        addr = ((hi << 16) | lo) % 100
-        return 100 if addr == 0 else addr
-    return None
-
-
-# ---------------- checks ----------------
-
-class Report:
-    def __init__(self):
-        self.ok = self.fail = self.skip = 0
-
-    def line(self, state, text):
-        print("  [%s] %s" % (state, text))
-        if state == "OK":
-            self.ok += 1
-        elif state == "FAIL":
-            self.fail += 1
-        else:
-            self.skip += 1
-
-
-def check_read(mb, rows, func, title, rep):
-    print("\n== %s (func 0x%02X) ==" % (title, func))
-    cache = {}
-
-    for base, span in blocks_of(rows):
-        if span > 125:
-            rep.line("SKIP", "block 0x%04X too long (%d)" % (base, span))
-            continue
-        try:
-            vals = mb.read(func, base, span)
-        except MbError as e:
-            rep.line("FAIL", "block 0x%04X..0x%04X -> %s" % (base, base + span - 1, e))
-            continue
-        if vals is None:
-            rep.line("FAIL", "block 0x%04X..0x%04X -> no/bad answer" % (base, base + span - 1))
-            continue
-        for i, v in enumerate(vals):
-            cache[base + i] = v
-        rep.line("OK", "block 0x%04X..0x%04X (%d regs)" % (base, base + span - 1, span))
-
-    for r in sorted(rows, key=lambda x: x["addr"]):
-        a, span, name = r["addr"], r["span"], r["name"]
-        try:
-            vals = mb.read(func, a, span)
-        except MbError as e:
-            rep.line("FAIL", "0x%04X %-26s -> %s" % (a, name, e))
-            continue
-        if vals is None:
-            rep.line("FAIL", "0x%04X %-26s -> no/bad answer" % (a, name))
-            continue
-        same = all(cache.get(a + i) == vals[i] for i in range(span))
-        txt = ", ".join("0x%04X" % v for v in vals)
-        if r["type"] == "T_FLT4" and span == 2:
-            raw = (vals[1] << 16) | vals[0]
-            txt += "  (float %.4f)" % struct.unpack("<f", struct.pack("<I", raw))[0]
-        if r["type"] == "T_U32":
-            txt += "  (u32 %u)" % ((vals[1] << 16) | vals[0])
-        rep.line("OK" if same else "FAIL",
-                 "0x%04X %-26s %s%s" % (a, name, txt, "" if same else "  != block read"))
-
-
-def check_holes(mb, rows, func, rep):
-    print("\n== address holes (expect exception 0x02) ==")
-    covered = set()
-    for r in rows:
-        covered.update(range(r["addr"], r["addr"] + r["span"]))
-    for a in (0x0000, 0x001F, 0x003A, 0x003F, 0x0059, 0x00FF, 0x0F00):
-        if a in covered:
-            continue
-        try:
-            vals = mb.read(func, a, 1)
-        except MbError as e:
-            rep.line("OK" if e.code == 0x02 else "FAIL",
-                     "0x%04X -> exception 0x%02X" % (a, e.code))
-            continue
-        rep.line("FAIL" if vals is not None else "SKIP",
-                 "0x%04X -> %s (expected exception)" % (a, "answered" if vals else "no answer"))
-
-
-def check_write(mb, rows, rep):
-    print("\n== write / read back / restore ==")
-
-    busy = []
-    for a, nm in ((0x0049, "erase_req"), (0x004A, "save_config"),
-                  (0x004B, "save_config_default"), (0x004C, "load_config_default"),
-                  (0x004D, "fw_apply_req"), (0x004E, "int_write_pending"),
-                  (0x004F, "ext_write_pending")):
-        try:
-            v = mb.read(0x03, a, 1)
-        except MbError:
-            v = None
-        if v and v[0]:
-            busy.append(nm)
-    if busy:
-        rep.line("SKIP", "flash busy (%s) - write test skipped" % ", ".join(busy))
-        return
-
-    for r in sorted(rows, key=lambda x: x["addr"]):
-        a, span, name = r["addr"], r["span"], r["name"]
-        if a not in SAFE_WRITE or forbidden(a, span):
-            continue
-        try:
-            orig = mb.read(0x03, a, span)
-        except MbError as e:
-            rep.line("FAIL", "0x%04X %-26s read before write -> %s" % (a, name, e))
-            continue
-        if orig is None:
-            rep.line("FAIL", "0x%04X %-26s read before write -> no answer" % (a, name))
-            continue
-
-        probe = [(v ^ 0x0001) & 0xFFFF for v in orig]
-        if probe == orig:
-            probe = [(v + 1) & 0xFFFF for v in orig]
-
-        try:
-            wok = mb.write_multi(a, probe)
-            back = mb.read(0x03, a, span) if wok else None
-        except MbError as e:
-            rep.line("FAIL", "0x%04X %-26s write -> %s" % (a, name, e))
-            wok, back = False, None
-
-        good = wok and back == probe
-
-        try:
-            mb.write_multi(a, orig)
-            rest = mb.read(0x03, a, span)
-        except MbError:
-            rest = None
-        restored = rest == orig
-
-        detail = "wrote %s, read %s" % (
-            ",".join("0x%04X" % v for v in probe),
-            ",".join("0x%04X" % v for v in back) if back else "none")
-        if not restored:
-            detail += "  RESTORE FAILED"
-        rep.line("OK" if (good and restored) else "FAIL",
-                 "0x%04X %-26s %s" % (a, name, detail))
-
-    target = 0x000D
-    try:
-        orig = mb.read(0x03, target, 1)
-        if orig:
-            val = (orig[0] + 1) & 0xFFFF
-            ok6 = mb.write_single(target, val)
-            back = mb.read(0x03, target, 1)
-            mb.write_single(target, orig[0])
-            rep.line("OK" if (ok6 and back and back[0] == val) else "FAIL",
-                     "0x%04X func 0x06 single write" % target)
-    except MbError as e:
-        rep.line("FAIL", "0x%04X func 0x06 -> %s" % (target, e))
-
-
-# ---------------- main ----------------
+WRITE_CASES = [
+    ("wr6  TimeLedStatePeriod=100",  wr6(0x000D, 100),     "echo 6 bytes"),
+    ("read back 0x000D",             rd(0x03, 0x000D, 1),  "100"),
+    ("wr16 Immobility 0x0019 x3",    wr16(0x0019, [1, 60, 30]), "echo 6 bytes"),
+    ("read back 0x0019 x3",          rd(0x03, 0x0019, 3),  "1, 60, 30"),
+]
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("port_pos", nargs="?", default=None)
-    ap.add_argument("--port", default=None)
-    ap.add_argument("--baud", type=int, default=115200)
-    ap.add_argument("--slave", type=int, default=None,
-                    help="0/255 = broadcast, omitted = auto-discover")
-    ap.add_argument("--src", default=DEFAULT_SRC)
-    ap.add_argument("--write", action="store_true")
-    ap.add_argument("--resync", action="store_true")
-    ap.add_argument("--list", action="store_true")
-    a = ap.parse_args()
+    args = [a for a in sys.argv[1:]]
+    do_write = "--write" in args
+    args = [a for a in args if not a.startswith("--")]
+    port = args[0] if args else None
 
-    if not os.path.exists(a.src):
-        print("Command_vector.c not found: %s" % a.src)
-        print("Run from the project root or pass --src PATH")
-        return 2
+    cases = CASES + (WRITE_CASES if do_write else [])
 
-    text = open(a.src, encoding="utf-8", errors="ignore").read()
-    com, ins = parse_map(text, "com_map"), parse_map(text, "in_map")
-    if not com:
-        print("com_map not parsed - check the file format"); return 2
+    ser = None
+    if port:
+        if serial is None:
+            print("pyserial missing: py -m pip install pyserial"); return 2
+        ser = serial.Serial(port, 115200, timeout=1)
+        print("port=%s 115200 8N1 slave=%d\n" % (port, SLAVE))
 
-    if a.list:
-        for title, rows in (("com_map (0x03/0x10)", com), ("in_map (0x04)", ins)):
-            print("== %s: %d fields ==" % (title, len(rows)))
-            for r in sorted(rows, key=lambda x: x["addr"]):
-                print("  0x%04X..0x%04X  %-7s %s" % (
-                    r["addr"], r["addr"] + r["span"] - 1, r["type"], r["name"]))
-            print("  blocks: %s\n" % ", ".join("0x%04X+%d" % (b, n) for b, n in blocks_of(rows)))
-        return 0
+    for name, frame, expect in cases:
+        print("%-30s TX: %-58s  expect: %s" % (name, hx(frame), expect))
+        if ser:
+            ser.reset_input_buffer()
+            ser.write(frame); ser.flush()
+            time.sleep(0.05)
+            raw = ser.read(300)
+            if not raw:
+                print("%-30s RX: (empty)" % "")
+            else:
+                print("%-30s RX: %s" % ("", hx(raw[:24]) + (" ..." if len(raw) > 24 else "")))
+                if len(raw) >= 3 and (raw[1] & 0x80):
+                    print("%-30s     exception 0x%02X" % ("", raw[2]))
+            print()
 
-    port = a.port or a.port_pos
-    if not port:
-        print("Port is required: py tools/verify_registers.py COM4"); return 2
-    if serial is None:
-        print("pyserial is missing: py -m pip install pyserial"); return 2
-
-    ser = serial.Serial(port, a.baud, timeout=1)
-
-    # ---- resolve slave address ----
-    if a.slave is None:
-        addr = discover_slave(ser, 0x00)
-        if addr is None:
-            print("Auto-discover failed (no answer on broadcast 0x00).")
-            print("Use --slave 0 or --slave 255 to test with broadcast,")
-            print("or --list to check the map without a port.")
-            ser.close(); return 1
-        print("discovered slave address: %d (serial %% 100)" % addr)
-        slave = addr
-    else:
-        slave = a.slave
-        print("using slave address: %d%s" % (slave,
-              "  (broadcast)" if slave in (0, 255) else ""))
-
-    mb = Mb(ser, slave, junk=a.resync)
-    rep = Report()
-
-    print("port=%s baud=%d slave=%d%s" % (
-        port, a.baud, slave, " + resync junk byte" if a.resync else ""))
-    print("map: com_map=%d fields, in_map=%d fields" % (len(com), len(ins)))
-
-    link = None
-    try:
-        link = mb.read(0x03, com[0]["addr"], 1)
-    except MbError as e:
-        print("link check: %s" % e)
-    if link is None:
-        print("\nNo answer on the first register.")
-        print("Check wiring (UART5 = USART_COM), CONFIG_UART=1, receiver task alive.")
-        ser.close(); return 1
-
-    check_read(mb, com, 0x03, "holding registers", rep)
-    check_read(mb, ins, 0x04, "input registers", rep)
-    check_holes(mb, com, 0x03, rep)
-    if a.write and not a.resync:
-        check_write(mb, com, rep)
-    elif a.resync and a.write:
-        print("\n(--resync implies read-only: write test disabled to stay safe)")
-    else:
-        print("\n(write test disabled; add --write to check write/read/restore)")
-
-    ser.close()
-    print("\n== summary: %d OK, %d FAIL, %d SKIP ==" % (rep.ok, rep.fail, rep.skip))
-    return 1 if rep.fail else 0
-
+    if ser:
+        ser.close()
+    return 0
 
 if __name__ == "__main__":
     sys.exit(main())
