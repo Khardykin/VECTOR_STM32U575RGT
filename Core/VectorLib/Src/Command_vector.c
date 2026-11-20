@@ -1,182 +1,149 @@
 #include <string.h>
 #include <stdint.h>
 
-#include "tx_api.h"
-
 #include "Command_vector.h"
-#include "shared_types.h"
+#include "main_vector.h"
+#include "shared_macros.h"
+#include "Config_save_read.h"
+#include "extstore.h"
+#include "sfmap.h"
+#include "boot_flash.h"
+#include "fw_update.h"
+#include "audio_player.h"
+#include "Lora_S7678S.h"
 
 /* ==========================================================================
- * Optional dependencies.
- * ========================================================================== */
-
-#if defined(__has_include)
-# if __has_include("Config_save_read.h")
-#  include "Config_save_read.h"
-#  define CV_HAVE_CONFIG_SAVE_READ 1
-# endif
-
-# if __has_include("boot_flash.h")
-#  include "boot_flash.h"
-#  define CV_HAVE_BOOT_FLASH 1
-# endif
-
-# if __has_include("fw_update.h")
-#  include "fw_update.h"
-#  define CV_HAVE_FW_UPDATE 1
-# endif
-
-# if __has_include("extstore.h")
-#  include "extstore.h"
-#  define CV_HAVE_EXTSTORE 1
-# endif
-
-# if __has_include("audio_player.h")
-#  include "audio_player.h"
-#  define CV_HAVE_AUDIO 1
-# endif
-#endif
-
-/* ==========================================================================
- * Local register map type.
- * If shared_types.h already has reg_map_t, this block can be removed.
- * ========================================================================== */
-
-#ifndef T_U16
-#define T_U16  0u
-#endif
-
-#ifndef T_U32
-#define T_U32  1u
-#endif
-
-#ifndef T_STR
-#define T_STR  2u
-#endif
-
-#ifndef T_FLT4
-#define T_FLT4 3u
-#endif
-
-typedef struct
-{
-  uint16_t addr;
-  uint16_t type;
-  uint16_t off;
-} reg_map_t;
-
-/* ==========================================================================
- * External project objects.
- * ========================================================================== */
-
-extern SNS_CFG Sns_Cfg_struct;
-
-extern uint16_t state_f;
-extern uint32_t size_f;
-
-extern uint8_t TamperReset;
-extern uint8_t application_language;
-
-extern uint16_t adc_zero_calibration;
-extern uint16_t adc_span_calibration;
-
-extern TX_MUTEX xSemaphore_measure;
-extern TX_MUTEX xSemaphore_flash;
-
-#ifndef TIME_MUTEX_DELAY_MEASURE
-#define TIME_MUTEX_DELAY_MEASURE 100u
-#endif
-
-#ifndef TIME_MUTEX_DELAY_FLASH
-#define TIME_MUTEX_DELAY_FLASH   100u
-#endif
-
-/* ==========================================================================
- * Log API fallback prototypes.
- * If Config_save_read.h already declares these, compatible declarations are fine.
- * ========================================================================== */
-
-extern int log_read(SNS_CFG *cfg, uint32_t ptr, EVENT_LOG *rec);
-extern int log_find_by_time(SNS_CFG *cfg,
-                            uint32_t t_from,
-                            uint32_t t_to,
-                            uint32_t *ptr_from,
-                            uint32_t *ptr_to);
-
-#ifndef SIZE_LOG
-#define SIZE_LOG ((uint16_t)sizeof(EVENT_LOG))
-#endif
-
-/* ==========================================================================
- * Bootloader guard.
- * Only enabled if required macros are really present.
- * ========================================================================== */
-
-#if defined(CV_HAVE_BOOT_FLASH) && \
-    defined(FLASH_ADDRESS_START_BOOTLOADER) && \
-    defined(FLASH_ADDRESS_STOP_BOOTLOADER)
-# define CV_BOOT_READY 1
-#endif
-
-/* ==========================================================================
- * External flash sector size.
- * Adjust if your MX25R6435F driver uses another erase granularity.
- * ========================================================================== */
-
-#ifndef CV_EXT_SECTOR_SIZE
-#define CV_EXT_SECTOR_SIZE 4096u
-#endif
-
-/* ==========================================================================
- * Register maps.
- *
- * If your project has real maps, create Command_vector_maps.h and define:
- *   sn_map[], sn_map_n
- *   com_map[], com_map_n
- *   in_map[], in_map_n
- * and define CV_HAS_MAPS.
- *
- * Otherwise empty maps are used and only special/system registers work.
- * ========================================================================== */
-
-#if defined(__has_include)
-# if __has_include("Command_vector_maps.h")
-#  include "Command_vector_maps.h"
-#  define CV_HAS_MAPS 1
-# endif
-#endif
-
-#ifndef CV_HAS_MAPS
-
-static const reg_map_t sn_map[] =
-{
-  { 0u, 0u, 0u }
-};
-
-static const reg_map_t com_map[] =
-{
-  { 0u, 0u, 0u }
-};
-
-static const reg_map_t in_map[] =
-{
-  { 0u, 0u, 0u }
-};
-
-#define sn_map_n  ((uint16_t)(sizeof(sn_map)  / sizeof(sn_map[0])))
-#define com_map_n ((uint16_t)(sizeof(com_map) / sizeof(com_map[0])))
-#define in_map_n  ((uint16_t)(sizeof(in_map)  / sizeof(in_map[0])))
-
-#endif
-
-/* ==========================================================================
- * Global command state.
+ * Backing objects (declared by the project headers):
+ *   Sns_Cfg_struct, Connected_device, tempsensor_calib, sys_state
+ *   sensors_status, deveui_com, appkey
  * ========================================================================== */
 
 cmd_state_t cmd_state;
 
 /* ==========================================================================
- * Small helpers.
+ * com_map - holding registers, sequential from 0x0001.
+ * One map covers all configuration structures via the obj selector.
+ * ========================================================================== */
+
+#define CM(f,a,t)  { (uint16_t)(a), (uint16_t)offsetof(SNS_CFG_Type_common,f), (t), 0u, OBJ_COMMON }
+#define AR(f,a,t)  { (uint16_t)(a), (uint16_t)offsetof(SNS_Archive_Type,f),    (t), 0u, OBJ_ARCHIVE }
+#define WK(f,a,t)  { (uint16_t)(a), (uint16_t)offsetof(SNS_Working_Type,f),    (t), 0u, OBJ_WORKING }
+#define TC(f,a,t)  { (uint16_t)(a), (uint16_t)offsetof(TEMPSENSOR_CALIB,f),    (t), 0u, OBJ_TEMPCAL }
+#define CS(f,a,t)  { (uint16_t)(a), (uint16_t)offsetof(cmd_state_t,f),         (t), 0u, OBJ_CMD }
+#define SS(f,a,t)  { (uint16_t)(a), (uint16_t)offsetof(sys_state_t,f),         (t), 0u, OBJ_SYS }
+#define ST(f,a,t)  { (uint16_t)(a), (uint16_t)offsetof(sensors_status_t,f),    (t), 0u, OBJ_SENSORS }
+#define DV(f,a,t)  { (uint16_t)(a), (uint16_t)offsetof(SNS_Dev_Type,f),        (t), 0u, OBJ_DEVICE }
+
+/* Arrays: element count is the only extra datum. */
+#define TC_N(f,a,t,n) { (uint16_t)(a), (uint16_t)offsetof(TEMPSENSOR_CALIB,f), (t), (n), OBJ_TEMPCAL }
+#define ST_N(f,a,t,n) { (uint16_t)(a), (uint16_t)offsetof(sensors_status_t,f), (t), (n), OBJ_SENSORS }
+#define ARR(a,t,n,obj) { (uint16_t)(a), 0u, (t), (n), (obj) }
+
+static const reg_map_t com_map[] =
+{
+  CM(Build_type,                0x0001, T_U16),
+  CM(current_build_type,        0x0002, T_U16),
+  CM(State,                     0x0003, T_U32),
+  CM(StateErr,                  0x0005, T_U32),
+  CM(SerialLo,                  0x0007, T_U16),
+  CM(SerialHi,                  0x0008, T_U16),
+  CM(HardwareVersion,           0x0009, T_U16),
+  CM(ProductionDate,            0x000A, T_U32),
+  CM(TimeLedStatePulse,         0x000C, T_U16),
+  CM(TimeLedStatePeriod,        0x000D, T_U16),
+  CM(battery_charge_volt_max,   0x000E, T_U16),
+  CM(battery_charge_volt_min,   0x000F, T_U16),
+  CM(battery_charge_volt_lim_1, 0x0010, T_U16),
+  CM(battery_charge_volt_lim_2, 0x0011, T_U16),
+  CM(Gps_type_nav,              0x0012, T_U32),
+  CM(PeriodTimeLora,            0x0014, T_U16),
+  CM(Lora_Config_Flags,         0x0015, T_U16),
+  CM(Lora_freq_rx2,             0x0016, T_U32),
+  CM(Lora_dr_rx2,               0x0018, T_U16),
+  CM(Immobility_Enable,         0x0019, T_U16),
+  CM(Immobility_Window_s,       0x001A, T_U16),
+  CM(Immobility_PreAlarm_s,     0x001B, T_U16),
+  CM(Immobility_Ths_mg,         0x001C, T_U16),
+  CM(Devices_Expected,          0x001D, T_U16),
+  CM(Alert_Flags,               0x001E, T_U16),
+
+  WK(working_hours,             0x0020, T_U32),
+  WK(working_hours_offset,      0x0022, T_U32),
+
+  AR(Archiveinterval,           0x0024, T_U16),
+  AR(ArchiveRecording,          0x0025, T_U8),
+  AR(BegginAddrFile,            0x0026, T_U32),
+  AR(CurrentAddrFile,           0x0028, T_U32),
+
+  { 0x002Au, (uint16_t)offsetof(SNS_CFG, application_language), T_ENUM, 0u, OBJ_CFG },
+
+  TC_N(temperature,             0x002B, T_FLT4, 1),   /* one float  */
+  TC(flag,                      0x002D, T_U16),
+
+  ARR(0x002E, T_STR, SZ_APPKEY, OBJ_APPKEY),          /* 16 bytes   */
+  ARR(0x0036, T_STR, SZ_DEVEUI, OBJ_DEVEUI),          /*  8 bytes   */
+
+  CS(flash_target,              0x0040, T_U16),
+  CS(flash_addr,                0x0041, T_U32),
+  CS(flash_len,                 0x0043, T_U32),
+  CS(flash_key,                 0x0045, T_U32),
+  CS(flash_status,              0x0047, T_U16),
+  CS(erase_mode,                0x0048, T_U16),
+  CS(erase_req,                 0x0049, T_U8),
+  CS(save_config,               0x004A, T_U8),
+  CS(save_config_default,       0x004B, T_U8),
+  CS(load_config_default,       0x004C, T_U8),
+  CS(fw_apply_req,              0x004D, T_U8),
+  CS(int_write_pending,         0x004E, T_U8),
+  CS(ext_write_pending,         0x004F, T_U8),
+  CS(write_addr,                0x0050, T_U32),
+  CS(write_len,                 0x0052, T_U16),
+
+  SS(soft_reset,                0x0053, T_U8),
+  SS(power,                     0x0054, T_ENUM),
+  SS(process,                   0x0055, T_ENUM),
+  SS(fw_pending,                0x0056, T_U8),
+  SS(data_exchange,             0x0057, T_U8),
+  SS(block_sound,               0x0058, T_U8),
+
+  { 0u, 0u, 0u, 0u, 0u }
+};
+
+static const reg_map_t in_map[] =
+{
+  ST(Sensors_ok,                0x0001, T_U8),
+  ST(Orientation,               0x0002, T_U8),
+  ST(Screen_rotation,           0x0003, T_U8),
+  ST(fall_detected,             0x0004, T_U8),
+  ST(battery_charge_percent,    0x0005, T_U16),
+  ST(battery_charge_volt,       0x0006, T_U16),
+  ST_N(Temperature,             0x0007, T_FLT4, 1),
+  ST_N(Humidity,                0x0009, T_FLT4, 1),
+  ST_N(Pressure,                0x000B, T_FLT4, 1),
+  ST_N(Accel_x,                 0x000D, T_FLT4, 1),
+  ST_N(Accel_y,                 0x000F, T_FLT4, 1),
+  ST_N(Accel_z,                 0x0011, T_FLT4, 1),
+  ST_N(Temperature_calib_offset,0x0013, T_FLT4, 1),
+  ST(cnt_init_ok,               0x0015, T_U32),
+  ST(cnt_bme_reads,             0x0017, T_U32),
+  ST(cnt_accel_reads,           0x0019, T_U32),
+  ST(cnt_battery_reads,         0x001B, T_U32),
+  ST(cnt_rotation_events,       0x001D, T_U32),
+  ST(cnt_fall_events,           0x001F, T_U32),
+  ST(cnt_read_ms,               0x0021, T_U32),
+  ST(last_read_ms,              0x0023, T_U32),
+  DV(dev_id,                    0x0025, T_U16),
+  DV(State,                     0x0026, T_U32),
+  DV(StateErr,                  0x0028, T_U32),
+  DV(battery_charge_percent,    0x002A, T_U16),
+  DV(HardwareVersion,           0x002B, T_U16),
+  DV(FirmwareVersion,           0x002C, T_U16),
+
+  { 0u, 0u, 0u, 0u, 0u }
+};
+
+/* ==========================================================================
+ * Byte helpers.
  * ========================================================================== */
 
 static uint16_t rd16be(const uint8_t *p)
@@ -186,79 +153,69 @@ static uint16_t rd16be(const uint8_t *p)
 
 static uint32_t rd32be(const uint8_t *p)
 {
-  return ((uint32_t)p[0] << 24) |
-         ((uint32_t)p[1] << 16) |
-         ((uint32_t)p[2] << 8)  |
-         ((uint32_t)p[3]);
+  return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+         ((uint32_t)p[2] << 8)  | (uint32_t)p[3];
 }
 
 static void wr16be(uint8_t *p, uint16_t v)
 {
   p[0] = (uint8_t)(v >> 8);
-  p[1] = (uint8_t)(v & 0xFFu);
+  p[1] = (uint8_t)v;
 }
 
 static void wr32le(uint8_t *p, uint32_t v)
 {
-  p[0] = (uint8_t)(v);
+  p[0] = (uint8_t)v;
   p[1] = (uint8_t)(v >> 8);
   p[2] = (uint8_t)(v >> 16);
   p[3] = (uint8_t)(v >> 24);
 }
 
-static uint16_t cv_crc16(const uint8_t *buf, uint16_t len)
+/* volatile-safe copy: qualifier dropped through uintptr_t, no warning. */
+static void cp_from(volatile const void *src, void *dst, uint32_t n)
+{
+  memcpy(dst, (const void *)(uintptr_t)src, (size_t)n);
+}
+
+static void cp_to(volatile void *dst, const void *src, uint32_t n)
+{
+  memcpy((void *)(uintptr_t)dst, src, (size_t)n);
+}
+
+uint16_t CreateCRC(uint8_t *DataCRC, uint16_t len)
 {
   uint16_t crc = 0xFFFFu;
   uint16_t i;
+  uint16_t q;
 
-  while (len--)
+  for (q = 0u; q < len; q++)
   {
-    crc ^= (uint16_t)(*buf++);
-
+    crc ^= (uint16_t)DataCRC[q];
     for (i = 0u; i < 8u; i++)
     {
-      if ((crc & 0x0001u) != 0u)
-      {
-        crc = (uint16_t)((crc >> 1) ^ 0xA001u);
-      }
-      else
-      {
-        crc = (uint16_t)(crc >> 1);
-      }
+      if ((crc & 0x0001u) != 0u) { crc = (uint16_t)((crc >> 1) ^ 0xA001u); }
+      else                      { crc = (uint16_t)(crc >> 1); }
     }
   }
 
+  DataCRC[len]      = (uint8_t)(crc & 0xFFu);
+  DataCRC[len + 1u] = (uint8_t)(crc >> 8);
   return crc;
 }
 
-static void cv_append_crc(uint8_t *buf, uint16_t len)
+static uint8_t crc_ok(const uint8_t *buf, uint16_t len)
 {
-  uint16_t crc = cv_crc16(buf, len);
-  buf[len]     = (uint8_t)(crc & 0xFFu);
-  buf[len + 1] = (uint8_t)(crc >> 8);
-}
-
-static uint8_t cv_crc_ok(const uint8_t *buf, uint16_t len)
-{
+  uint8_t  tmp[300];
   uint16_t crc;
 
-  if (len < 4u)
-  {
-    return 0u;
-  }
+  if ((len < 4u) || (len > (uint16_t)sizeof(tmp))) { return 0u; }
 
-  crc = cv_crc16(buf, (uint16_t)(len - 2u));
+  memcpy(tmp, buf, (size_t)(len - 2u));
+  crc = CreateCRC(tmp, (uint16_t)(len - 2u));
+  (void)crc;
 
-  if (buf[len - 2u] != (uint8_t)(crc & 0xFFu))
-  {
-    return 0u;
-  }
-
-  if (buf[len - 1u] != (uint8_t)(crc >> 8))
-  {
-    return 0u;
-  }
-
+  if (tmp[len - 2u] != buf[len - 2u]) { return 0u; }
+  if (tmp[len - 1u] != buf[len - 1u]) { return 0u; }
   return 1u;
 }
 
@@ -271,751 +228,259 @@ static uint16_t CmdError(uint8_t *out, const uint8_t *mas, uint8_t code)
 }
 
 /* ==========================================================================
- * Mutex helpers.
+ * Backing object resolution: one place, no per-register code.
  * ========================================================================== */
 
-static uint8_t cv_lock_measure(void)
+static volatile void *obj_ptr(uint8_t obj)
 {
-  return (tx_mutex_get(&xSemaphore_measure, TIME_MUTEX_DELAY_MEASURE) == TX_SUCCESS) ? 1u : 0u;
+  switch (obj)
+  {
+    case OBJ_COMMON:  return (volatile void *)&Sns_Cfg_struct.Config_common;
+    case OBJ_ARCHIVE: return (volatile void *)&Sns_Cfg_struct.Config_archive;
+    case OBJ_WORKING: return (volatile void *)&Sns_Cfg_struct.Working_data;
+    case OBJ_CFG:     return (volatile void *)&Sns_Cfg_struct;
+    case OBJ_TEMPCAL: return (volatile void *)&tempsensor_calib;
+    case OBJ_APPKEY:  return (volatile void *)appkey;
+    case OBJ_DEVEUI:  return (volatile void *)deveui_com;
+    case OBJ_DEVICE:  return (volatile void *)&Connected_device;
+    case OBJ_SENSORS: return (volatile void *)&sensors_status;
+    case OBJ_CMD:     return (volatile void *)&cmd_state;
+    case OBJ_SYS:     return (volatile void *)&sys_state;
+    default:          return 0;
+  }
 }
 
-static void cv_unlock_measure(void)
+static uint16_t reg_regs(const reg_map_t *m)
 {
-  (void)tx_mutex_put(&xSemaphore_measure);
+  switch (m->type)
+  {
+    case T_U8:
+    case T_U16:
+    case T_ENUM: return 1u;
+    case T_U32:  return 2u;
+    case T_FLT4: return (uint16_t)(2u * m->n);
+    case T_STR:  return (uint16_t)((m->n + 1u) / 2u);
+    default:     return 0u;
+  }
 }
 
-static uint8_t cv_lock_flash(void)
+/* Byte size of one element in RAM. */
+static uint16_t reg_esz(const reg_map_t *m)
 {
-  return (tx_mutex_get(&xSemaphore_flash, TIME_MUTEX_DELAY_FLASH) == TX_SUCCESS) ? 1u : 0u;
+  switch (m->type)
+  {
+    case T_U8:   return 1u;
+    case T_U16:  return 2u;
+    case T_STR:  return 1u;
+    default:     return 4u;   /* T_U32, T_ENUM, T_FLT4 */
+  }
 }
 
-static void cv_unlock_flash(void)
-{
-  (void)tx_mutex_put(&xSemaphore_flash);
-}
-
-/* ==========================================================================
- * Audio quiet window.
- * ========================================================================== */
-
-static uint8_t cv_audio_busy(void)
-{
-#if defined(CV_HAVE_AUDIO)
-  if (audio_status.sound_index != 0u)
-  {
-    return 1u;
-  }
-#endif
-
-  return 0u;
-}
-
-/* ==========================================================================
- * Special contiguous block 0x0F00..0x0F09.
- *
- * No per-address switch in read/write.
- * Host can read/write the whole block as normal 16-bit registers.
- * ========================================================================== */
-
-static uint16_t cv_block[CV_FLASH_BLOCK_REGS];
-static uint8_t  cv_block_dirty = 1u;
-static uint8_t  cv_block_pending = 0u;
-
-static void cv_block_pack(void)
-{
-  cv_block[0] = cmd_state.build_type;
-  cv_block[1] = cmd_state.flash_target;
-
-  cv_block[2] = (uint16_t)(cmd_state.flash_addr & 0xFFFFu);
-  cv_block[3] = (uint16_t)(cmd_state.flash_addr >> 16);
-
-  cv_block[4] = (uint16_t)(cmd_state.flash_len & 0xFFFFu);
-  cv_block[5] = (uint16_t)(cmd_state.flash_len >> 16);
-
-  cv_block[6] = (uint16_t)(cmd_state.flash_key & 0xFFFFu);
-  cv_block[7] = (uint16_t)(cmd_state.flash_key >> 16);
-
-  /* Command register is self-clearing. */
-  cv_block[8] = 0u;
-
-  cv_block[9] = cmd_state.flash_status;
-
-  cv_block_dirty = 0u;
-}
-
-static uint8_t cv_key_ok(void)
-{
-  return (cmd_state.flash_key != 0u) ? 1u : 0u;
-}
-
-static void cv_block_apply(void)
-{
-  uint16_t cmd;
-
-  if (cv_block_pending == 0u)
-  {
-    return;
-  }
-
-  cv_block_pending = 0u;
-
-  cmd_state.build_type   = cv_block[0];
-  cmd_state.flash_target = cv_block[1];
-
-  cmd_state.flash_addr = ((uint32_t)cv_block[3] << 16) | (uint32_t)cv_block[2];
-  cmd_state.flash_len  = ((uint32_t)cv_block[5] << 16) | (uint32_t)cv_block[4];
-  cmd_state.flash_key  = ((uint32_t)cv_block[7] << 16) | (uint32_t)cv_block[6];
-
-  cmd = cv_block[8];
-
-  /* Command pulse is consumed immediately. */
-  cv_block[8] = 0u;
-
-  if (cmd == CV_CMD_NONE)
-  {
-    cv_block_pack();
-    return;
-  }
-
-  if (cv_key_ok() == 0u)
-  {
-    cmd_state.flash_status = CV_FLASH_ST_PROTECTED;
-    cv_block_pack();
-    return;
-  }
-
-  if (cmd == CV_CMD_ERASE)
-  {
-    if (cmd_state.flash_target == CV_TARGET_INT_BOOT)
-    {
-#if defined(CV_BOOT_READY)
-      if (boot_flash_allowed() == 0)
-      {
-        cmd_state.flash_status = CV_FLASH_ST_PROTECTED;
-      }
-      else
-      {
-        cmd_state.erase_mode = 1u;
-        cmd_state.erase_req  = 1u;
-        cmd_state.flash_status = CV_FLASH_ST_BUSY;
-      }
-#else
-      cmd_state.flash_status = CV_FLASH_ST_PROTECTED;
-#endif
-    }
-    else if (cmd_state.flash_target == CV_TARGET_EXT_SOUND ||
-             cmd_state.flash_target == CV_TARGET_EXT_FW ||
-             cmd_state.flash_target == CV_TARGET_LOGS)
-    {
-#if defined(CV_HAVE_EXTSTORE)
-      cmd_state.erase_mode = 1u;
-      cmd_state.erase_req  = 1u;
-      cmd_state.flash_status = CV_FLASH_ST_BUSY;
-#else
-      cmd_state.flash_status = CV_FLASH_ST_ERR_IO;
-#endif
-    }
-    else
-    {
-      cmd_state.flash_status = CV_FLASH_ST_ERR_ADDR;
-    }
-  }
-  else if (cmd == CV_CMD_FW_APPLY)
-  {
-    if (cmd_state.flash_target == CV_TARGET_EXT_FW)
-    {
-      cmd_state.fw_apply_req = 1u;
-      cmd_state.flash_status = CV_FLASH_ST_BUSY;
-    }
-    else
-    {
-      cmd_state.flash_status = CV_FLASH_ST_ERR_ADDR;
-    }
-  }
-  else
-  {
-    cmd_state.flash_status = CV_FLASH_ST_ERR_ADDR;
-  }
-
-  cv_block_dirty = 1u;
-  cv_block_pack();
-}
-
-static uint8_t cv_block_read(uint16_t addr, uint16_t *val)
-{
-  uint16_t idx;
-
-  if (addr < CV_FLASH_BLOCK_BASE || addr > CV_FLASH_BLOCK_END)
-  {
-    return 0u;
-  }
-
-  cv_block_apply();
-
-  if (cv_block_dirty != 0u)
-  {
-    cv_block_pack();
-  }
-
-  idx  = (uint16_t)(addr - CV_FLASH_BLOCK_BASE);
-  *val = cv_block[idx];
-
-  return 1u;
-}
-
-static uint8_t cv_block_write(uint16_t addr, uint16_t val)
-{
-  uint16_t idx;
-
-  if (addr < CV_FLASH_BLOCK_BASE || addr > CV_FLASH_BLOCK_END)
-  {
-    return 0u;
-  }
-
-  idx = (uint16_t)(addr - CV_FLASH_BLOCK_BASE);
-
-  /* Status register is read-only. */
-  if (idx == 9u)
-  {
-    return 0u;
-  }
-
-  cv_block[idx] = val;
-
-  /*
-   * Do not apply immediately inside Modbus write.
-   * The whole block is applied before next read or in service/dispatch.
-   */
-  cv_block_pending = 1u;
-  cv_block_dirty   = 1u;
-
-  return 1u;
-}
-
-/* ==========================================================================
- * Scattered system registers.
- * ========================================================================== */
-
-typedef enum
-{
-  CV_SYS_RO  = 0,
-  CV_SYS_RW  = 1,
-  CV_SYS_WO  = 2
-} cv_sys_acc_t;
-
-typedef enum
-{
-  CV_SYS_KIND_NONE = 0,
-  CV_SYS_KIND_U16,
-  CV_SYS_KIND_U8,
-  CV_SYS_KIND_U32_LO,
-  CV_SYS_KIND_U32_HI,
-  CV_SYS_KIND_ERASE_MODE,
-  CV_SYS_KIND_SOFT_RESET,
-  CV_SYS_KIND_SAVE_CONFIG,
-  CV_SYS_KIND_SAVE_CONFIG_DEFAULT,
-  CV_SYS_KIND_LOAD_CONFIG_DEFAULT,
-  CV_SYS_KIND_CLEAR_DATA_EXCHANGE,
-  CV_SYS_KIND_TEMP_CALIB,
-  CV_SYS_KIND_POWER_OFF
-} cv_sys_kind_t;
-
-typedef struct
-{
-  uint16_t        addr;
-  uint8_t         acc;
-  uint8_t         kind;
-  volatile void  *ptr;
-} cv_sys_item_t;
-
-static const cv_sys_item_t cv_sys_items[] =
-{
-  { 0x0001u, CV_SYS_RW, CV_SYS_KIND_ERASE_MODE, &cmd_state.erase_mode },
-  { 0x0003u, CV_SYS_RW, CV_SYS_KIND_U16, &state_f },
-  { 0x0004u, CV_SYS_RO, CV_SYS_KIND_U32_LO, &size_f },
-  { 0x0005u, CV_SYS_WO, CV_SYS_KIND_SOFT_RESET, 0 },
-  { 0x0006u, CV_SYS_RW, CV_SYS_KIND_U8, &TamperReset },
-
-  { 0x0240u, CV_SYS_WO, CV_SYS_KIND_SAVE_CONFIG, &cmd_state.save_config },
-  { 0x0250u, CV_SYS_WO, CV_SYS_KIND_SAVE_CONFIG_DEFAULT, &cmd_state.save_config_default },
-  { 0x0252u, CV_SYS_WO, CV_SYS_KIND_LOAD_CONFIG_DEFAULT, &cmd_state.load_config_default },
-
-  { 0x0254u, CV_SYS_WO, CV_SYS_KIND_CLEAR_DATA_EXCHANGE, 0 },
-  { 0x0256u, CV_SYS_WO, CV_SYS_KIND_TEMP_CALIB, 0 },
-
-  { 0x0300u, CV_SYS_RW, CV_SYS_KIND_U16, &adc_zero_calibration },
-  { 0x0301u, CV_SYS_RW, CV_SYS_KIND_U16, &adc_span_calibration },
-
-  { 0x0700u, CV_SYS_RW, CV_SYS_KIND_U8, &application_language },
-  { 0x0800u, CV_SYS_WO, CV_SYS_KIND_POWER_OFF, 0 },
-
-  { 0u, 0u, 0u, 0 }
-};
-
-static const cv_sys_item_t *cv_sys_find(uint16_t addr)
+static const reg_map_t *map_find(const reg_map_t *map, uint16_t addr)
 {
   uint16_t i;
 
-  for (i = 0u; cv_sys_items[i].addr != 0u; i++)
+  for (i = 0u; map[i].addr != 0u; i++)
   {
-    if (cv_sys_items[i].addr == addr)
+    uint16_t regs = reg_regs(&map[i]);
+
+    if (regs == 0u) { continue; }
+
+    if ((addr >= map[i].addr) && (addr < (uint16_t)(map[i].addr + regs)))
     {
-      return &cv_sys_items[i];
+      return &map[i];
     }
   }
 
   return 0;
 }
 
-static uint8_t cv_sys_read(uint16_t addr, uint16_t *val)
+static uint8_t reg_get(const reg_map_t *m, uint16_t addr, uint16_t *val)
 {
-  const cv_sys_item_t *it = cv_sys_find(addr);
+  volatile uint8_t *p;
+  uint16_t k   = (uint16_t)(addr - m->addr);
+  uint16_t esz = reg_esz(m);
 
-  if (it == 0)
-  {
-    return 0u;
-  }
-
-  switch (it->kind)
-  {
-    case CV_SYS_KIND_U16:
-      if (it->ptr != 0)
-      {
-        *val = *(volatile uint16_t *)it->ptr;
-        return 1u;
-      }
-      break;
-
-    case CV_SYS_KIND_U8:
-      if (it->ptr != 0)
-      {
-        *val = (uint16_t)(*(volatile uint8_t *)it->ptr);
-        return 1u;
-      }
-      break;
-
-    case CV_SYS_KIND_U32_LO:
-      if (it->ptr != 0)
-      {
-        *val = (uint16_t)(*(volatile uint32_t *)it->ptr & 0xFFFFu);
-        return 1u;
-      }
-      break;
-
-    case CV_SYS_KIND_U32_HI:
-      if (it->ptr != 0)
-      {
-        *val = (uint16_t)(*(volatile uint32_t *)it->ptr >> 16);
-        return 1u;
-      }
-      break;
-
-    case CV_SYS_KIND_ERASE_MODE:
-      *val = cmd_state.erase_mode;
-      return 1u;
-
-    default:
-      break;
-  }
-
-  return 0u;
-}
-
-static uint8_t cv_sys_write(uint16_t addr, uint16_t val)
-{
-  const cv_sys_item_t *it = cv_sys_find(addr);
-
-  if (it == 0)
-  {
-    return 0u;
-  }
-
-  if (it->acc == CV_SYS_RO)
-  {
-    return 0u;
-  }
-
-  switch (it->kind)
-  {
-    case CV_SYS_KIND_U16:
-      if (it->ptr != 0)
-      {
-        *(volatile uint16_t *)it->ptr = val;
-        return 1u;
-      }
-      break;
-
-    case CV_SYS_KIND_U8:
-      if (it->ptr != 0)
-      {
-        *(volatile uint8_t *)it->ptr = (uint8_t)val;
-        return 1u;
-      }
-      break;
-
-    case CV_SYS_KIND_U32_LO:
-      if (it->ptr != 0)
-      {
-        volatile uint32_t *p = (volatile uint32_t *)it->ptr;
-        *p = (*p & 0xFFFF0000u) | (uint32_t)val;
-        return 1u;
-      }
-      break;
-
-    case CV_SYS_KIND_U32_HI:
-      if (it->ptr != 0)
-      {
-        volatile uint32_t *p = (volatile uint32_t *)it->ptr;
-        *p = (*p & 0x0000FFFFu) | ((uint32_t)val << 16);
-        return 1u;
-      }
-      break;
-
-    case CV_SYS_KIND_ERASE_MODE:
-      if (val == 1u || val == 2u)
-      {
-        cmd_state.erase_mode = val;
-        cmd_state.erase_req  = 1u;
-        cmd_state.flash_status = CV_FLASH_ST_BUSY;
-        return 1u;
-      }
-
-      if (val == 0u)
-      {
-        cmd_state.erase_mode = 0u;
-        cmd_state.erase_req  = 0u;
-        return 1u;
-      }
-
-      return 0u;
-
-    case CV_SYS_KIND_SOFT_RESET:
-      if (val != 0u)
-      {
-        Command_vector_HookSoftReset();
-      }
-      return 1u;
-
-    case CV_SYS_KIND_SAVE_CONFIG:
-      if (val != 0u)
-      {
-        cmd_state.save_config = 1u;
-      }
-      return 1u;
-
-    case CV_SYS_KIND_SAVE_CONFIG_DEFAULT:
-      if (val != 0u)
-      {
-        cmd_state.save_config_default = 1u;
-      }
-      return 1u;
-
-    case CV_SYS_KIND_LOAD_CONFIG_DEFAULT:
-      if (val != 0u)
-      {
-        cmd_state.load_config_default = 1u;
-      }
-      return 1u;
-
-    case CV_SYS_KIND_CLEAR_DATA_EXCHANGE:
-      Command_vector_HookClearDataExchange();
-      return 1u;
-
-    case CV_SYS_KIND_TEMP_CALIB:
-      Command_vector_HookTempCalib();
-      return 1u;
-
-    case CV_SYS_KIND_POWER_OFF:
-      if (val != 0u)
-      {
-        Command_vector_HookPowerOff();
-      }
-      return 1u;
-
-    default:
-      break;
-  }
-
-  return 0u;
-}
-
-/* ==========================================================================
- * Unified special/control register access.
- * ========================================================================== */
-
-static uint8_t ctrl_reg_read(uint16_t addr, uint16_t *val)
-{
-  if (val == 0)
-  {
-    return 0u;
-  }
-
-  if (cv_block_read(addr, val))
-  {
-    return 1u;
-  }
-
-  return cv_sys_read(addr, val);
-}
-
-static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
-{
-  if (cv_block_write(addr, val))
-  {
-    return 1u;
-  }
-
-  return cv_sys_write(addr, val);
-}
-
-/* ==========================================================================
- * Ordinary mapped register access.
- * ========================================================================== */
-
-static int reg_find(const reg_map_t *map, uint16_t n, uint16_t addr, uint16_t *idx)
-{
-  uint16_t i;
-
-  for (i = 0u; i < n; i++)
-  {
-    if (map[i].addr == 0u && map[i].type == 0u && map[i].off == 0u)
-    {
-      break;
-    }
-
-    if (map[i].addr == addr)
-    {
-      *idx = i;
-      return (int)i;
-    }
-
-    /* Allow high half of a 32-bit register. */
-    if (map[i].type == T_U32 && (uint16_t)(map[i].addr + 1u) == addr)
-    {
-      *idx = i;
-      return (int)i;
-    }
-  }
-
-  return -1;
-}
-
-static uint8_t reg_read_mapped(const reg_map_t *map, uint16_t n,
-                               uint16_t addr, void *base, uint16_t *val)
-{
-  uint16_t idx;
-  const reg_map_t *m;
-  uint8_t *p;
-
-  if (reg_find(map, n, addr, &idx) < 0)
-  {
-    return 0u;
-  }
-
-  m = &map[idx];
-  p = (uint8_t *)base + m->off;
+  p = (volatile uint8_t *)obj_ptr(m->obj);
+  if (p == 0) { return 0u; }
+  p += m->off;
 
   switch (m->type)
   {
+    case T_U8:
     case T_U16:
-      *val = *(uint16_t *)p;
+    case T_ENUM:
+    {
+      uint32_t v = 0u;
+      cp_from(p, &v, esz);
+      *val = (uint16_t)v;
       return 1u;
+    }
 
     case T_U32:
     {
       uint32_t v;
-      memcpy(&v, p, sizeof(v));
-
-      if (addr == m->addr)
-      {
-        *val = (uint16_t)(v & 0xFFFFu);
-      }
-      else
-      {
-        *val = (uint16_t)(v >> 16);
-      }
-
+      cp_from(p, &v, esz);
+      *val = (k == 0u) ? (uint16_t)(v & 0xFFFFu) : (uint16_t)(v >> 16);
       return 1u;
     }
 
-    default:
-      break;
-  }
+    case T_FLT4:
+    {
+      uint16_t idx = (uint16_t)(k / 2u);
+      uint32_t v;
 
-  return 0u;
+      if (idx >= m->n) { return 0u; }
+
+      cp_from(p + (uint32_t)idx * esz, &v, esz);
+      *val = ((k & 1u) == 0u) ? (uint16_t)(v & 0xFFFFu) : (uint16_t)(v >> 16);
+      return 1u;
+    }
+
+    case T_STR:
+    {
+      uint32_t b = (uint32_t)k * 2u;
+      uint8_t hi = 0u;
+      uint8_t lo = 0u;
+
+      if (b >= m->n) { return 0u; }
+
+      cp_from(p + b, &hi, 1u);
+      if ((b + 1u) < m->n) { cp_from(p + b + 1u, &lo, 1u); }
+
+      *val = (uint16_t)(((uint16_t)hi << 8) | lo);
+      return 1u;
+    }
+
+    default: return 0u;
+  }
 }
 
-static uint8_t reg_write_mapped(const reg_map_t *map, uint16_t n,
-                                uint16_t addr, void *base, uint16_t val)
+static uint8_t reg_set(const reg_map_t *m, uint16_t addr, uint16_t val)
 {
-  uint16_t idx;
-  const reg_map_t *m;
-  uint8_t *p;
+  volatile uint8_t *p;
+  uint16_t k   = (uint16_t)(addr - m->addr);
+  uint16_t esz = reg_esz(m);
 
-  if (reg_find(map, n, addr, &idx) < 0)
-  {
-    return 0u;
-  }
-
-  m = &map[idx];
-
-  if (m->type == T_U32 && addr != m->addr)
-  {
-    /* High half write requires read-modify-write. */
-    uint32_t v;
-    p = (uint8_t *)base + m->off;
-    memcpy(&v, p, sizeof(v));
-    v = (v & 0x0000FFFFu) | ((uint32_t)val << 16);
-    memcpy(p, &v, sizeof(v));
-    return 1u;
-  }
-
-  p = (uint8_t *)base + m->off;
+  p = (volatile uint8_t *)obj_ptr(m->obj);
+  if (p == 0) { return 0u; }
+  p += m->off;
 
   switch (m->type)
   {
+    case T_U8:
+    {
+      uint8_t v = (uint8_t)val; cp_to(p, &v, esz); return 1u;
+    }
+
     case T_U16:
-      *(uint16_t *)p = val;
-      return 1u;
+      cp_to(p, &val, esz); return 1u;
+
+    case T_ENUM:
+    {
+      uint32_t v = (uint32_t)val; cp_to(p, &v, esz); return 1u;
+    }
 
     case T_U32:
     {
       uint32_t v;
-      memcpy(&v, p, sizeof(v));
-      v = (v & 0xFFFF0000u) | (uint32_t)val;
-      memcpy(p, &v, sizeof(v));
+      cp_from(p, &v, esz);
+      v = (k == 0u) ? ((v & 0xFFFF0000u) | (uint32_t)val)
+                    : ((v & 0x0000FFFFu) | ((uint32_t)val << 16));
+      cp_to(p, &v, esz);
       return 1u;
     }
 
-    default:
-      break;
-  }
+    case T_FLT4:
+    {
+      uint16_t idx = (uint16_t)(k / 2u);
+      volatile uint8_t *q;
+      uint32_t v;
 
-  return 0u;
+      if (idx >= m->n) { return 0u; }
+
+      q = p + (uint32_t)idx * esz;
+      cp_from(q, &v, esz);
+      v = ((k & 1u) == 0u) ? ((v & 0xFFFF0000u) | (uint32_t)val)
+                           : ((v & 0x0000FFFFu) | ((uint32_t)val << 16));
+      cp_to(q, &v, esz);
+      return 1u;
+    }
+
+    case T_STR:
+    {
+      uint32_t b = (uint32_t)k * 2u;
+      uint8_t hi = (uint8_t)(val >> 8);
+      uint8_t lo = (uint8_t)val;
+
+      if (b >= m->n) { return 0u; }
+
+      cp_to(p + b, &hi, 1u);
+      if ((b + 1u) < m->n) { cp_to(p + b + 1u, &lo, 1u); }
+      return 1u;
+    }
+
+    default: return 0u;
+  }
+}
+/* ==========================================================================
+ * Register access. No switch by address anywhere.
+ * ========================================================================== */
+
+static uint8_t hold_read(uint16_t addr, uint16_t *val)
+{
+  const reg_map_t *m = map_find(com_map, addr);
+
+  if (m == 0) { return 0u; }
+  return reg_get(m, addr, val);
 }
 
-static uint8_t cv_chan_ok(uint16_t chan)
+static uint8_t hold_write(uint16_t addr, uint16_t val)
 {
-  if (chan != 0u && chan != (uint16_t)(NOCHAN >> 4))
-  {
-    return 0u;
-  }
+  const reg_map_t *m = map_find(com_map, addr);
 
-  return 1u;
+  if (m == 0) { return 0u; }
+  return reg_set(m, addr, val);
 }
 
-static uint8_t cv_read_register(uint16_t full_addr, uint16_t *val)
+static uint8_t input_read(uint16_t addr, uint16_t *val)
 {
-  uint16_t sub  = (uint16_t)(full_addr & 0x0FFFu);
-  uint16_t chan = (uint16_t)((full_addr >> 12) & 0x0Fu);
+  const reg_map_t *m = map_find(in_map, addr);
 
-  if (cv_chan_ok(chan) == 0u)
-  {
-    return 0u;
-  }
-
-  /* Common config registers. */
-  if (reg_read_mapped(com_map, com_map_n, sub,
-                      (void *)&Sns_Cfg_struct.Config_common, val))
-  {
-    return 1u;
-  }
-
-  /*
-   * Per-channel sensor registers are disabled in this build because
-   * current SNS_CFG does not expose a Sensor member.
-   * Restore this block when real sn_map and sensor base are available.
-   */
-
-  /* Input telemetry registers. */
-  if (reg_read_mapped(in_map, in_map_n, sub,
-                      (void *)&Sns_Cfg_struct.Config_common, val))
-  {
-    return 1u;
-  }
-
-  /* Special/control block and scattered system registers. */
-  if (ctrl_reg_read(full_addr, val))
-  {
-    return 1u;
-  }
-
-  return 0u;
-}
-
-static uint8_t cv_write_register(uint16_t full_addr, uint16_t val)
-{
-  uint16_t sub  = (uint16_t)(full_addr & 0x0FFFu);
-  uint16_t chan = (uint16_t)((full_addr >> 12) & 0x0Fu);
-
-  if (cv_chan_ok(chan) == 0u)
-  {
-    return 0u;
-  }
-
-  /* Common config registers. */
-  if (reg_write_mapped(com_map, com_map_n, sub,
-                       (void *)&Sns_Cfg_struct.Config_common, val))
-  {
-    return 1u;
-  }
-
-  /*
-   * Per-channel sensor registers are disabled in this build because
-   * current SNS_CFG does not expose a Sensor member.
-   */
-
-  /* Special/control block and scattered system registers. */
-  if (ctrl_reg_write(full_addr, val))
-  {
-    return 1u;
-  }
-
-  return 0u;
+  if (m != 0) { return reg_get(m, addr, val); }
+  return hold_read(addr, val);
 }
 
 /* ==========================================================================
- * CmdFunc3 / CmdFunc4 / CmdFunc6 / CmdFunc16
+ * 0x03 / 0x04 / 0x06 / 0x10
  * ========================================================================== */
 
 uint16_t CmdFunc3(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 {
-  uint16_t addr;
-  uint16_t qty;
-  uint16_t i;
+  uint16_t addr = rd16be(&mas[2]);
+  uint16_t cnt  = rd16be(&mas[4]);
   uint16_t need;
+  uint16_t i;
 
   (void)len;
 
-  addr = rd16be(&mas[2]);
-  qty  = rd16be(&mas[4]);
+  if ((cnt == 0u) || (cnt > 125u)) { return CmdError(out, mas, CMD_ERR_VALUE); }
 
-  if (qty == 0u || qty > 125u)
-  {
-    return CmdError(out, mas, CMD_ERR_VALUE);
-  }
-
-  need = (uint16_t)(3u + qty * 2u);
-
-  if (cap < need)
-  {
-    return CmdError(out, mas, CMD_ERR_LENGTH);
-  }
+  need = (uint16_t)(3u + cnt * 2u);
+  if (cap < need) { return CmdError(out, mas, CMD_ERR_VALUE); }
 
   out[0] = mas[0];
   out[1] = mas[1];
-  out[2] = (uint8_t)(qty * 2u);
+  out[2] = (uint8_t)(cnt * 2u);
 
-  for (i = 0u; i < qty; i++)
+  for (i = 0u; i < cnt; i++)
   {
     uint16_t v;
-    uint16_t a = (uint16_t)(addr + i);
 
-    if (cv_read_register(a, &v) == 0u)
+    if (hold_read((uint16_t)(addr + i), &v) == 0u)
     {
       return CmdError(out, mas, CMD_ERR_ADDR);
     }
-
     wr16be(&out[3u + i * 2u], v);
   }
 
@@ -1024,24 +489,44 @@ uint16_t CmdFunc3(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 
 uint16_t CmdFunc4(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 {
-  /* Input registers use the same read path in this implementation. */
-  return CmdFunc3(mas, len, out, cap);
+  uint16_t addr = rd16be(&mas[2]);
+  uint16_t cnt  = rd16be(&mas[4]);
+  uint16_t need;
+  uint16_t i;
+
+  (void)len;
+
+  if ((cnt == 0u) || (cnt > 125u)) { return CmdError(out, mas, CMD_ERR_VALUE); }
+
+  need = (uint16_t)(3u + cnt * 2u);
+  if (cap < need) { return CmdError(out, mas, CMD_ERR_VALUE); }
+
+  out[0] = mas[0];
+  out[1] = mas[1];
+  out[2] = (uint8_t)(cnt * 2u);
+
+  for (i = 0u; i < cnt; i++)
+  {
+    uint16_t v;
+
+    if (input_read((uint16_t)(addr + i), &v) == 0u)
+    {
+      return CmdError(out, mas, CMD_ERR_ADDR);
+    }
+    wr16be(&out[3u + i * 2u], v);
+  }
+
+  return need;
 }
 
 uint16_t CmdFunc6(const uint8_t *mas, uint16_t len, uint8_t *out)
 {
-  uint16_t addr;
-  uint16_t val;
+  uint16_t addr = rd16be(&mas[2]);
+  uint16_t val  = rd16be(&mas[4]);
 
   (void)len;
 
-  addr = rd16be(&mas[2]);
-  val  = rd16be(&mas[4]);
-
-  if (cv_write_register(addr, val) == 0u)
-  {
-    return CmdError(out, mas, CMD_ERR_ADDR);
-  }
+  if (hold_write(addr, val) == 0u) { return CmdError(out, mas, CMD_ERR_ADDR); }
 
   memcpy(out, mas, 6u);
   return 6u;
@@ -1049,36 +534,21 @@ uint16_t CmdFunc6(const uint8_t *mas, uint16_t len, uint8_t *out)
 
 uint16_t CmdFunc16(const uint8_t *mas, uint16_t len, uint8_t *out)
 {
-  uint16_t addr;
-  uint16_t qty;
-  uint16_t bytes;
+  uint16_t addr  = rd16be(&mas[2]);
+  uint16_t cnt   = rd16be(&mas[4]);
+  uint16_t bytes = (uint16_t)mas[6];
   uint16_t i;
 
-  addr  = rd16be(&mas[2]);
-  qty   = rd16be(&mas[4]);
-  bytes = (uint16_t)mas[6];
+  if ((cnt == 0u) || (cnt > 123u))        { return CmdError(out, mas, CMD_ERR_VALUE); }
+  if (bytes != (uint16_t)(cnt * 2u))      { return CmdError(out, mas, CMD_ERR_VALUE); }
+  if (len != (uint16_t)(7u + bytes + 2u)) { return CmdError(out, mas, CMD_ERR_VALUE); }
 
-  if (qty == 0u || qty > 123u)
-  {
-    return CmdError(out, mas, CMD_ERR_VALUE);
-  }
-
-  if (bytes != (uint16_t)(qty * 2u))
-  {
-    return CmdError(out, mas, CMD_ERR_VALUE);
-  }
-
-  if (len != (uint16_t)(7u + bytes + 2u))
-  {
-    return CmdError(out, mas, CMD_ERR_LENGTH);
-  }
-
-  for (i = 0u; i < qty; i++)
+  for (i = 0u; i < cnt; i++)
   {
     uint16_t a = (uint16_t)(addr + i);
     uint16_t v = rd16be(&mas[7u + i * 2u]);
 
-    if (cv_write_register(a, v) == 0u)
+    if (hold_write(a, v) == 0u)
     {
       return CmdError(out, mas, CMD_ERR_ADDR);
     }
@@ -1089,69 +559,37 @@ uint16_t CmdFunc16(const uint8_t *mas, uint16_t len, uint8_t *out)
 }
 
 /* ==========================================================================
- * Log commands.
+ * 0x0C - event log read (log v2, slot LOG_SLOT_SIZE bytes).
  * ========================================================================== */
 
 uint16_t CmdFunc12(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 {
-  uint16_t ptr16;
-  uint16_t cnt;
-  uint16_t i;
-  uint32_t ptr;
-  uint32_t beg;
-  uint32_t cur;
+  uint32_t ptr = (uint32_t)rd16be(&mas[2]);
+  uint16_t cnt = rd16be(&mas[4]);
+  uint32_t cur = Sns_Cfg_struct.Config_archive.CurrentAddrFile;
+  uint32_t beg = Sns_Cfg_struct.Config_archive.BegginAddrFile;
   uint32_t payload;
+  uint16_t i;
   EVENT_LOG rec;
 
   (void)len;
 
-  ptr16 = rd16be(&mas[2]);
-  cnt   = rd16be(&mas[4]);
+  if (cnt == 0u) { return CmdError(out, mas, CMD_ERR_VALUE); }
 
-  if (cnt == 0u || cnt > 255u)
+  payload = (uint32_t)cnt * LOG_SLOT_SIZE;
+  if ((payload > 3000u) || (cap < (uint16_t)(3u + payload)))
   {
     return CmdError(out, mas, CMD_ERR_VALUE);
   }
 
-  payload = (uint32_t)cnt * (uint32_t)SIZE_LOG;
-
-  if (payload > 3000u)
+  if ((cur == beg) ||
+      ((uint32_t)(ptr - beg) >= (uint32_t)(cur - beg)) ||
+      ((uint32_t)(cur - ptr) < (uint32_t)cnt))
   {
-    return CmdError(out, mas, CMD_ERR_VALUE);
-  }
-
-  if (cap < (uint16_t)(3u + payload))
-  {
-    return CmdError(out, mas, CMD_ERR_LENGTH);
-  }
-
-  if (!cv_lock_flash())
-  {
-    return CmdError(out, mas, CMD_ERR_BUSY);
-  }
-
-  beg = Sns_Cfg_struct.Config_archive.BegginAddrFile;
-  cur = Sns_Cfg_struct.Config_archive.CurrentAddrFile;
-
-  if (cur == beg)
-  {
-    cv_unlock_flash();
     return CmdError(out, mas, CMD_ERR_ADDR);
   }
 
-  ptr = (uint32_t)ptr16;
-
-  if (ptr < beg)
-  {
-    cv_unlock_flash();
-    return CmdError(out, mas, CMD_ERR_ADDR);
-  }
-
-  if ((ptr + (uint32_t)cnt) > cur)
-  {
-    cv_unlock_flash();
-    return CmdError(out, mas, CMD_ERR_ADDR);
-  }
+  sys_state.process = SYS_PROC_ARCHIVE;
 
   out[0] = mas[0];
   out[1] = mas[1];
@@ -1163,367 +601,278 @@ uint16_t CmdFunc12(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 
     if (rc != 0)
     {
-      cv_unlock_flash();
-
-      if (rc == 1)
-      {
-        return CmdError(out, mas, CMD_ERR_ADDR);
-      }
-
-      if (rc == 2)
-      {
-        return CmdError(out, mas, CMD_ERR_VERIFY);
-      }
-
-      return CmdError(out, mas, CMD_ERR_IO);
+      return CmdError(out, mas, (rc == 1) ? CMD_ERR_ADDR : CMD_ERR_IO);
     }
-
-    memcpy(&out[3u + (uint32_t)i * (uint32_t)SIZE_LOG], &rec, SIZE_LOG);
+    memcpy(&out[3u + (uint32_t)i * LOG_SLOT_SIZE], &rec, LOG_SLOT_SIZE);
   }
 
-  cv_unlock_flash();
   return (uint16_t)(3u + payload);
 }
 
+/* ==========================================================================
+ * 0x14 - log search by time interval.
+ * ========================================================================== */
+
 uint16_t CmdFunc20(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 {
-  uint32_t t_from;
-  uint32_t t_to;
-  uint32_t ptr_from = 0u;
-  uint32_t ptr_to   = 0u;
+  uint32_t t_from = rd32be(&mas[2]);
+  uint32_t t_to   = rd32be(&mas[6]);
+  uint32_t pf = 0u;
+  uint32_t pt = 0u;
   int rc;
 
   (void)len;
-  (void)cap;
 
-  t_from = rd32be(&mas[2]);
-  t_to   = rd32be(&mas[6]);
+  if (cap < 12u)     { return CmdError(out, mas, CMD_ERR_VALUE); }
+  if (t_to < t_from) { return CmdError(out, mas, CMD_ERR_VALUE); }
 
-  if (t_to < t_from)
-  {
-    return CmdError(out, mas, CMD_ERR_VALUE);
-  }
+  sys_state.process = SYS_PROC_ARCHIVE;
 
-  if (!cv_lock_flash())
-  {
-    return CmdError(out, mas, CMD_ERR_BUSY);
-  }
-
-  rc = log_find_by_time(&Sns_Cfg_struct, t_from, t_to, &ptr_from, &ptr_to);
-
-  cv_unlock_flash();
-
-  if (rc < 0)
-  {
-    return CmdError(out, mas, CMD_ERR_IO);
-  }
-
-  if (rc == 2)
-  {
-    return CmdError(out, mas, CMD_ERR_VERIFY);
-  }
+  rc = log_find_by_time(&Sns_Cfg_struct, t_from, t_to, &pf, &pt);
+  if (rc < 0) { return CmdError(out, mas, CMD_ERR_IO); }
 
   out[0] = mas[0];
   out[1] = mas[1];
-  wr32le(&out[2], ptr_from);
-  wr32le(&out[6], ptr_to);
-
+  wr32le(&out[2], pf);
+  wr32le(&out[6], pt);
   return 10u;
 }
 
 /* ==========================================================================
- * Flash staging commands.
+ * 0x0E - internal flash staging (bootloader area).
  * ========================================================================== */
 
 uint16_t CmdFunc14(const uint8_t *mas, uint16_t len, uint8_t *out)
 {
-  uint32_t addr;
-  uint16_t size;
+  uint32_t addr = rd32be(&mas[2]);
+  uint16_t size = (uint16_t)mas[6];
 
   (void)len;
 
-  /* Make sure previous block writes are applied. */
-  cv_block_apply();
-
   memcpy(out, mas, 6u);
 
-  addr = rd32be(&mas[2]);
-  size = (uint16_t)mas[6];
-
-  if (size == 0u || size > CV_WRITE_BUF_SIZE)
+  if ((size == 0u) || (size > CV_WRITE_BUF_SIZE))
   {
-    cmd_state.flash_status = CV_FLASH_ST_ERR_ADDR;
+    cmd_state.flash_status = CV_ST_ADDR;
     return CmdError(out, mas, CMD_ERR_VALUE);
   }
 
-  if ((addr & 0x03u) != 0u || (size & 0x03u) != 0u)
+  /* STM32U5 programs quad-word only. */
+  if (((addr & 0x0Fu) != 0u) || ((size & 0x0Fu) != 0u))
   {
-    cmd_state.flash_status = CV_FLASH_ST_ERR_ADDR;
+    cmd_state.flash_status = CV_ST_ADDR;
     return CmdError(out, mas, CMD_ERR_VALUE);
   }
 
-  if (cv_key_ok() == 0u)
+  if (cmd_state.flash_key == 0u)
   {
-    cmd_state.flash_status = CV_FLASH_ST_PROTECTED;
-    return CmdError(out, mas, CMD_ERR_PROTECTED);
+    cmd_state.flash_status = CV_ST_PROT;
+    return CmdError(out, mas, CMD_ERR_VALUE);
   }
 
-#if defined(CV_BOOT_READY)
   if (boot_flash_allowed() == 0)
   {
-    cmd_state.flash_status = CV_FLASH_ST_PROTECTED;
-    return CmdError(out, mas, CMD_ERR_PROTECTED);
+    cmd_state.flash_status = CV_ST_PROT;
+    boot_flash_status = BOOT_ST_PROTECTED;
+    return CmdError(out, mas, CMD_ERR_VALUE);
   }
 
-  if (addr < FLASH_ADDRESS_START_BOOTLOADER ||
-      (addr + size) > FLASH_ADDRESS_STOP_BOOTLOADER)
+  if ((addr < (uint32_t)FLASH_ADDRESS_START_BOOTLOADER) ||
+      ((addr + size) > (uint32_t)FLASH_ADDRESS_STOP_BOOTLOADER))
   {
-    cmd_state.flash_status = CV_FLASH_ST_ERR_ADDR;
+    cmd_state.flash_status = CV_ST_ADDR;
     return CmdError(out, mas, CMD_ERR_ADDR);
   }
-#else
-  cmd_state.flash_status = CV_FLASH_ST_PROTECTED;
-  return CmdError(out, mas, CMD_ERR_PROTECTED);
-#endif
 
   if (cmd_state.int_write_pending != 0u)
   {
-    cmd_state.flash_status = CV_FLASH_ST_BUSY;
+    cmd_state.flash_status = CV_ST_BUSY;
     return CmdError(out, mas, CMD_ERR_BUSY);
   }
 
   cmd_state.write_addr = addr;
   cmd_state.write_len  = size;
   memcpy(cmd_state.write_buf, &mas[7], size);
-
   cmd_state.int_write_pending = 1u;
-  cmd_state.flash_status      = CV_FLASH_ST_BUSY;
-  cv_block_dirty              = 1u;
-
-  return 6u;
-}
-
-uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
-{
-  uint32_t addr;
-  uint16_t size;
-
-  (void)len;
-
-  cv_block_apply();
-
-  memcpy(out, mas, 6u);
-
-  addr = rd32be(&mas[2]);
-  size = (uint16_t)mas[6];
-
-  if (size == 0u || size > CV_WRITE_BUF_SIZE)
-  {
-    cmd_state.flash_status = CV_FLASH_ST_ERR_ADDR;
-    return CmdError(out, mas, CMD_ERR_VALUE);
-  }
-
-  if (cmd_state.flash_target != CV_TARGET_EXT_SOUND &&
-      cmd_state.flash_target != CV_TARGET_EXT_FW)
-  {
-    cmd_state.flash_status = CV_FLASH_ST_ERR_ADDR;
-    return CmdError(out, mas, CMD_ERR_ADDR);
-  }
-
-  if (cv_key_ok() == 0u)
-  {
-    cmd_state.flash_status = CV_FLASH_ST_PROTECTED;
-    return CmdError(out, mas, CMD_ERR_PROTECTED);
-  }
-
-#if defined(SF_TOTAL_SIZE)
-  if (addr >= SF_TOTAL_SIZE || (addr + size) > SF_TOTAL_SIZE)
-  {
-    cmd_state.flash_status = CV_FLASH_ST_ERR_ADDR;
-    return CmdError(out, mas, CMD_ERR_ADDR);
-  }
-#endif
-
-  if (cmd_state.ext_write_pending != 0u)
-  {
-    cmd_state.flash_status = CV_FLASH_ST_BUSY;
-    return CmdError(out, mas, CMD_ERR_BUSY);
-  }
-
-  cmd_state.write_addr = addr;
-  cmd_state.write_len  = size;
-  memcpy(cmd_state.write_buf, &mas[7], size);
-
-  cmd_state.ext_write_pending = 1u;
-  cmd_state.flash_status      = CV_FLASH_ST_BUSY;
-  cv_block_dirty              = 1u;
+  cmd_state.flash_status      = CV_ST_BUSY;
+  sys_state.process           = SYS_PROC_FW;
 
   return 6u;
 }
 
 /* ==========================================================================
- * Dispatcher.
+ * 0x0F - external flash staging (sounds / firmware).
+ * ========================================================================== */
+
+uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
+{
+  uint32_t addr = rd32be(&mas[2]);
+  uint16_t size = (uint16_t)mas[6];
+  uint32_t base;
+  uint32_t limit;
+
+  (void)len;
+
+  memcpy(out, mas, 6u);
+
+  if ((size == 0u) || (size > CV_WRITE_BUF_SIZE))
+  {
+    cmd_state.flash_status = CV_ST_ADDR;
+    return CmdError(out, mas, CMD_ERR_VALUE);
+  }
+
+  if (cmd_state.flash_key == 0u)
+  {
+    cmd_state.flash_status = CV_ST_PROT;
+    return CmdError(out, mas, CMD_ERR_VALUE);
+  }
+
+  if (cmd_state.flash_target == CV_TGT_SOUND)
+  {
+    base  = SF_SOUNDS_BASE;
+    limit = SF_SOUNDS_SIZE;
+  }
+  else if (cmd_state.flash_target == CV_TGT_FW)
+  {
+    base  = SF_BOOT_BASE;
+    limit = SF_BOOT_SIZE;
+  }
+  else
+  {
+    cmd_state.flash_status = CV_ST_ADDR;
+    return CmdError(out, mas, CMD_ERR_ADDR);
+  }
+
+  if ((cmd_state.flash_len != 0u) && ((addr + size) > cmd_state.flash_len))
+  {
+    cmd_state.flash_status = CV_ST_ADDR;
+    return CmdError(out, mas, CMD_ERR_ADDR);
+  }
+
+  if ((addr + size) > limit)
+  {
+    cmd_state.flash_status = CV_ST_ADDR;
+    return CmdError(out, mas, CMD_ERR_ADDR);
+  }
+
+  if (cmd_state.ext_write_pending != 0u)
+  {
+    cmd_state.flash_status = CV_ST_BUSY;
+    return CmdError(out, mas, CMD_ERR_BUSY);
+  }
+
+  cmd_state.write_addr = base + addr;
+  cmd_state.write_len  = size;
+  memcpy(cmd_state.write_buf, &mas[7], size);
+  cmd_state.ext_write_pending = 1u;
+  cmd_state.flash_status      = CV_ST_BUSY;
+  sys_state.process = (cmd_state.flash_target == CV_TGT_FW) ? SYS_PROC_FW
+                                                            : SYS_PROC_ARCHIVE;
+
+  return 6u;
+}
+
+/* ==========================================================================
+ * Dispatcher. CmdFuncN return body length without CRC.
  * ========================================================================== */
 
 uint16_t parsing_command(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 {
-  uint8_t op;
   uint16_t answer = 0u;
-  uint8_t locked = 0u;
+  uint8_t  op;
+  uint8_t  locked = 0u;
 
   if (len < 5u)
   {
-    return CmdError(out, mas, CMD_ERR_LENGTH);
+    answer = CmdError(out, mas, CMD_ERR_VALUE);
+    (void)CreateCRC(out, answer);
+    return (uint16_t)(answer + 2u);
   }
 
   op = mas[1];
 
-  /* Apply pending special block before processing any command. */
-  cv_block_apply();
-
-  if (op == CMD_OP_READ_HOLD || op == CMD_OP_READ_IN || op == CMD_OP_WRITE_MULTI)
+  if ((op == CMD_OP_READ_HOLD) || (op == CMD_OP_READ_IN) ||
+      (op == CMD_OP_WRITE_SINGLE) || (op == CMD_OP_WRITE_MULTI))
   {
-    if (!cv_lock_measure())
-    {
-      return CmdError(out, mas, CMD_ERR_BUSY);
-    }
-
+    Sys_Cfg_Lock();
     locked = 1u;
   }
 
   switch (op)
   {
     case CMD_OP_READ_HOLD:
-      if (len != 8u)
-      {
-        answer = CmdError(out, mas, CMD_ERR_LENGTH);
-        break;
-      }
-
-      answer = CmdFunc3(mas, len, out, cap);
+      answer = (len == 8u) ? CmdFunc3(mas, len, out, cap)
+                           : CmdError(out, mas, CMD_ERR_VALUE);
       break;
 
     case CMD_OP_READ_IN:
-      if (len != 8u)
-      {
-        answer = CmdError(out, mas, CMD_ERR_LENGTH);
-        break;
-      }
-
-      answer = CmdFunc4(mas, len, out, cap);
+      answer = (len == 8u) ? CmdFunc4(mas, len, out, cap)
+                           : CmdError(out, mas, CMD_ERR_VALUE);
       break;
 
     case CMD_OP_WRITE_SINGLE:
-      if (len != 8u)
-      {
-        answer = CmdError(out, mas, CMD_ERR_LENGTH);
-        break;
-      }
-
-      answer = CmdFunc6(mas, len, out);
+      answer = (len == 8u) ? CmdFunc6(mas, len, out)
+                           : CmdError(out, mas, CMD_ERR_VALUE);
       break;
 
     case CMD_OP_WRITE_MULTI:
-      if (len < 9u)
-      {
-        answer = CmdError(out, mas, CMD_ERR_LENGTH);
-        break;
-      }
-
       answer = CmdFunc16(mas, len, out);
       break;
 
     case CMD_OP_READ_LOG:
-      if (len != 8u)
-      {
-        answer = CmdError(out, mas, CMD_ERR_LENGTH);
-        break;
-      }
-
-      answer = CmdFunc12(mas, len, out, cap);
+      answer = (len == 8u) ? CmdFunc12(mas, len, out, cap)
+                           : CmdError(out, mas, CMD_ERR_VALUE);
       break;
 
     case CMD_OP_FIND_LOG:
-      if (len != 12u)
-      {
-        answer = CmdError(out, mas, CMD_ERR_LENGTH);
-        break;
-      }
-
-      answer = CmdFunc20(mas, len, out, cap);
+      answer = (len == 12u) ? CmdFunc20(mas, len, out, cap)
+                            : CmdError(out, mas, CMD_ERR_VALUE);
       break;
 
     case CMD_OP_WRITE_MCU:
-      if (len < 9u || (uint32_t)len != 7u + (uint32_t)mas[6] + 2u)
-      {
-        answer = CmdError(out, mas, CMD_ERR_LENGTH);
-        break;
-      }
-
-      answer = CmdFunc14(mas, len, out);
+      answer = ((len >= 9u) && ((uint32_t)len == (7u + (uint32_t)mas[6] + 2u)))
+               ? CmdFunc14(mas, len, out) : CmdError(out, mas, CMD_ERR_VALUE);
       break;
 
     case CMD_OP_WRITE_EXT:
-      if (len < 9u || (uint32_t)len != 7u + (uint32_t)mas[6] + 2u)
-      {
-        answer = CmdError(out, mas, CMD_ERR_LENGTH);
-        break;
-      }
-
-      answer = CmdFunc15(mas, len, out);
+      answer = ((len >= 9u) && ((uint32_t)len == (7u + (uint32_t)mas[6] + 2u)))
+               ? CmdFunc15(mas, len, out) : CmdError(out, mas, CMD_ERR_VALUE);
       break;
 
     default:
-      answer = CmdError(out, mas, CMD_ERR_UNKNOWN);
+      answer = CmdError(out, mas, CMD_ERR_ILLEGAL_FUNCTION);
       break;
   }
 
-  if (locked != 0u)
-  {
-    cv_unlock_measure();
-  }
+  if (locked != 0u) { Sys_Cfg_Unlock(); }
 
-  /* Apply block writes made by this command. */
-  cv_block_apply();
+  if (answer == 0u) { answer = CmdError(out, mas, CMD_ERR_IO); }
 
-  if (answer == 0u)
-  {
-    answer = CmdError(out, mas, CMD_ERR_IO);
-  }
-
-  cv_append_crc(out, answer);
+  (void)CreateCRC(out, answer);
   return (uint16_t)(answer + 2u);
 }
 
 /* ==========================================================================
- * Receiver.
+ * Receiver (UART / NFC bridge feeds bytes here).
  * ========================================================================== */
 
-#define CV_RX_BUF_SIZE 280u
-#define CV_TX_BUF_SIZE 4096u
+#define CV_RX_SIZE 300u
+#define CV_TX_SIZE 560u
 
-typedef struct
+static struct
 {
-  uint8_t  buf[CV_RX_BUF_SIZE];
+  uint8_t  buf[CV_RX_SIZE];
   uint16_t len;
   uint16_t expect;
-} cv_rx_t;
+} rx;
 
-static cv_rx_t rx;
-static uint8_t tx_buf[CV_TX_BUF_SIZE];
+static uint8_t tx_buf[CV_TX_SIZE];
 
-static uint16_t cv_expected_len(const uint8_t *buf, uint16_t len)
+static uint16_t expect_len(const uint8_t *b, uint16_t len)
 {
-  uint8_t op;
+  if (len < 2u) { return 0u; }
 
-  if (len < 2u)
-  {
-    return 0u;
-  }
-
-  op = buf[1];
-
-  switch (op)
+  switch (b[1])
   {
     case CMD_OP_READ_HOLD:
     case CMD_OP_READ_IN:
@@ -1537,85 +886,52 @@ static uint16_t cv_expected_len(const uint8_t *buf, uint16_t len)
     case CMD_OP_WRITE_MULTI:
     case CMD_OP_WRITE_MCU:
     case CMD_OP_WRITE_EXT:
-      if (len >= 7u)
-      {
-        return (uint16_t)(7u + (uint16_t)buf[6] + 2u);
-      }
-
-      return 0u;
+      return (len >= 7u) ? (uint16_t)(7u + (uint16_t)b[6] + 2u) : 0u;
 
     default:
-      return 8u;
+      return 0u;
   }
 }
 
 void Command_vector_RxFeed(uint8_t byte)
 {
-  if (rx.len >= CV_RX_BUF_SIZE)
+  if (rx.len >= CV_RX_SIZE)
   {
     rx.len    = 0u;
     rx.expect = 0u;
-    return;
   }
 
   rx.buf[rx.len++] = byte;
 
-  if (rx.len == 2u)
+  if (rx.len == 2u) { rx.expect = expect_len(rx.buf, rx.len); }
+
+  if ((rx.len == 7u) &&
+      ((rx.buf[1] == CMD_OP_WRITE_MULTI) ||
+       (rx.buf[1] == CMD_OP_WRITE_MCU)   ||
+       (rx.buf[1] == CMD_OP_WRITE_EXT)))
   {
-    rx.expect = cv_expected_len(rx.buf, rx.len);
+    rx.expect = expect_len(rx.buf, rx.len);
   }
 
-  if (rx.len >= 7u &&
-      (rx.buf[1] == CMD_OP_WRITE_MULTI ||
-       rx.buf[1] == CMD_OP_WRITE_MCU ||
-       rx.buf[1] == CMD_OP_WRITE_EXT))
+  if ((rx.expect != 0u) && (rx.len >= rx.expect))
   {
-    rx.expect = cv_expected_len(rx.buf, rx.len);
-  }
-
-  if (rx.expect != 0u && rx.len == rx.expect)
-  {
-    if (cv_crc_ok(rx.buf, rx.len) != 0u)
+    if (crc_ok(rx.buf, rx.expect) != 0u)
     {
-      uint16_t ans = parsing_command(rx.buf, rx.len, tx_buf, CV_TX_BUF_SIZE);
+      uint16_t n = parsing_command(rx.buf, rx.expect, tx_buf, CV_TX_SIZE);
 
-      if (ans != 0u)
-      {
-        Command_vector_Transmit(tx_buf, ans);
-      }
+      if (n != 0u) { Command_vector_Transmit(tx_buf, n); }
     }
 
     rx.len    = 0u;
     rx.expect = 0u;
-    return;
-  }
-
-  if (rx.expect != 0u && rx.len > rx.expect)
-  {
-    rx.len    = 0u;
-    rx.expect = 0u;
   }
 }
-
-/* ==========================================================================
- * Init.
- * ========================================================================== */
 
 void Command_vector_Init(void)
 {
   memset(&rx, 0, sizeof(rx));
-  memset(cv_block, 0, sizeof(cv_block));
-
-  cv_block_dirty   = 1u;
-  cv_block_pending = 0u;
-
-  cv_block_pack();
+  memset(&cmd_state, 0, sizeof(cmd_state));
 }
-
-/* ==========================================================================
- * Weak hooks.
- * Implement strong versions in main_vector.c or elsewhere if needed.
- * ========================================================================== */
 
 __attribute__((weak)) void Command_vector_Transmit(const uint8_t *data, uint16_t len)
 {
@@ -1623,281 +939,157 @@ __attribute__((weak)) void Command_vector_Transmit(const uint8_t *data, uint16_t
   (void)len;
 }
 
-__attribute__((weak)) void Command_vector_HookSaveConfig(void)
-{
-}
-
-__attribute__((weak)) void Command_vector_HookSaveConfigDefault(void)
-{
-}
-
-__attribute__((weak)) void Command_vector_HookLoadConfigDefault(void)
-{
-}
-
-__attribute__((weak)) void Command_vector_HookSoftReset(void)
-{
-}
-
-__attribute__((weak)) void Command_vector_HookPowerOff(void)
-{
-}
-
-__attribute__((weak)) void Command_vector_HookClearDataExchange(void)
-{
-}
-
-__attribute__((weak)) void Command_vector_HookTempCalib(void)
-{
-}
-
-/* Weak log fallbacks. Strong versions from Config_save_read.c override these. */
-
-__attribute__((weak)) int log_read(SNS_CFG *cfg, uint32_t ptr, EVENT_LOG *rec)
-{
-  (void)cfg;
-  (void)ptr;
-  (void)rec;
-  return -1;
-}
-
-__attribute__((weak)) int log_find_by_time(SNS_CFG *cfg,
-                                           uint32_t t_from,
-                                           uint32_t t_to,
-                                           uint32_t *ptr_from,
-                                           uint32_t *ptr_to)
-{
-  (void)cfg;
-  (void)t_from;
-  (void)t_to;
-
-  if (ptr_from != 0)
-  {
-    *ptr_from = 0u;
-  }
-
-  if (ptr_to != 0)
-  {
-    *ptr_to = 0u;
-  }
-
-  return -1;
-}
-
 /* ==========================================================================
- * Measure Task service.
- *
- * This function must be called periodically from Measure Task.
- * Heavy flash operations are executed only in quiet window.
+ * Measure Task service - executes the flags raised by register writes.
+ * Heavy flash work only in the quiet window.
  * ========================================================================== */
 
-void Command_vector_ServiceFlashRequests(void)
+void Command_vector_ExecutePendingActions(void)
 {
-  /* Light config requests can be done immediately. */
-  if (cmd_state.save_config != 0u)
+  /* Soft reset flag written through register 0x0053: arm the timer once.
+     The reset itself is done by the existing logic in Vector_Options_System. */
+  if ((sys_state.soft_reset != 0u) &&
+      (countdown_time_rtc.Timers[TIMER_RTC_SOFT_RESET_PROGRAM] == 0u))
   {
-    cmd_state.save_config = 0u;
-    Command_vector_HookSaveConfig();
+    START_TIMER_RTC(TIMER_RTC_SOFT_RESET_PROGRAM, TIME_RTC_SOFT_RESET_PROGRAM);
   }
 
-  if (cmd_state.save_config_default != 0u)
-  {
-    cmd_state.save_config_default = 0u;
-    Command_vector_HookSaveConfigDefault();
-  }
+  /* Configuration flags are consumed by Vector_RunFlashMemory(). */
 
-  if (cmd_state.load_config_default != 0u)
+  /* --- firmware apply -------------------------------------------------- */
+  if (cmd_state.fw_apply_req != 0u)
   {
-    cmd_state.load_config_default = 0u;
-    Command_vector_HookLoadConfigDefault();
-  }
-
-  /* Heavy flash work only in quiet window. */
-  if (cv_audio_busy() != 0u)
-  {
+    cmd_state.fw_apply_req = 0u;
+    sys_state.process = SYS_PROC_FW;
+    fw_apply_request();
+    cmd_state.flash_status = CV_ST_OK;
     return;
   }
 
+  /* --- quiet window gate ---------------------------------------------- */
+  if (audio_is_busy() != 0u) { return; }
+
+  /* --- erase ---------------------------------------------------------- */
   if (cmd_state.erase_req != 0u)
   {
     uint16_t mode   = cmd_state.erase_mode;
     uint16_t target = cmd_state.flash_target;
 
-    cmd_state.erase_req  = 0u;
-    cmd_state.erase_mode = 0u;
-    cmd_state.flash_status = CV_FLASH_ST_BUSY;
+    cmd_state.erase_req    = 0u;
+    cmd_state.erase_mode   = 0u;
+    cmd_state.flash_status = CV_ST_BUSY;
 
-    if (cv_key_ok() == 0u)
+    if (cmd_state.flash_key == 0u)
     {
-      cmd_state.flash_status = CV_FLASH_ST_PROTECTED;
-      cv_block_dirty = 1u;
+      cmd_state.flash_status = CV_ST_PROT;
       return;
     }
 
-    if (target == CV_TARGET_INT_BOOT)
+    if (target == CV_TGT_BOOT)
     {
-#if defined(CV_BOOT_READY)
+      int rc;
+
       if (boot_flash_allowed() == 0)
       {
-        cmd_state.flash_status = CV_FLASH_ST_PROTECTED;
+        cmd_state.flash_status = CV_ST_PROT;
+        return;
       }
-      else if (mode == 2u)
-      {
-        if (boot_flash_restore() == 0)
-        {
-          cmd_state.flash_status = CV_FLASH_ST_OK;
-        }
-        else
-        {
-          cmd_state.flash_status = CV_FLASH_ST_ERR_IO;
-        }
-      }
-      else
-      {
-        if (boot_flash_erase() == 0)
-        {
-          cmd_state.flash_status = CV_FLASH_ST_OK;
-        }
-        else
-        {
-          cmd_state.flash_status = CV_FLASH_ST_ERR_IO;
-        }
-      }
-#else
-      cmd_state.flash_status = CV_FLASH_ST_PROTECTED;
-#endif
+
+      rc = (mode == 2u) ? boot_flash_restore() : boot_flash_erase();
+      cmd_state.flash_status = (rc == 0) ? CV_ST_OK : CV_ST_IO;
+      return;
     }
-    else if (target == CV_TARGET_EXT_SOUND ||
-             target == CV_TARGET_EXT_FW ||
-             target == CV_TARGET_LOGS)
+
+    if ((target == CV_TGT_SOUND) || (target == CV_TGT_FW) || (target == CV_TGT_LOG))
     {
-#if defined(CV_HAVE_EXTSTORE)
+      uint32_t base;
+      uint32_t limit;
       uint32_t a;
-      uint32_t end = cmd_state.flash_addr + cmd_state.flash_len;
 
-      if (cmd_state.flash_len == 0u)
+      if (target == CV_TGT_SOUND)   { base = SF_SOUNDS_BASE; limit = SF_SOUNDS_SIZE; }
+      else if (target == CV_TGT_FW) { base = SF_BOOT_BASE;   limit = SF_BOOT_SIZE;   }
+      else                          { base = SF_LOG_BASE;    limit = SF_LOG_SIZE;    }
+
+      if ((cmd_state.flash_len == 0u) || (cmd_state.flash_len > limit))
       {
-        cmd_state.flash_status = CV_FLASH_ST_ERR_ADDR;
+        cmd_state.flash_len = limit;
       }
-      else
-      {
-        for (a = cmd_state.flash_addr; a < end; a += CV_EXT_SECTOR_SIZE)
-        {
-          if (ext_erase_sector(a) != 0)
-          {
-            cmd_state.flash_status = CV_FLASH_ST_ERR_IO;
-            break;
-          }
 
-          cmd_state.flash_status = CV_FLASH_ST_OK;
+      cmd_state.flash_status = CV_ST_OK;
+
+      for (a = 0u; a < cmd_state.flash_len; a += 4096u)
+      {
+        int rc = ext_erase_sector(base + cmd_state.flash_addr + a);
+
+        if (rc == EXT_BUSY)
+        {
+          /* resume from this offset on the next pass */
+          cmd_state.flash_addr  += a;
+          cmd_state.flash_len   -= a;
+          cmd_state.erase_req    = 1u;
+          cmd_state.erase_mode   = mode;
+          cmd_state.flash_status = CV_ST_BUSY;
+          return;
+        }
+
+        if (rc != 0)
+        {
+          cmd_state.flash_status = CV_ST_IO;
+          return;
         }
       }
-#else
-      cmd_state.flash_status = CV_FLASH_ST_ERR_IO;
-#endif
-    }
-    else
-    {
-      cmd_state.flash_status = CV_FLASH_ST_ERR_ADDR;
+      return;
     }
 
-    cv_block_dirty = 1u;
+    cmd_state.flash_status = CV_ST_ADDR;
     return;
   }
 
-  if (cmd_state.fw_apply_req != 0u)
-  {
-    cmd_state.fw_apply_req = 0u;
-    cmd_state.flash_status = CV_FLASH_ST_BUSY;
-
-#if defined(CV_HAVE_FW_UPDATE)
-    fw_apply_request();
-    cmd_state.flash_status = CV_FLASH_ST_OK;
-#else
-    Command_vector_HookSoftReset();
-    cmd_state.flash_status = CV_FLASH_ST_OK;
-#endif
-
-    cv_block_dirty = 1u;
-    return;
-  }
-
+  /* --- internal flash program ----------------------------------------- */
   if (cmd_state.int_write_pending != 0u)
   {
+    int rc;
+
     cmd_state.int_write_pending = 0u;
-    cmd_state.flash_status = CV_FLASH_ST_BUSY;
+    rc = boot_flash_write(cmd_state.write_addr, cmd_state.write_buf, cmd_state.write_len);
 
-#if defined(CV_BOOT_READY)
-    if (boot_flash_allowed() == 0)
-    {
-      cmd_state.flash_status = CV_FLASH_ST_PROTECTED;
-    }
-    else
-    {
-      int rc = boot_flash_write(cmd_state.write_addr,
-                                cmd_state.write_buf,
-                                cmd_state.write_len);
-
-      if (rc == 0)
-      {
-        cmd_state.flash_status = CV_FLASH_ST_OK;
-      }
-      else if (rc == -2)
-      {
-        cmd_state.flash_status = CV_FLASH_ST_ERR_VERIFY;
-      }
-      else
-      {
-        cmd_state.flash_status = CV_FLASH_ST_ERR_IO;
-      }
-    }
-#else
-    cmd_state.flash_status = CV_FLASH_ST_PROTECTED;
-#endif
-
-    cv_block_dirty = 1u;
+    if (rc == 0)       { cmd_state.flash_status = CV_ST_OK; }
+    else if (rc == -2) { cmd_state.flash_status = CV_ST_VERIFY; }
+    else               { cmd_state.flash_status = CV_ST_IO; }
     return;
   }
 
+  /* --- external flash program + verify -------------------------------- */
   if (cmd_state.ext_write_pending != 0u)
   {
     uint8_t verify[CV_WRITE_BUF_SIZE];
-    uint16_t i;
+    int rc;
+
+    rc = ext_write(cmd_state.write_addr, cmd_state.write_buf, cmd_state.write_len);
+    if (rc == EXT_BUSY)
+    {
+      cmd_state.flash_status = CV_ST_BUSY;
+      return;                       /* keep pending, retry next pass */
+    }
 
     cmd_state.ext_write_pending = 0u;
-    cmd_state.flash_status = CV_FLASH_ST_BUSY;
 
-#if defined(CV_HAVE_EXTSTORE)
-    if (ext_write(cmd_state.write_addr, cmd_state.write_buf, (uint32_t)cmd_state.write_len) != 0)
+    if (rc != 0)
     {
-      cmd_state.flash_status = CV_FLASH_ST_ERR_IO;
-      cv_block_dirty = 1u;
+      cmd_state.flash_status = CV_ST_IO;
       return;
     }
 
-    if (ext_read(cmd_state.write_addr, verify, (uint32_t)cmd_state.write_len) != 0)
+    rc = ext_read(cmd_state.write_addr, verify, cmd_state.write_len);
+    if (rc != 0)
     {
-      cmd_state.flash_status = CV_FLASH_ST_ERR_IO;
-      cv_block_dirty = 1u;
+      cmd_state.flash_status = CV_ST_IO;
       return;
     }
 
-    for (i = 0u; i < cmd_state.write_len; i++)
-    {
-      if (verify[i] != cmd_state.write_buf[i])
-      {
-        cmd_state.flash_status = CV_FLASH_ST_ERR_VERIFY;
-        cv_block_dirty = 1u;
-        return;
-      }
-    }
-
-    cmd_state.flash_status = CV_FLASH_ST_OK;
-#else
-    cmd_state.flash_status = CV_FLASH_ST_ERR_IO;
-#endif
-
-    cv_block_dirty = 1u;
+    cmd_state.flash_status =
+        (memcmp(verify, cmd_state.write_buf, cmd_state.write_len) == 0)
+        ? CV_ST_OK : CV_ST_VERIFY;
     return;
   }
 }
