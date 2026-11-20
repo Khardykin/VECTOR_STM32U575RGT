@@ -57,6 +57,7 @@
    (stdlib), sf_probe/SF_CONFIG_BASE (spiflash/sfmap), TFT_Rotation (TFT.h),
    button1..3 (stm32u5xx_it.h), TX_DISABLE (tx_api) - всё из агрегатора.   */
 #include "main_vector.h"
+#include "Command_vector.h"
 
 /* Глобальные переменные состояния */
 uint16_t FlashErase = 0;   /* 1 = стереть, 2 = стереть + перезаписать */
@@ -1084,6 +1085,7 @@ void Vector_RunFlashMemory(void)
    receiver_task решением автора).                                            */
 void Vector_Options_System(void)
 {
+  Command_vector_ProcessControlRegisters(); /* обработать командные регистры 0x0F00+ */
   fw_boot_complete();  /* Очистка флага APPLI после перезагрузки бутлоадера */
 
   /* Очищаем флаг обновления при старте приложения.

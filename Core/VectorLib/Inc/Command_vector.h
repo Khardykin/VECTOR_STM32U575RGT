@@ -153,4 +153,74 @@ extern mb_special_regs_t mb_special;
   } while(0)
 
 
+
+/* ==========================================================================
+ * Единый банк управляющих регистров 0x0F00..0x0FFF.
+ *
+ *   mb_ctrl[0]   = 0x0F00
+ *   mb_ctrl[1]   = 0x0F01
+ *   ...
+ *   mb_ctrl[255] = 0x0FFF
+ *
+ * Простые управляющие регистры читаются/пишутся как обычные Modbus-регистры.
+ * Запись ненулевого значения в командный регистр означает "запрос действия".
+ * Само действие выполняется в Command_vector_ProcessControlRegisters(),
+ * который вызывается из Measure Task (Vector_Options_System).
+ * ========================================================================== */
+#define MB_CTRL_BASE              0x0F00u
+#define MB_CTRL_N                 0x100u
+#define MB_CTRL_IDX(addr)         ((uint16_t)((addr) - MB_CTRL_BASE))
+
+extern uint16_t mb_ctrl[MB_CTRL_N];
+
+/**
+  * @brief  Обработать флаги управляющих регистров 0x0F00+.
+  *         Вызывать из Measure Task, например из Vector_Options_System().
+  */
+void Command_vector_ProcessControlRegisters(void);
+
+/* ==========================================================================
+ * MB_CTRL_LAYER_V3_HDR
+ *
+ * Единый банк управляющих/специальных регистров 0x0F00..0x0FFF.
+ *
+ *   mb_ctrl[0]   = 0x0F00
+ *   mb_ctrl[1]   = 0x0F01
+ *   ...
+ *   mb_ctrl[255] = 0x0FFF
+ *
+ * Правила:
+ * - чтение/запись этих адресов идёт только через mb_ctrl[];
+ * - в ctrl_reg_read()/ctrl_reg_write() не должно быть case MB_REG_...;
+ * - команды выполняются в Command_vector_ProcessControlRegisters();
+ * - динамические статусы обновляются в mb_ctrl_update().
+ * ========================================================================== */
+#ifndef MB_CTRL_LAYER_V3_HDR
+#define MB_CTRL_LAYER_V3_HDR
+
+#ifndef MB_CTRL_BASE
+#define MB_CTRL_BASE              0x0F00u
+#endif
+
+#ifndef MB_CTRL_N
+#define MB_CTRL_N                 0x100u
+#endif
+
+#ifndef MB_CTRL_IDX
+#define MB_CTRL_IDX(addr)         ((uint16_t)((addr) - MB_CTRL_BASE))
+#endif
+
+#ifndef MB_CTRL_IN_RANGE
+#define MB_CTRL_IN_RANGE(addr)    (((addr) >= MB_CTRL_BASE) && ((addr) < (MB_CTRL_BASE + MB_CTRL_N)))
+#endif
+
+extern uint16_t mb_ctrl[MB_CTRL_N];
+
+/**
+  * @brief  Обработать командные регистры 0x0F00+.
+  *         Вызывать из Measure Task, например из Vector_Options_System().
+  */
+void Command_vector_ProcessControlRegisters(void);
+
+#endif /* MB_CTRL_LAYER_V3_HDR */
 #endif /* COMMAND_VECTOR_H */

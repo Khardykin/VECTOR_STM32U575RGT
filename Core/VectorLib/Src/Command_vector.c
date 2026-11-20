@@ -490,27 +490,8 @@ static const struct
   { ERASE_BIT_FW,     CMD_FW_BASE,       CMD_FW_SIZE            },
 };
   /* --- Управляющие регистры (флаги, обрабатываются в фоновом цикле) --- */
-  { MB_REG_SAVE_CFG,        T_U16, offsetof(SNS_CFG, SaveConfig) },
-  { MB_REG_SAVE_CFGDEF,     T_U16, offsetof(SNS_CFG, SaveConfigDefault) },
-  { MB_REG_LOAD_CFGDEF,     T_U16, offsetof(SNS_CFG, ReadConfigDefault) },
-  { MB_REG_ERASE_SOUNDS,    T_U16, offsetof(SNS_CFG, era.req) + 0 },
-  { MB_REG_ERASE_CONFIG,    T_U16, offsetof(SNS_CFG, era.req) + 1 },
-  { MB_REG_ERASE_CFGDEF,    T_U16, offsetof(SNS_CFG, era.req) + 2 },
-  { MB_REG_ERASE_LOG,       T_U16, offsetof(SNS_CFG, era.req) + 3 },
-  { MB_REG_ERASE_LOGPTR,    T_U16, offsetof(SNS_CFG, era.req) + 4 },
-  { MB_REG_ERASE_FW,        T_U16, offsetof(SNS_CFG, era.req) + 5 },
 
   /* --- Специальные регистры (блочное чтение) --- */
-  { MB_REG_FW_VERSION,      T_U16, offsetof(mb_special_regs_t, fw_version) },
-  { MB_REG_FW_STATUS,       T_U16, offsetof(mb_special_regs_t, fw_status) },
-  { MB_REG_FW_IMG_MAGIC,    T_U16, offsetof(mb_special_regs_t, fw_img_magic) },
-  { MB_REG_FW_IMG_VERSION,  T_U16, offsetof(mb_special_regs_t, fw_img_version) },
-  { MB_REG_FW_IMG_SIZE_LO,  T_U16, offsetof(mb_special_regs_t, fw_img_size_lo) },
-  { MB_REG_FW_IMG_SIZE_HI,  T_U16, offsetof(mb_special_regs_t, fw_img_size_hi) },
-  { MB_REG_FW_IMG_CRC,      T_U16, offsetof(mb_special_regs_t, fw_img_crc) },
-  { MB_REG_FW_IMG_CALC_CRC, T_U16, offsetof(mb_special_regs_t, fw_img_calc_crc) },
-  { MB_REG_BOOT_STATUS,     T_U16, offsetof(mb_special_regs_t, boot_status) },
-  { MB_REG_BOOT_ALLOWED,    T_U16, offsetof(mb_special_regs_t, boot_allowed) },
 
 
 static void erase_begin(uint8_t bit, uint32_t base, uint32_t size)
@@ -659,8 +640,136 @@ static void win_store(void)
   }
 }
 
+
+/* ==========================================================================
+ * MB_CTRL bank: простые управляющие регистры 0x0F00..0x0FFF.
+ * ========================================================================== */
+
+/**
+  * @brief  Признак "простой управляющий регистр".
+  *
+  * Окно WIN_*, образ IMG_*, FLASH_*, SECTOR остаются в старой механике,
+  * потому что они связаны с буфером/внешней flash/вычислениями.
+  * Всё остальное в диапазоне 0x0F00..0x0FFF становится обычным регистром.
+  */
+static int mb_ctrl_is_simple(uint16_t a)
+{
+  if (a < MB_CTRL_BASE)
+  {
+    return 0;
+  }
+  if (a >= (MB_CTRL_BASE + MB_CTRL_N))
+  {
+    return 0;
+  }
+
+#if defined(MB_REG_WIN_ADDR_LO)
+  if (a == MB_REG_WIN_ADDR_LO)
+  {
+    return 0;
+  }
+#endif
+#if defined(MB_REG_WIN_ADDR_HI)
+  if (a == MB_REG_WIN_ADDR_HI)
+  {
+    return 0;
+  }
+#endif
+#if defined(MB_REG_WIN_LEN)
+  if (a == MB_REG_WIN_LEN)
+  {
+    return 0;
+  }
+#endif
+#if defined(MB_REG_WIN_AUTOINC)
+  if (a == MB_REG_WIN_AUTOINC)
+  {
+    return 0;
+  }
+#endif
+#if defined(MB_REG_WIN_CMD)
+  if (a == MB_REG_WIN_CMD)
+  {
+    return 0;
+  }
+#endif
+
+#if defined(MB_REG_WIN_DATA) && defined(MB_WIN_BYTES)
+  if (a >= MB_REG_WIN_DATA && a < (uint16_t)(MB_REG_WIN_DATA + (MB_WIN_BYTES / 2u)))
+  {
+    return 0;
+  }
+#elif defined(MB_REG_WIN_DATA)
+  if (a >= MB_REG_WIN_DATA)
+  {
+    return 0;
+  }
+#endif
+
+#if defined(MB_REG_FW_IMG_MAGIC) && defined(MB_REG_FW_IMG_CALC_CRC)
+  if (a >= MB_REG_FW_IMG_MAGIC && a <= MB_REG_FW_IMG_CALC_CRC)
+  {
+    return 0;
+  }
+#endif
+
+#if defined(MB_REG_FLASH_LO)
+  if (a == MB_REG_FLASH_LO || a == MB_REG_FLASH_HI)
+  {
+    return 0;
+  }
+#endif
+#if defined(MB_REG_SECTOR)
+  if (a == MB_REG_SECTOR)
+  {
+    return 0;
+  }
+#endif
+
+  return 1;
+}
+
+/**
+  * @brief  Обновить динамические статусные регистры перед чтением.
+  */
+static void mb_ctrl_sync(void)
+{
+#if defined(MB_REG_FW_VERSION) && defined(FIRMWARE_VERSION)
+  mb_ctrl[MB_CTRL_IDX(MB_REG_FW_VERSION)] =
+      (uint16_t)((uint32_t)FIRMWARE_VERSION & 0xFFFFu);
+#endif
+
+#if defined(MB_REG_FW_STATUS)
+  mb_ctrl[MB_CTRL_IDX(MB_REG_FW_STATUS)] = (uint16_t)sys_state.process;
+#endif
+
+#if defined(MB_REG_BOOT_STATUS) && defined(BOOT_ST_IDLE)
+  mb_ctrl[MB_CTRL_IDX(MB_REG_BOOT_STATUS)] = (uint16_t)boot_flash_status;
+#endif
+
+#if defined(MB_REG_BOOT_ALLOWED) && defined(BOOT_ST_IDLE)
+  mb_ctrl[MB_CTRL_IDX(MB_REG_BOOT_ALLOWED)] = (uint16_t)boot_flash_allowed();
+#endif
+}
+
+/**
+  * @brief  Чтение управляющих регистров 0x0F00+ как обычного банка.
+  *
+  * Для диапазона MB_CTRL не используется switch и не плодятся return 1u
+  * по каждому регистру. Один адрес банка читается по индексу.
+  */
+
 static uint8_t ctrl_reg_read(uint16_t addr, uint16_t *val)
 {
+
+  /* MB_CTRL read hook */
+  if (mb_ctrl_is_simple(addr))
+  {
+    mb_ctrl_sync();
+    *val = mb_ctrl[MB_CTRL_IDX(addr)];
+    return 1u;
+  }
+
   if ((addr >= MB_REG_WIN_DATA) && (addr < (uint16_t)(MB_REG_WIN_DATA + MB_WIN_REGS)))
   {
     uint16_t off = (uint16_t)((addr - MB_REG_WIN_DATA) * 2u);
@@ -760,8 +869,24 @@ static uint8_t ctrl_reg_read(uint16_t addr, uint16_t *val)
   }
 }
 
+
+/**
+  * @brief  Запись управляющих регистров 0x0F00+ как обычного банка.
+  *
+  * Здесь только сохраняется значение. Действия выполняются позже
+  * в Command_vector_ProcessControlRegisters().
+  */
+
 static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
 {
+
+  /* MB_CTRL write hook */
+  if (mb_ctrl_is_simple(addr))
+  {
+    mb_ctrl[MB_CTRL_IDX(addr)] = val;
+    return 1u;
+  }
+
   if ((addr >= MB_REG_WIN_DATA) && (addr < (uint16_t)(MB_REG_WIN_DATA + MB_WIN_REGS)))
   {
     uint16_t off = (uint16_t)((addr - MB_REG_WIN_DATA) * 2u);
@@ -901,6 +1026,67 @@ static uint16_t read_regs(const uint8_t *mas, uint8_t *out, uint16_t cap,
     (void)CMD_PUT(v);
   }
   return AnswerLen;
+}
+
+
+/* ==========================================================================
+ * MB_CTRL_CLEAN_V4 macros fallback.
+ * Если заголовок ещё не содержит эти макросы, вставляем безопасные значения.
+ * ========================================================================== */
+#ifndef MB_CTRL_BASE
+#define MB_CTRL_BASE              0x0F00u
+#endif
+
+#ifndef MB_CTRL_N
+#define MB_CTRL_N                 0x100u
+#endif
+
+#ifndef MB_CTRL_IDX
+#define MB_CTRL_IDX(addr)         ((uint16_t)((addr) - MB_CTRL_BASE))
+#endif
+
+#ifndef MB_CTRL_IN_RANGE
+#define MB_CTRL_IN_RANGE(addr)    (((addr) >= MB_CTRL_BASE) && ((addr) < (MB_CTRL_BASE + MB_CTRL_N)))
+#endif
+
+
+/* ==========================================================================
+ * MB_CTRL_CLEAN_V4 read.
+ *
+ * Только банк mb_ctrl[].
+ * Никаких switch/case по отдельным регистрам.
+ * ========================================================================== */
+static uint8_t ctrl_reg_read(uint16_t addr, uint16_t *val)
+{
+  if (!MB_CTRL_IN_RANGE(addr))
+  {
+    return 0u;
+  }
+
+  mb_ctrl_update();
+
+  *val = mb_ctrl[MB_CTRL_IDX(addr)];
+  return 1u;
+}
+
+
+/* ==========================================================================
+ * MB_CTRL_CLEAN_V4 write.
+ *
+ * Запись только в банк mb_ctrl[].
+ * Немедленные параметры окна применяются через mb_ctrl_apply_write().
+ * Команды обрабатываются позже в Command_vector_ProcessControlRegisters().
+ * ========================================================================== */
+static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
+{
+  if (!MB_CTRL_IN_RANGE(addr))
+  {
+    return 0u;
+  }
+
+  mb_ctrl[MB_CTRL_IDX(addr)] = val;
+  mb_ctrl_apply_write(addr, val);
+  return 1u;
 }
 
 uint16_t CmdFunc3(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
@@ -1207,6 +1393,484 @@ uint16_t CmdFunc14(const uint8_t *mas, uint16_t len, uint8_t *out)
 /* ==========================================================================
  * Диспетчер: проверяет CRC, зовёт CmdFuncN, дописывает CRC ответа.
  * ========================================================================== */
+
+/* ==========================================================================
+ * MB_CTRL_LAYER_V3
+ *
+ * Все специальные/управляющие регистры 0x0F00+ работают как обычный банк.
+ * Никаких switch/case в ctrl_reg_read()/ctrl_reg_write().
+ * ========================================================================== */
+
+uint16_t mb_ctrl[MB_CTRL_N] = {0};
+
+static int mb_ctrl_addr_ok(uint16_t addr)
+{
+  if (!MB_CTRL_IN_RANGE(addr))
+  {
+    return 0;
+  }
+
+  /* Область данных окна не является простым управляющим регистром.
+     Она обрабатывается отдельно в CmdFunc3/CmdFunc16. */
+#if defined(MB_REG_WIN_DATA) && defined(MB_WIN_BYTES)
+  if (addr >= MB_REG_WIN_DATA &&
+      addr < (uint16_t)(MB_REG_WIN_DATA + (MB_WIN_BYTES / 2u)))
+  {
+    return 0;
+  }
+#endif
+
+  return 1;
+}
+
+static void mb_ctrl_set(uint16_t addr, uint16_t value)
+{
+  if (mb_ctrl_addr_ok(addr))
+  {
+    mb_ctrl[MB_CTRL_IDX(addr)] = value;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * Обновление банка перед чтением.
+ * Здесь нет switch по адресам. Просто заполняем известные статусы/параметры.
+ * -------------------------------------------------------------------------- */
+
+static void mb_ctrl_update_img(void)
+{
+#if defined(MB_REG_MAGIC_LO) || defined(MB_REG_IMG_VER) || defined(MB_REG_IMG_REFRESH)
+  if (img.valid == 0u)
+  {
+    img_refresh();
+  }
+#endif
+
+#ifdef MB_REG_MAGIC_LO
+  mb_ctrl_set(MB_REG_MAGIC_LO, (uint16_t)(img.hdr.magic & 0xFFFFu));
+#endif
+
+#ifdef MB_REG_MAGIC_HI
+  mb_ctrl_set(MB_REG_MAGIC_HI, (uint16_t)(img.hdr.magic >> 16));
+#endif
+
+#ifdef MB_REG_IMG_VER
+  mb_ctrl_set(MB_REG_IMG_VER, img.hdr.version);
+#endif
+
+#ifdef MB_REG_IMG_CNT
+  mb_ctrl_set(MB_REG_IMG_CNT, img.hdr.count);
+#endif
+
+#ifdef MB_REG_IMG_SIZE_LO
+  mb_ctrl_set(MB_REG_IMG_SIZE_LO, (uint16_t)(img.hdr.total_size & 0xFFFFu));
+#endif
+
+#ifdef MB_REG_IMG_SIZE_HI
+  mb_ctrl_set(MB_REG_IMG_SIZE_HI, (uint16_t)(img.hdr.total_size >> 16));
+#endif
+
+#ifdef MB_REG_IMG_RATE
+  mb_ctrl_set(MB_REG_IMG_RATE, img.rate);
+#endif
+
+#ifdef MB_REG_IMG_OK
+  mb_ctrl_set(MB_REG_IMG_OK, img.ok);
+#endif
+}
+
+static void mb_ctrl_update_status(void)
+{
+#if defined(MB_REG_FW_VERSION) && defined(FIRMWARE_VERSION)
+  mb_ctrl_set(MB_REG_FW_VERSION, (uint16_t)((uint32_t)FIRMWARE_VERSION & 0xFFFFu));
+#endif
+
+#ifdef MB_REG_FW_STATUS
+  mb_ctrl_set(MB_REG_FW_STATUS, (uint16_t)sys_state.process);
+#endif
+
+#if defined(MB_REG_BOOT_STATUS) && defined(BOOT_FLASH_H)
+  mb_ctrl_set(MB_REG_BOOT_STATUS, (uint16_t)boot_flash_status);
+#endif
+
+#if defined(MB_REG_BOOT_ALLOWED) && defined(BOOT_FLASH_H)
+  mb_ctrl_set(MB_REG_BOOT_ALLOWED, (uint16_t)boot_flash_allowed());
+#endif
+}
+
+static void mb_ctrl_update_params(void)
+{
+#ifdef MB_REG_WIN_ADDR_LO
+  mb_ctrl_set(MB_REG_WIN_ADDR_LO, (uint16_t)(win.addr & 0xFFFFu));
+#endif
+
+#ifdef MB_REG_WIN_ADDR_HI
+  mb_ctrl_set(MB_REG_WIN_ADDR_HI, (uint16_t)(win.addr >> 16));
+#endif
+
+#ifdef MB_REG_WIN_LEN
+  mb_ctrl_set(MB_REG_WIN_LEN, win.len);
+#endif
+
+#ifdef MB_REG_WIN_AUTOINC
+  mb_ctrl_set(MB_REG_WIN_AUTOINC, win.autoinc);
+#endif
+
+#if defined(MB_REG_FLASH_LO) && defined(SF_TOTAL_SIZE)
+  mb_ctrl_set(MB_REG_FLASH_LO, (uint16_t)((uint32_t)SF_TOTAL_SIZE & 0xFFFFu));
+#endif
+
+#if defined(MB_REG_FLASH_HI) && defined(SF_TOTAL_SIZE)
+  mb_ctrl_set(MB_REG_FLASH_HI, (uint16_t)((uint32_t)SF_TOTAL_SIZE >> 16));
+#endif
+}
+
+static void mb_ctrl_update(void)
+{
+  mb_ctrl_update_img();
+  mb_ctrl_update_status();
+  mb_ctrl_update_params();
+}
+
+/* --------------------------------------------------------------------------
+ * Таблица действий/параметров.
+ *
+ * on_write  - немедленная реакция на запись регистра (для параметров).
+ * on_process- выполнение команды из Measure Task.
+ * pulse     - после выполнения командный регистр обнуляется.
+ * -------------------------------------------------------------------------- */
+
+typedef void (*mb_ctrl_fn_t)(uint16_t value);
+
+typedef struct
+{
+  uint16_t      addr;
+  mb_ctrl_fn_t  on_write;
+  mb_ctrl_fn_t  on_process;
+  uint8_t       pulse;
+} mb_ctrl_item_t;
+
+#define MB_ITEM_PARAM(a, w)       { (a), (w), 0, 0 }
+#define MB_ITEM_CMD(a, p)         { (a), 0, (p), 1 }
+#define MB_ITEM_BOTH(a, w, p)     { (a), (w), (p), 1 }
+
+/* ---------------------- Параметры окна ---------------------- */
+
+#ifdef MB_REG_WIN_ADDR_LO
+static void mb_win_addr_lo_write(uint16_t value)
+{
+  win.addr = (win.addr & 0xFFFF0000u) | (uint32_t)value;
+  win.dirty = 1u;
+}
+#endif
+
+#ifdef MB_REG_WIN_ADDR_HI
+static void mb_win_addr_hi_write(uint16_t value)
+{
+  win.addr = (win.addr & 0x0000FFFFu) | ((uint32_t)value << 16);
+  win.dirty = 1u;
+}
+#endif
+
+#ifdef MB_REG_WIN_LEN
+static void mb_win_len_write(uint16_t value)
+{
+#if defined(MB_WIN_BYTES)
+  if ((value <= MB_WIN_BYTES) && ((value & 1u) == 0u))
+#endif
+  {
+    win.len = value;
+    win.dirty = 1u;
+  }
+#if defined(CMD_ERR_VALUE) && defined(MB_WIN_BYTES)
+  else
+  {
+    win.status = CMD_ERR_VALUE;
+  }
+#endif
+}
+#endif
+
+#ifdef MB_REG_WIN_AUTOINC
+static void mb_win_autoinc_write(uint16_t value)
+{
+  win.autoinc = (uint8_t)(value != 0u);
+}
+#endif
+
+#ifdef MB_REG_WIN_CMD
+static void mb_win_cmd_process(uint16_t value)
+{
+  if (value != 0u)
+  {
+    win.dirty = 1u;
+    win_load();
+  }
+}
+#endif
+
+/* ---------------------- Общие команды ---------------------- */
+
+#if defined(MB_REG_COMMIT)
+static void mb_commit_process(uint16_t value)
+{
+  (void)value;
+
+  if (hooks.commit != 0)
+  {
+    hooks.commit();
+  }
+
+  rx.session = 0u;
+  Command_vector_LogMute(0u);
+}
+#endif
+
+#if defined(MB_REG_SAVE_CFG) && defined(CONFIG_SAVE_READ_H)
+static void mb_save_cfg_process(uint16_t value)
+{
+  (void)value;
+  SaveConfig = 1u;
+}
+#endif
+
+#if defined(MB_REG_SAVE_CFGDEF) && defined(CONFIG_SAVE_READ_H)
+static void mb_save_cfgdef_process(uint16_t value)
+{
+  (void)value;
+  SaveConfigDefault = 1u;
+}
+#endif
+
+#if defined(MB_REG_LOAD_CFGDEF) && defined(CONFIG_SAVE_READ_H)
+static void mb_load_cfgdef_process(uint16_t value)
+{
+  (void)value;
+  ReadConfigDefault = 1u;
+}
+#endif
+
+#ifdef MB_REG_IMG_REFRESH
+static void mb_img_refresh_process(uint16_t value)
+{
+  (void)value;
+  img_refresh();
+}
+#endif
+
+/* ---------------------- Стирания ---------------------- */
+
+#ifdef MB_REG_ERASE_SOUNDS
+static void mb_erase_sounds_process(uint16_t value)
+{
+  (void)value;
+  era.req |= (uint8_t)(1u << 0u);
+  sys_state.process = SYS_PROC_ARCHIVE;
+}
+#endif
+
+#ifdef MB_REG_ERASE_CONFIG
+static void mb_erase_config_process(uint16_t value)
+{
+  (void)value;
+  era.req |= (uint8_t)(1u << 1u);
+  sys_state.process = SYS_PROC_ARCHIVE;
+}
+#endif
+
+#ifdef MB_REG_ERASE_CFGDEF
+static void mb_erase_cfgdef_process(uint16_t value)
+{
+  (void)value;
+  era.req |= (uint8_t)(1u << 2u);
+  sys_state.process = SYS_PROC_ARCHIVE;
+}
+#endif
+
+#ifdef MB_REG_ERASE_LOG
+static void mb_erase_log_process(uint16_t value)
+{
+  (void)value;
+  era.req |= (uint8_t)(1u << 3u);
+  sys_state.process = SYS_PROC_ARCHIVE;
+}
+#endif
+
+#ifdef MB_REG_ERASE_LOGPTR
+static void mb_erase_logptr_process(uint16_t value)
+{
+  (void)value;
+  era.req |= (uint8_t)(1u << 4u);
+  sys_state.process = SYS_PROC_ARCHIVE;
+}
+#endif
+
+#ifdef MB_REG_ERASE_FW
+static void mb_erase_fw_process(uint16_t value)
+{
+  (void)value;
+  era.req |= (uint8_t)(1u << 5u);
+  sys_state.process = SYS_PROC_FW;
+}
+#endif
+
+/* ---------------------- Прошивка / бутлоадер ---------------------- */
+
+#if defined(MB_REG_FW_APPLY) && defined(FW_UPDATE_H)
+static void mb_fw_apply_process(uint16_t value)
+{
+  (void)value;
+  sys_state.process = SYS_PROC_FW;
+  fw_apply_request();
+}
+#endif
+
+#if defined(MB_REG_BOOT_ERASE) && defined(BOOT_FLASH_H)
+static void mb_boot_erase_process(uint16_t value)
+{
+  if ((value == 1u) || (value == 2u))
+  {
+    if (boot_flash_allowed() == 0)
+    {
+      boot_flash_status = BOOT_ST_PROTECTED;
+    }
+    else
+    {
+      FlashErase = value;
+    }
+  }
+}
+#endif
+
+/* ---------------------- Таблица ---------------------- */
+
+static const mb_ctrl_item_t mb_ctrl_items[] =
+{
+  /* Параметры идут раньше команд, чтобы WIN_CMD видел уже записанные addr/len. */
+
+  MB_ITEM_PARAM(MB_REG_WIN_ADDR_LO, mb_win_addr_lo_write),
+
+
+  MB_ITEM_PARAM(MB_REG_WIN_ADDR_HI, mb_win_addr_hi_write),
+
+  MB_ITEM_PARAM(MB_REG_WIN_LEN, mb_win_len_write),
+
+  MB_ITEM_PARAM(MB_REG_WIN_AUTOINC, mb_win_autoinc_write),
+
+  MB_ITEM_CMD(MB_REG_WIN_CMD, mb_win_cmd_process),
+
+  MB_ITEM_CMD(MB_REG_COMMIT, mb_commit_process),
+
+  MB_ITEM_CMD(MB_REG_SAVE_CFG, mb_save_cfg_process),
+
+  MB_ITEM_CMD(MB_REG_SAVE_CFGDEF, mb_save_cfgdef_process),
+
+  MB_ITEM_CMD(MB_REG_LOAD_CFGDEF, mb_load_cfgdef_process),
+
+  MB_ITEM_CMD(MB_REG_IMG_REFRESH, mb_img_refresh_process),
+
+  MB_ITEM_CMD(MB_REG_ERASE_SOUNDS, mb_erase_sounds_process),
+
+  MB_ITEM_CMD(MB_REG_ERASE_CONFIG, mb_erase_config_process),
+
+  MB_ITEM_CMD(MB_REG_ERASE_CFGDEF, mb_erase_cfgdef_process),
+
+  MB_ITEM_CMD(MB_REG_ERASE_LOG, mb_erase_log_process),
+
+  MB_ITEM_CMD(MB_REG_ERASE_LOGPTR, mb_erase_logptr_process),
+
+  MB_ITEM_CMD(MB_REG_ERASE_FW, mb_erase_fw_process),
+
+  MB_ITEM_CMD(MB_REG_FW_APPLY, mb_fw_apply_process),
+
+  MB_ITEM_CMD(MB_REG_BOOT_ERASE, mb_boot_erase_process),
+
+  { 0u, 0, 0, 0 }
+};
+
+static void mb_ctrl_apply_write(uint16_t addr, uint16_t value)
+{
+  uint16_t i;
+
+  for (i = 0u; mb_ctrl_items[i].addr != 0u; i++)
+  {
+    if (mb_ctrl_items[i].addr == addr)
+    {
+      if (mb_ctrl_items[i].on_write != 0)
+      {
+        mb_ctrl_items[i].on_write(value);
+      }
+      return;
+    }
+  }
+}
+
+void Command_vector_ProcessControlRegisters(void)
+{
+  uint16_t i;
+
+  for (i = 0u; mb_ctrl_items[i].addr != 0u; i++)
+  {
+    uint16_t idx;
+    uint16_t value;
+
+    if (mb_ctrl_items[i].on_process == 0)
+    {
+      continue;
+    }
+
+    if (!mb_ctrl_addr_ok(mb_ctrl_items[i].addr))
+    {
+      continue;
+    }
+
+    idx = MB_CTRL_IDX(mb_ctrl_items[i].addr);
+    value = mb_ctrl[idx];
+
+    if (value != 0u)
+    {
+      if (mb_ctrl_items[i].pulse != 0u)
+      {
+        mb_ctrl[idx] = 0u;
+      }
+
+      mb_ctrl_items[i].on_process(value);
+    }
+  }
+}
+
+
+/* ==========================================================================
+ * Новый ctrl_reg_read: только банк mb_ctrl[], без switch/case.
+ * ========================================================================== */
+static uint8_t ctrl_reg_read(uint16_t addr, uint16_t *val)
+{
+  if (!mb_ctrl_addr_ok(addr))
+  {
+    return 0u;
+  }
+
+  mb_ctrl_update();
+  *val = mb_ctrl[MB_CTRL_IDX(addr)];
+  return 1u;
+}
+
+
+/* ==========================================================================
+ * Новый ctrl_reg_write: только запись в банк mb_ctrl[], без switch/case.
+ * Действия выполняются позже в Command_vector_ProcessControlRegisters().
+ * ========================================================================== */
+static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
+{
+  if (!mb_ctrl_addr_ok(addr))
+  {
+    return 0u;
+  }
+
+  mb_ctrl[MB_CTRL_IDX(addr)] = val;
+  mb_ctrl_apply_write(addr, val);
+  return 1u;
+}
+
 uint16_t parsing_command(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 {
   uint16_t crc_calc;
@@ -1524,3 +2188,13 @@ void command_message(void)
   Command_vector_EraseService();
 }
 #endif
+
+/* ==========================================================================
+ * MB_CTRL processor.
+ *
+ * Вызывается из Measure Task (Vector_Options_System).
+ * Забирает ненулевые командные флаги из mb_ctrl, выполняет действия
+ * и сбрасывает флаги.
+ * ========================================================================== */
+
+
