@@ -1085,7 +1085,7 @@ void Vector_RunFlashMemory(void)
    receiver_task решением автора).                                            */
 void Vector_Options_System(void)
 {
-  Command_vector_ProcessControlRegisters(); /* обработать командные регистры 0x0F00+ */
+  Command_vector_ExecutePendingActions(); /* обработать командные регистры 0x0F00+ */
   fw_boot_complete();  /* Очистка флага APPLI после перезагрузки бутлоадера */
 
   /* Очищаем флаг обновления при старте приложения.
