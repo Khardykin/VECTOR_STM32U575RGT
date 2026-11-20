@@ -381,12 +381,6 @@ void Vector_Run_Board_Init(void)
   uint32_t i;
 #endif
 
-  /* 0. Такт SRAM4 (16 КБ @0x28000000) по умолчанию ВЫКЛЮЧЕН (RCC_AHB3ENR.31):
-        без него обращение к секции .sram4 (buffer_transmit[] из buffer.c) -
-        это bus fault. Включаем до первого использования. Для сна потом не
-        забыть биты SRAM4PD/SRAM4PDS.                                        */
-  __HAL_RCC_SRAM4_CLK_ENABLE();
-
   /* 0b. Разрешить доступ к backup-домену (снять PWR DBP): ранее часы прибора
         working_hours - Unix-секунды из КАЛЕНДАРЯ RTC (RTC_ReadTime/
         RTC_WriteTime из vector_macros.c, подход автора; календарь живёт от
@@ -823,7 +817,7 @@ void Vector_Run_Pre_Init(void)
        CurrentAddrFile=0: журнал начинался заново СО СТИРАНИЕМ сектора
        0x402000 (история терялась). Взводим запрос - штатный
        Vector_RunFlashMemory() запишет конфиг в первое окно тишины.       */
-    SaveConfig = 1u;
+    cmd_state.save_config = 1u;
   }
 
   /* Бренд прибора (MIRAX/BACS) из последней страницы внутренней flash -
@@ -991,16 +985,16 @@ void Vector_RunFlashMemory(void)
      SaveConfigDefault - записать ТЕКУЩИЙ конфиг в ЗАВОДСКУЮ область
                          SF_CONFIG_DEFAULT («что было с завода» для меню/COM;
                          с дефолтами первого пуска НЕ связана).              */
-  if (SaveConfigDefault != 0u)
+  if (cmd_state.save_config != 0u)
   {
     int rc;
 
-    SaveConfigDefault = 0u;
+    cmd_state.save_config = 0u;
     rc = save_param((uint8_t *)&Sns_Cfg_struct, (uint16_t)sizeof(SNS_CFG), SF_CONFIG_DEFAULT);
     if (rc == EXT_BUSY)
     {
       tasks_status.cnt_flash_defers++;
-      if (SaveConfigDefault == 0u) { SaveConfigDefault = 1u; }  /* вернуть */
+      if (cmd_state.save_config == 0u) { cmd_state.save_config = 1u; }  /* вернуть */
     }
     else if (rc == 0)
     {
@@ -1011,16 +1005,16 @@ void Vector_RunFlashMemory(void)
       tasks_status.cnt_flash_errors++;
     }
   }
-  else if (SaveConfig != 0u)
+  else if (cmd_state.save_config != 0u)
   {
     int rc;
 
-    SaveConfig = 0u;
+    cmd_state.save_config = 0u;
     rc = save_param((uint8_t *)&Sns_Cfg_struct, (uint16_t)sizeof(SNS_CFG), SF_CONFIG_BASE);
     if (rc == EXT_BUSY)
     {
       tasks_status.cnt_flash_defers++;
-      if (SaveConfig == 0u) { SaveConfig = 1u; }   /* вернуть запрос */
+      if (cmd_state.save_config == 0u) { cmd_state.save_config = 1u; }   /* вернуть запрос */
     }
     else if (rc == 0)
     {
@@ -1031,7 +1025,7 @@ void Vector_RunFlashMemory(void)
       tasks_status.cnt_flash_errors++;
     }
   }
-  else if (ReadConfigDefault != 0u)
+  else if (cmd_state.load_config_default != 0u)
   {
     /* СБРОС К ЗАВОДСКИМ (подтверждено автором): заводской конфиг из
        области SF_CONFIG_DEFAULT читается в РАБОЧИЙ Sns_Cfg_struct. Область
@@ -1042,8 +1036,8 @@ void Vector_RunFlashMemory(void)
        чтобы закрепить его во flash, вызывающий дополнительно взводит
        SaveConfig. Чтение через flash: под звуком возможен EXT_BUSY (ветка
        больше НЕ за внешним гейтом) - запрос в этом случае не выполняется,
-       повтор - из меню/COM.                                                */
-    ReadConfigDefault = 0u;
+       повтор - из меню/COM.                                               */
+	  cmd_state.load_config_default = 0u;
     if (read_param((uint8_t *)&Cfg_structdef_read, (uint16_t)sizeof(SNS_CFG),
                    SF_CONFIG_DEFAULT) != 0u)
     {
@@ -1068,7 +1062,7 @@ void Vector_RunFlashMemory(void)
       /* Как в Avis: закрепить сброс в рабочей области + режим обмена данными */
       SET_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);
       Sys_Cfg_Unlock();
-      SaveConfig = 1u;
+      cmd_state.save_config = 1u;
       LOG_I(VLOG_M_SYS, "config: factory defaults restored (wh=%u s, log %u..%u kept)",
             wh, beg, cur);
     }
@@ -1100,11 +1094,9 @@ void Vector_Options_System(void)
      + таймер TIMER_RTC_SOFT_RESET_PROGRAM -> событие TYPE_FW_UPDATE ->
      NVIC_SystemReset) и секундное обслуживание батареи (Battery_System,
      weak-заглушка) со сверкой часов с календарём RTC (RTC_ReadTime/WriteTime).
-     TODO: по образцу Vector_Options_System():
      - стирание внутренней flash по команде (FlashErase);
      - окончание режима обмена данными: очистить ST_COMMON_BIT_DATA_EXCHANGE
        и ST_COMMON_BIT_BLOCK_SOUND;
-     - уход в сон при CONFIG_SLEEP (PLAN.md раздел 5, этап 5).
      save_event_type_2 ниже пишет во flash уже из потока Measure Task -
      правило «во flash пишет только Measure Task» соблюдается; «предсмертная»
      запись перед NVIC_SystemReset остаётся best-effort (EXT_BUSY -> короткий
@@ -1125,9 +1117,9 @@ void Vector_Options_System(void)
 	/* Стирание/перезапись бутлоадера (аналог if(FlashErase) в Vector_Options_System).
 	   Выполняется здесь: стирание страницы того же банка останавливает CPU
 	   на единицы мс - звук к этому моменту уже заблокирован режимом обмена. */
-	if(FlashErase){
-		uint16_t mode = FlashErase;
-		FlashErase = 0;
+	if(cmd_state.erase_mode){
+		uint16_t mode = cmd_state.erase_mode;
+		cmd_state.erase_mode = 0;
 		if(mode == 2u){
 			(void)boot_flash_restore();
 		}

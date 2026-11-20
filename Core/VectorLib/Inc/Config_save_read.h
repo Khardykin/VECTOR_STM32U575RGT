@@ -347,9 +347,6 @@ extern int      log_ptr_save(const SNS_CFG *pSnsCfg);
 extern volatile uint32_t log_ptr_dbg_saves;   // счётчики для Expressions
 extern volatile uint32_t log_ptr_dbg_defers;
 //===========================================================================================================================
-extern uint8_t  SaveConfig;             	// 1 = сохранить конфигурацию (снимает Vector_RunFlashMemory)
-extern uint8_t SaveConfigDefault;       	// 1 = записать ТЕКУЩИЙ конфиг в заводскую область SF_CONFIG_DEFAULT
-extern uint8_t ReadConfigDefault;		// 1 = СБРОС К ЗАВОДСКИМ: прочитать рабочий Sns_Cfg_struct из области SF_CONFIG_DEFAULT
 //===========================================================================================================================
 #ifdef __cplusplus
 }

@@ -81,6 +81,7 @@
 #include "sfmap.h"          /* SF_CONFIG_BASE / SF_CONFIG_DEFAULT / SF_LOG_BASE */
 #include "extstore.h"       /* cfg_save/cfg_load + ext_read/ext_write/ext_erase_sector */
 #include "Config_save_read.h"
+#include "Command_vector.h"
 //--------------------------------------------------------------------------------------------------------------
 /* 7. Звук (плеер + образы клипов во внешней flash) */
 #include "audio_demo.h"

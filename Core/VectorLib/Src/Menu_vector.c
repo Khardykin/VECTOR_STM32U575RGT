@@ -1056,7 +1056,7 @@ void Menu_Run(void)
      если в меню что-то меняли.                                              */
   if ((menu_status.screen == (uint8_t)SCREEN_MEASURE) && (menu_status.dirty_data != 0u)){
     menu_status.dirty_data = 0u;
-    SaveConfig = 1u;
+    cmd_state.save_config = 1u;
     LOG_I(VLOG_M_SYS, "menu: dirty data -> SaveConfig");
   }
   Button_Run_Backlight();

@@ -1,226 +1,163 @@
-/**
-  ******************************************************************************
-  * @file    Command_vector.h
-  * @brief   Обмен по COM (USART3) в стиле Avis Command.c.
-  *
-  *          Протокол (CRC16 Modbus lo,hi в конце каждого кадра):
-  *            0x03 CmdFunc3  [sl][03][addr16][cnt16]        - holding (Config_common)
-  *            0x04 CmdFunc4  [sl][04][addr16][cnt16]        - input   (sensors_status)
-  *            0x10 CmdFunc16 [sl][10][addr16][cnt16][nb][data]
-  *            0x0F CmdFunc15 [sl][0F][addr32][size16][data] - блочная запись flash
-  *          Ответ-ошибка: [sl][cmd|0x80][code][CRC].
-  *
-  *          Управляющие регистры 0x0F00+ (COMMIT, сведения об образе, стирание
-  *          областей, окно данных) - карта в Command_vector.c.
-  *
-  *          Конец кадра - по длине из шапки, не по паузе в линии.
-  *          КОНТЕКСТ: receiver_task (command_message), не ISR.
-  ******************************************************************************
-  */
 #ifndef COMMAND_VECTOR_H
 #define COMMAND_VECTOR_H
 
 #include <stdint.h>
+#include "shared_types.h"
 
-#ifdef __cplusplus
-extern "C" {
+/* ==========================================================================
+ * Command vector protocol.
+ *
+ * Architecture:
+ * - ordinary config registers: com_map / sn_map / in_map
+ * - special flash control block: 0x0F00..0x0F09 as contiguous registers
+ * - scattered system registers: compact table
+ * - heavy flash work: flags in cmd_state, executed by Measure Task
+ * ========================================================================== */
+
+#ifndef COUNT_CHAN
+#define COUNT_CHAN 1u
 #endif
 
-#define CMD_MAX_PAYLOAD     1024u
-#define CMD_FRAME_HDR       8u
-#define CMD_MAX_FRAME       (CMD_FRAME_HDR + CMD_MAX_PAYLOAD + 2u)
-#define CMD_RESYNC_MS       300u
-#define CMD_SESSION_IDLE_MS 5000u
-
-/* Резерв под будущий образ прошивки: за LOG_PTR, 1 МБ. */
-#define CMD_FW_BASE         0x00603000u
-#define CMD_FW_SIZE         0x00100000u
-
-#ifndef CMD_VECTOR_COM
-#define CMD_VECTOR_COM      1     /* 0 - собрать без привязки к USART3/плееру */
+#ifndef NOCHAN
+#define NOCHAN 0xF0u
 #endif
 
-/* Коды команд. Имя CmdFuncN = десятичный код, стандартный паттерн. */
-typedef enum
+/* Command codes. */
+enum
 {
-  CMD_OP_READ_HOLD   = 0x03,   /* чтение holding-регистров        */
-  CMD_OP_READ_IN     = 0x04,   /* чтение input-регистров          */
-  CMD_OP_WRITE       = 0x0F,   /* блочная запись во внешнюю flash */
-  CMD_OP_WRITE_MULTI = 0x10,   /* запись группы holding           */
-  CMD_OP_READ_LOG    = 0x0C,   /* чтение журнала по номеру        */
-  CMD_OP_WRITE_MCU   = 0x0E,   /* запись во внутреннюю flash       */
-  CMD_OP_FIND_LOG    = 0x14    /* поиск журнала по времени        */
-} cmd_op_t;
+  CMD_OP_READ_HOLD    = 0x03u,
+  CMD_OP_READ_IN      = 0x04u,
+  CMD_OP_WRITE_SINGLE = 0x06u,
+  CMD_OP_READ_LOG     = 0x0Cu,
+  CMD_OP_WRITE_MCU    = 0x0Eu,
+  CMD_OP_WRITE_EXT    = 0x0Fu,
+  CMD_OP_WRITE_MULTI  = 0x10u,
+  CMD_OP_FIND_LOG     = 0x14u
+};
 
-/* Коды ошибок. У Modbus и у flash смысл одного числа разный,
-   поэтому часть значений продублирована под двумя именами. */
-typedef enum
+/* Modbus exception codes. */
+#ifndef CMD_ERR_ILLEGAL_FUNCTION
+#define CMD_ERR_ILLEGAL_FUNCTION 0x01u
+#endif
+
+#ifndef CMD_ERR_ADDR
+#define CMD_ERR_ADDR             0x02u
+#endif
+
+#ifndef CMD_ERR_VALUE
+#define CMD_ERR_VALUE            0x03u
+#endif
+
+#ifndef CMD_ERR_IO
+#define CMD_ERR_IO               0x04u
+#endif
+
+#ifndef CMD_ERR_BUSY
+#define CMD_ERR_BUSY             0x06u
+#endif
+
+#ifndef CMD_ERR_VERIFY
+#define CMD_ERR_VERIFY           0x08u
+#endif
+
+#ifndef CMD_ERR_PROTECTED
+#define CMD_ERR_PROTECTED        0x09u
+#endif
+
+#ifndef CMD_ERR_LENGTH
+#define CMD_ERR_LENGTH           0x0Au
+#endif
+
+#ifndef CMD_ERR_UNKNOWN
+#define CMD_ERR_UNKNOWN          0x0Bu
+#endif
+
+/* Special contiguous flash control block. */
+#define CV_FLASH_BLOCK_BASE      0x0F00u
+#define CV_FLASH_BLOCK_REGS      0x000Au
+#define CV_FLASH_BLOCK_END       (CV_FLASH_BLOCK_BASE + CV_FLASH_BLOCK_REGS - 1u)
+
+/* Flash status codes. */
+#define CV_FLASH_ST_OK           0u
+#define CV_FLASH_ST_BUSY         1u
+#define CV_FLASH_ST_PROTECTED    2u
+#define CV_FLASH_ST_ERR_ADDR     3u
+#define CV_FLASH_ST_ERR_VERIFY   4u
+#define CV_FLASH_ST_ERR_IO       5u
+
+/* Flash targets. */
+#define CV_TARGET_NONE           0u
+#define CV_TARGET_EXT_SOUND      1u
+#define CV_TARGET_EXT_FW         2u
+#define CV_TARGET_INT_BOOT       3u
+#define CV_TARGET_LOGS           4u
+
+/* Flash commands. */
+#define CV_CMD_NONE              0u
+#define CV_CMD_ERASE             1u
+#define CV_CMD_FW_APPLY          2u
+
+/* Staging buffer size for 0x0E / 0x0F. */
+#ifndef CV_WRITE_BUF_SIZE
+#define CV_WRITE_BUF_SIZE        256u
+#endif
+
+typedef struct
 {
-  CMD_ERR_NONE      = 0,
-  CMD_ERR_LENGTH    = 1,   /* неверная длина кадра             */
-  CMD_ERR_ADDR      = 2,   /* Modbus: illegal data address     */
-  CMD_ERR_RANGE     = 2,   /* flash: адрес вне микросхемы      */
-  CMD_ERR_IO        = 3,   /* flash: ошибка обращения          */
-  CMD_ERR_VALUE     = 3,   /* Modbus: illegal data value       */
-  CMD_ERR_VERIFY    = 4,   /* сверка после записи не совпала   */
-  CMD_ERR_PROTECTED = 5,   /* область защищена                 */
-  CMD_ERR_UNKNOWN   = 6    /* неизвестная команда/регистр      */
-} cmd_err_t;
+  /* Contiguous block 0x0F00..0x0F09. */
+  uint16_t build_type;
+  uint16_t flash_target;
+  uint32_t flash_addr;
+  uint32_t flash_len;
+  uint32_t flash_key;
+  uint16_t flash_status;
 
-typedef void (*cmd_flash_pause_t)(uint8_t pause);
-typedef void (*cmd_commit_t)(void);
-typedef void (*cmd_tx_t)(const uint8_t *data, uint16_t len);
+  /* Requests for Measure Task. */
+  volatile uint8_t  erase_req;
+  volatile uint16_t erase_mode;
+  volatile uint8_t  save_config;
+  volatile uint8_t  save_config_default;
+  volatile uint8_t  load_config_default;
+  volatile uint8_t  fw_apply_req;
 
-void Command_vector_SetPauseHook(cmd_flash_pause_t hook);
-void Command_vector_SetCommitHook(cmd_commit_t hook);
-void Command_vector_SetTx(cmd_tx_t hook);
+  /* Staging for flash write commands. */
+  volatile uint8_t int_write_pending;
+  volatile uint8_t ext_write_pending;
+  uint32_t write_addr;
+  uint16_t write_len;
+  uint8_t  write_buf[CV_WRITE_BUF_SIZE];
+} cmd_state_t;
 
-/* Диспетчер: проверяет CRC, зовёт CmdFuncN, дописывает CRC ответа. */
+extern cmd_state_t cmd_state;
+
+void Command_vector_Init(void);
+void Command_vector_RxFeed(uint8_t byte);
+
+/* Transport hook. Implement for UART / NFC / BLE bridge. */
+void Command_vector_Transmit(const uint8_t *data, uint16_t len);
+
 uint16_t parsing_command(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap);
 
 uint16_t CmdFunc3 (const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap);
 uint16_t CmdFunc4 (const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap);
-uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out);
+uint16_t CmdFunc6 (const uint8_t *mas, uint16_t len, uint8_t *out);
 uint16_t CmdFunc16(const uint8_t *mas, uint16_t len, uint8_t *out);
+
 uint16_t CmdFunc12(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap);
 uint16_t CmdFunc20(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap);
 uint16_t CmdFunc14(const uint8_t *mas, uint16_t len, uint8_t *out);
+uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out);
 
-uint16_t CreateCRC(uint8_t *data, uint16_t len);
-uint16_t CreateCRC_out(const uint8_t *data, uint16_t len);
+/* Call from Measure Task periodically. */
+void Command_vector_ServiceFlashRequests(void);
 
-void    Command_vector_RxFeed(const uint8_t *data, uint16_t len, uint32_t now_ms);
-void    Command_vector_Poll(uint32_t now_ms);
-void    Command_vector_EraseService(void);   /* один сектор за проход */
-uint8_t Command_vector_SessionActive(void);  /* 1 = идёт обмен */
-void    Command_vector_LogMute(uint8_t mute);
+/* Optional strong hooks to connect with existing project logic. */
+void Command_vector_HookSaveConfig(void);
+void Command_vector_HookSaveConfigDefault(void);
+void Command_vector_HookLoadConfigDefault(void);
+void Command_vector_HookSoftReset(void);
+void Command_vector_HookPowerOff(void);
+void Command_vector_HookClearDataExchange(void);
+void Command_vector_HookTempCalib(void);
 
-#ifdef __cplusplus
-}
-#endif
-
-/* Регистры управления прошивкой (0x0F50+) */
-#define MB_REG_FW_VERSION       0x0F50u
-#define MB_REG_FW_STATUS        0x0F53u
-#define MB_REG_FW_APPLY         0x0F54u
-#define MB_REG_FW_IMG_MAGIC     0x0F57u
-#define MB_REG_FW_IMG_VERSION   0x0F58u
-#define MB_REG_FW_IMG_SIZE_LO   0x0F59u
-#define MB_REG_FW_IMG_SIZE_HI   0x0F5Au
-#define MB_REG_FW_IMG_CRC       0x0F5Bu
-#define MB_REG_FW_IMG_CALC_CRC  0x0F5Cu
-
-
-/* Бутлоадер: стирание/перезапись внутренней flash (0x0F5D+) */
-#define MB_REG_BOOT_ERASE       0x0F5Du   /* W: 1 = стереть, 2 = стереть + образ из SF_BOOT */
-#define MB_REG_BOOT_STATUS      0x0F5Eu   /* RO: BOOT_ST_* */
-#define MB_REG_BOOT_ALLOWED     0x0F5Fu   /* RO: 1 = операции разрешены */
-
-
-/* ==========================================================================
- * Структура специальных Modbus-регистров для блочного чтения.
- * Каждый uint16_t соответствует одному Modbus-адресу.
- * Паддинги (_pad) сохраняют выравнивание адресов.
- * ========================================================================== */
-typedef struct __attribute__((packed))
-{
-  uint16_t fw_version;      /* 0x0F50 */
-  uint16_t _pad1;           /* 0x0F51 */
-  uint16_t _pad2;           /* 0x0F52 */
-  uint16_t fw_status;       /* 0x0F53 */
-  uint16_t _pad3;           /* 0x0F54 (FW_APPLY - только запись) */
-  uint16_t _pad4;           /* 0x0F55 (FW_REBOOT - только запись) */
-  uint16_t _pad5;           /* 0x0F56 (FW_VERIFY - только запись) */
-  uint16_t fw_img_magic;    /* 0x0F57 */
-  uint16_t fw_img_version;  /* 0x0F58 */
-  uint16_t fw_img_size_lo;  /* 0x0F59 */
-  uint16_t fw_img_size_hi;  /* 0x0F5A */
-  uint16_t fw_img_crc;      /* 0x0F5B */
-  uint16_t fw_img_calc_crc; /* 0x0F5C */
-  uint16_t _pad6;           /* 0x0F5D */
-  uint16_t boot_status;     /* 0x0F5E */
-  uint16_t boot_allowed;    /* 0x0F5F */
-} mb_special_regs_t;
-
-extern mb_special_regs_t mb_special;
-
-/* Обновление динамических полей перед чтением */
-#define MB_SPECIAL_UPDATE_STATUS() \
-  do { \
-    mb_special.fw_status = (uint16_t)sys_state.process; \
-    mb_special.boot_status = (uint16_t)boot_flash_status; \
-    mb_special.boot_allowed = (uint16_t)boot_flash_allowed(); \
-  } while(0)
-
-
-
-/* ==========================================================================
- * Единый банк управляющих регистров 0x0F00..0x0FFF.
- *
- *   mb_ctrl[0]   = 0x0F00
- *   mb_ctrl[1]   = 0x0F01
- *   ...
- *   mb_ctrl[255] = 0x0FFF
- *
- * Простые управляющие регистры читаются/пишутся как обычные Modbus-регистры.
- * Запись ненулевого значения в командный регистр означает "запрос действия".
- * Само действие выполняется в Command_vector_ProcessControlRegisters(),
- * который вызывается из Measure Task (Vector_Options_System).
- * ========================================================================== */
-#define MB_CTRL_BASE              0x0F00u
-#define MB_CTRL_N                 0x100u
-#define MB_CTRL_IDX(addr)         ((uint16_t)((addr) - MB_CTRL_BASE))
-
-extern uint16_t mb_ctrl[MB_CTRL_N];
-
-/**
-  * @brief  Обработать флаги управляющих регистров 0x0F00+.
-  *         Вызывать из Measure Task, например из Vector_Options_System().
-  */
-void Command_vector_ProcessControlRegisters(void);
-
-/* ==========================================================================
- * MB_CTRL_LAYER_V3_HDR
- *
- * Единый банк управляющих/специальных регистров 0x0F00..0x0FFF.
- *
- *   mb_ctrl[0]   = 0x0F00
- *   mb_ctrl[1]   = 0x0F01
- *   ...
- *   mb_ctrl[255] = 0x0FFF
- *
- * Правила:
- * - чтение/запись этих адресов идёт только через mb_ctrl[];
- * - в ctrl_reg_read()/ctrl_reg_write() не должно быть case MB_REG_...;
- * - команды выполняются в Command_vector_ProcessControlRegisters();
- * - динамические статусы обновляются в mb_ctrl_update().
- * ========================================================================== */
-#ifndef MB_CTRL_LAYER_V3_HDR
-#define MB_CTRL_LAYER_V3_HDR
-
-#ifndef MB_CTRL_BASE
-#define MB_CTRL_BASE              0x0F00u
-#endif
-
-#ifndef MB_CTRL_N
-#define MB_CTRL_N                 0x100u
-#endif
-
-#ifndef MB_CTRL_IDX
-#define MB_CTRL_IDX(addr)         ((uint16_t)((addr) - MB_CTRL_BASE))
-#endif
-
-#ifndef MB_CTRL_IN_RANGE
-#define MB_CTRL_IN_RANGE(addr)    (((addr) >= MB_CTRL_BASE) && ((addr) < (MB_CTRL_BASE + MB_CTRL_N)))
-#endif
-
-extern uint16_t mb_ctrl[MB_CTRL_N];
-
-/**
-  * @brief  Обработать командные регистры 0x0F00+.
-  *         Вызывать из Measure Task, например из Vector_Options_System().
-  */
-void Command_vector_ProcessControlRegisters(void);
-
-#endif /* MB_CTRL_LAYER_V3_HDR */
 #endif /* COMMAND_VECTOR_H */
