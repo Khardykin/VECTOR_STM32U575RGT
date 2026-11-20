@@ -116,4 +116,41 @@ void    Command_vector_LogMute(uint8_t mute);
 #define MB_REG_BOOT_STATUS      0x0F5Eu   /* RO: BOOT_ST_* */
 #define MB_REG_BOOT_ALLOWED     0x0F5Fu   /* RO: 1 = операции разрешены */
 
+
+/* ==========================================================================
+ * Структура специальных Modbus-регистров для блочного чтения.
+ * Каждый uint16_t соответствует одному Modbus-адресу.
+ * Паддинги (_pad) сохраняют выравнивание адресов.
+ * ========================================================================== */
+typedef struct __attribute__((packed))
+{
+  uint16_t fw_version;      /* 0x0F50 */
+  uint16_t _pad1;           /* 0x0F51 */
+  uint16_t _pad2;           /* 0x0F52 */
+  uint16_t fw_status;       /* 0x0F53 */
+  uint16_t _pad3;           /* 0x0F54 (FW_APPLY - только запись) */
+  uint16_t _pad4;           /* 0x0F55 (FW_REBOOT - только запись) */
+  uint16_t _pad5;           /* 0x0F56 (FW_VERIFY - только запись) */
+  uint16_t fw_img_magic;    /* 0x0F57 */
+  uint16_t fw_img_version;  /* 0x0F58 */
+  uint16_t fw_img_size_lo;  /* 0x0F59 */
+  uint16_t fw_img_size_hi;  /* 0x0F5A */
+  uint16_t fw_img_crc;      /* 0x0F5B */
+  uint16_t fw_img_calc_crc; /* 0x0F5C */
+  uint16_t _pad6;           /* 0x0F5D */
+  uint16_t boot_status;     /* 0x0F5E */
+  uint16_t boot_allowed;    /* 0x0F5F */
+} mb_special_regs_t;
+
+extern mb_special_regs_t mb_special;
+
+/* Обновление динамических полей перед чтением */
+#define MB_SPECIAL_UPDATE_STATUS() \
+  do { \
+    mb_special.fw_status = (uint16_t)sys_state.process; \
+    mb_special.boot_status = (uint16_t)boot_flash_status; \
+    mb_special.boot_allowed = (uint16_t)boot_flash_allowed(); \
+  } while(0)
+
+
 #endif /* COMMAND_VECTOR_H */

@@ -31,6 +31,10 @@
 #include "vector_log.h"
 #include "fw_update.h"
 
+/* Экземпляр специальных регистров */
+mb_special_regs_t mb_special = {0};
+
+
 #define CMD_SOUNDS_LIMIT    0x00400000u   /* sfmap.h: выше - CONFIG/LOG        */
 #define CMD_ERASE_KEY       0xA5u
 
@@ -485,6 +489,29 @@ static const struct
   { ERASE_BIT_LOGPTR, SF_LOG_PTR_BASE,   SF_LOG_PTR_SIZE        },
   { ERASE_BIT_FW,     CMD_FW_BASE,       CMD_FW_SIZE            },
 };
+  /* --- Управляющие регистры (флаги, обрабатываются в фоновом цикле) --- */
+  { MB_REG_SAVE_CFG,        T_U16, offsetof(SNS_CFG, SaveConfig) },
+  { MB_REG_SAVE_CFGDEF,     T_U16, offsetof(SNS_CFG, SaveConfigDefault) },
+  { MB_REG_LOAD_CFGDEF,     T_U16, offsetof(SNS_CFG, ReadConfigDefault) },
+  { MB_REG_ERASE_SOUNDS,    T_U16, offsetof(SNS_CFG, era.req) + 0 },
+  { MB_REG_ERASE_CONFIG,    T_U16, offsetof(SNS_CFG, era.req) + 1 },
+  { MB_REG_ERASE_CFGDEF,    T_U16, offsetof(SNS_CFG, era.req) + 2 },
+  { MB_REG_ERASE_LOG,       T_U16, offsetof(SNS_CFG, era.req) + 3 },
+  { MB_REG_ERASE_LOGPTR,    T_U16, offsetof(SNS_CFG, era.req) + 4 },
+  { MB_REG_ERASE_FW,        T_U16, offsetof(SNS_CFG, era.req) + 5 },
+
+  /* --- Специальные регистры (блочное чтение) --- */
+  { MB_REG_FW_VERSION,      T_U16, offsetof(mb_special_regs_t, fw_version) },
+  { MB_REG_FW_STATUS,       T_U16, offsetof(mb_special_regs_t, fw_status) },
+  { MB_REG_FW_IMG_MAGIC,    T_U16, offsetof(mb_special_regs_t, fw_img_magic) },
+  { MB_REG_FW_IMG_VERSION,  T_U16, offsetof(mb_special_regs_t, fw_img_version) },
+  { MB_REG_FW_IMG_SIZE_LO,  T_U16, offsetof(mb_special_regs_t, fw_img_size_lo) },
+  { MB_REG_FW_IMG_SIZE_HI,  T_U16, offsetof(mb_special_regs_t, fw_img_size_hi) },
+  { MB_REG_FW_IMG_CRC,      T_U16, offsetof(mb_special_regs_t, fw_img_crc) },
+  { MB_REG_FW_IMG_CALC_CRC, T_U16, offsetof(mb_special_regs_t, fw_img_calc_crc) },
+  { MB_REG_BOOT_STATUS,     T_U16, offsetof(mb_special_regs_t, boot_status) },
+  { MB_REG_BOOT_ALLOWED,    T_U16, offsetof(mb_special_regs_t, boot_allowed) },
+
 
 static void erase_begin(uint8_t bit, uint32_t base, uint32_t size)
 {
@@ -648,18 +675,6 @@ static uint8_t ctrl_reg_read(uint16_t addr, uint16_t *val)
     case MB_REG_FW_VERSION:
       *val = (uint16_t)(FIRMWARE_VERSION & 0xFFFFu);
       return 1u;
-    case MB_REG_BOOT_STATUS:
-      *val = (uint16_t)boot_flash_status;
-      return 1u;
-    case MB_REG_BOOT_ALLOWED:
-      *val = (uint16_t)boot_flash_allowed();
-      return 1u;
-    case MB_REG_BOOT_ERASE:
-      *val = 0u;
-      return 1u;
-    case MB_REG_FW_STATUS:
-      *val = (uint16_t)sys_state.process;
-      return 1u;
 
     case MB_REG_COMMIT:
     case MB_REG_SAVE_CFG:
@@ -758,20 +773,7 @@ static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
 
   switch (addr)
   {
-    case MB_REG_BOOT_ERASE:
-      if ((val == 1u) || (val == 2u))
-      {
-        if (boot_flash_allowed() == 0)
-        {
-          boot_flash_status = BOOT_ST_PROTECTED;
-        }
-        else
-        {
-          FlashErase = val;
-        }
-      }
-      return 1u;
-    case MB_REG_FW_APPLY:
+        case MB_REG_FW_APPLY:
       if (val != 0u)
       {
         sys_state.process = SYS_PROC_FW;
@@ -793,45 +795,14 @@ static uint8_t ctrl_reg_write(uint16_t addr, uint16_t val)
 #endif
       }
       return 1u;
-    case MB_REG_SAVE_CFG:
-      if (val != 0u)
-      {
-        SaveConfig = 1u;
-      }
-      return 1u;
-    case MB_REG_SAVE_CFGDEF:
-      if (val != 0u)
-      {
-        SaveConfigDefault = 1u;
-      }
-      return 1u;
-    case MB_REG_LOAD_CFGDEF:
-      if (val != 0u)
-      {
-        ReadConfigDefault = 1u;
-      }
-      return 1u;
-    case MB_REG_IMG_REFRESH:
+                case MB_REG_IMG_REFRESH:
       if (val != 0u)
       {
         img_refresh();
       }
       return 1u;
 
-    case MB_REG_ERASE_SOUNDS:
-    case MB_REG_ERASE_CONFIG:
-    case MB_REG_ERASE_CFGDEF:
-    case MB_REG_ERASE_LOG:
-    case MB_REG_ERASE_LOGPTR:
-    case MB_REG_ERASE_FW:
-      if (val != 0u)
-      {
-        /* FW - прошивка, остальное - архив (логи/конфиг/звуки). */
-        sys_state.process = (addr == MB_REG_ERASE_FW) ? SYS_PROC_FW : SYS_PROC_ARCHIVE;
-        era.req |= (uint8_t)(1u << (addr - MB_REG_ERASE_SOUNDS));
-      }
-      return 1u;
-
+    
     case MB_REG_WIN_ADDR_LO:
       win.addr = (win.addr & 0xFFFF0000u) | (uint32_t)val;
       win.dirty = 1u;
@@ -934,11 +905,54 @@ static uint16_t read_regs(const uint8_t *mas, uint8_t *out, uint16_t cap,
 
 uint16_t CmdFunc3(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 {
-  (void)len;
-  return read_regs(mas, out, cap, com_map,
-                   (uint16_t)(sizeof(com_map) / sizeof(com_map[0])),
-                   (const void *)&Sns_Cfg_struct.Config_common, 0u);
+  uint16_t addr = (uint16_t)(((uint16_t)mas[2] << 8) | mas[3]);
+  uint16_t cnt  = (uint16_t)(((uint16_t)mas[4] << 8) | mas[5]);
+  uint16_t i, roff;
+  uint8_t  *p_out = &out[2];
+
+  if (cnt == 0u || cnt > 125u) return CmdError(out, mas, CMD_ERR_VALUE);
+  if (cap < (uint16_t)(3u + cnt * 2u + 2u)) return CmdError(out, mas, CMD_ERR_LENGTH);
+
+  /* Обновляем динамические статусы перед чтением */
+  MB_SPECIAL_UPDATE_STATUS();
+
+  out[0] = mas[0];
+  out[1] = mas[1];
+  out[2] = (uint8_t)(cnt * 2u);
+
+  for (i = 0u; i < cnt; i++)
+  {
+    uint16_t a = (uint16_t)(addr + i);
+    uint16_t v = 0u;
+
+    /* 1. БЫСТРЫЙ ПУТЬ: Чтение из com_map (включая mb_special) */
+    if (reg_find(com_map, n, a, &roff) >= 0)
+    {
+      const reg_map_t *m = &com_map[roff];
+      uint8_t *p_src = (uint8_t *)&mb_special + m->off;
+
+      if (m->type == T_U16)
+      {
+        v = *(uint16_t *)(p_src + ((roff % 2u) * 2u));
+      }
+      else
+      {
+        v = 0u;
+      }
+    }
+    /* 2. МЕДЛЕННЫЙ ПУТЬ: Динамические регистры вне com_map */
+    else if (ctrl_reg_read(a, &v) != 0u)
+    {
+      return CmdError(out, mas, CMD_ERR_ADDR);
+    }
+
+    *p_out++ = (uint8_t)(v >> 8);
+    *p_out++ = (uint8_t)v;
+  }
+
+  return (uint16_t)(3u + cnt * 2u);
 }
+
 
 uint16_t CmdFunc4(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 {
@@ -951,69 +965,63 @@ uint16_t CmdFunc4(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 /* ==========================================================================
  * CmdFunc16 - запись группы holding-регистров
  * ========================================================================== */
-uint16_t CmdFunc16(const uint8_t *mas, uint16_t len, uint8_t *out)
+uint16_t CmdFunc16(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 {
   uint16_t addr = (uint16_t)(((uint16_t)mas[2] << 8) | mas[3]);
   uint16_t cnt  = (uint16_t)(((uint16_t)mas[4] << 8) | mas[5]);
-  uint8_t  nb   = mas[6];
-  uint16_t n    = (uint16_t)(sizeof(com_map) / sizeof(com_map[0]));
-  uint16_t i;
-  uint16_t roff;
-  uint8_t  touched = 0u;
+  uint16_t i, roff;
+  uint8_t byte_count = mas[6];
+  const uint8_t *p_data = &mas[7];
 
-  if ((cnt == 0u) || (cnt > MB_MAX_REGS) || (nb != (uint8_t)(cnt * 2u)) ||
-      ((uint32_t)len != (9u + (uint32_t)nb)))
-  {
-    return CmdError(out, mas, CMD_ERR_VALUE);
-  }
+  (void)cap;
+  if (cnt == 0u || cnt > 123u) return CmdError(out, mas, CMD_ERR_VALUE);
+  if (len != (uint16_t)(7u + byte_count + 2u)) return CmdError(out, mas, CMD_ERR_LENGTH);
+  if (byte_count != (uint8_t)(cnt * 2u)) return CmdError(out, mas, CMD_ERR_VALUE);
 
+  /* Запись с одним reg_find на регистр */
   for (i = 0u; i < cnt; i++)
   {
     uint16_t a = (uint16_t)(addr + i);
-    uint16_t v;
+    uint16_t v = (uint16_t)(((uint16_t)p_data[i * 2u] << 8) | p_data[i * 2u + 1u]);
 
+    /* Ищем адрес в com_map ОДИН РАЗ */
     if (reg_find(com_map, n, a, &roff) >= 0)
     {
+      /* Адрес найден - записываем напрямую (быстрый путь) */
+      const reg_map_t *m = &com_map[roff];
+      uint8_t *p_dst = (uint8_t *)&Sns_Cfg_struct + m->off;
+      
+      if (m->type == T_U16)
+      {
+        *(uint16_t *)(p_dst + ((roff % 2u) * 2u)) = v;
+      }
+      else if (m->type == T_U32)
+      {
+        if (roff % 2u == 0u)
+        {
+          *(uint32_t *)p_dst = (*(uint32_t *)p_dst & 0xFFFF0000u) | v;
+        }
+        else
+        {
+          *(uint32_t *)p_dst = (*(uint32_t *)p_dst & 0x0000FFFFu) | ((uint32_t)v << 16);
+        }
+      }
       continue;
     }
-    if (ctrl_reg_read(a, &v) != 0u)
-    {
-      continue;
-    }
-    return CmdError(out, mas, CMD_ERR_ADDR);
-  }
 
-  Count = cnt;
-  Value = (uint8_t *)&mas[7];
-
-  Sys_Cfg_Lock();
-  for (i = 0u; i < cnt; i++)
-  {
-    uint16_t a = (uint16_t)(addr + i);
-    uint16_t v = 0u;
-    int16_t  idx;
-
-    (void)CMD_SAVE(&v);
-    idx = reg_find(com_map, n, a, &roff);
-    if (idx >= 0)
+    /* Адрес не найден в com_map - передаем в обработчик специальных регистров */
+    if (ctrl_reg_write(a, v) != 0u)
     {
-      reg_set(&Sns_Cfg_struct.Config_common, &com_map[idx], roff, v);
-      touched = 1u;
-    }
-    else
-    {
-      (void)ctrl_reg_write(a, v);
+      return CmdError(out, mas, CMD_ERR_ADDR);
     }
   }
-  if (touched != 0u)
-  {
-    SaveConfig = 1u;
-  }
-  Sys_Cfg_Unlock();
 
+  /* Успешный ответ Modbus 0x10: эхо первых 6 байт запроса */
   memcpy(out, mas, 6u);
   return 6u;
 }
+
+
 
 /* ==========================================================================
  * CmdFunc15 - блочная запись во внешнюю flash (стандартный паттерн)
