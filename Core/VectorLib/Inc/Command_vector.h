@@ -135,4 +135,13 @@ uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out);
 /* Measure Task service. main_vector.c already calls this name. */
 void Command_vector_ExecutePendingActions(void);
 
+/* COM consumer, called by Receiver Task (strong override of the
+   weak stub in main_vector.c). Drains InputBuffer[TYPE_USART]. */
+void command_message(void);
+
+/* Key field sizes are fixed by the protocol, not by CONFIG_LORA.
+   appkey[16] -> 8 registers, deveui_com[8] -> 4 registers.        */
+#define CV_APPKEY_SIZE  16u
+#define CV_DEVEUI_SIZE   8u
+
 #endif /* COMMAND_VECTOR_H */

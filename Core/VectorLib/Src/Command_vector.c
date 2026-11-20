@@ -10,15 +10,42 @@
 #include "boot_flash.h"
 #include "fw_update.h"
 #include "audio_player.h"
-#include "Lora_S7678S.h"
+#include "buffer.h"
 
 /* ==========================================================================
  * Backing objects (declared by the project headers):
  *   Sns_Cfg_struct, Connected_device, tempsensor_calib, sys_state
- *   sensors_status, deveui_com, appkey
+ *   sensors_status; appkey / deveui_com only when CONFIG_LORA
  * ========================================================================== */
 
 cmd_state_t cmd_state;
+
+
+/* ==========================================================================
+ * LoRa key fields.
+ *
+ * appkey[16] and deveui_com[8] are defined by the LoRa module and exist only
+ * when CONFIG_LORA == 1. With LoRa off the register map must stay intact, so
+ * the fields are backed by local RAM stubs: reads return zero, writes are
+ * accepted but not persisted. Sizes come from the protocol (CV_*_SIZE).
+ * ========================================================================== */
+#if CONFIG_LORA
+
+#define CV_APPKEY_PTR   appkey
+#define CV_DEVEUI_PTR   deveui_com
+
+typedef char cv_appkey_size_chk[(sizeof(appkey)     == CV_APPKEY_SIZE) ? 1 : -1];
+typedef char cv_deveui_size_chk[(sizeof(deveui_com) == CV_DEVEUI_SIZE) ? 1 : -1];
+
+#else
+
+static uint8_t cv_appkey_stub[CV_APPKEY_SIZE];
+static uint8_t cv_deveui_stub[CV_DEVEUI_SIZE];
+
+#define CV_APPKEY_PTR   cv_appkey_stub
+#define CV_DEVEUI_PTR   cv_deveui_stub
+
+#endif /* CONFIG_LORA */
 
 /* ==========================================================================
  * com_map - holding registers, sequential from 0x0001.
@@ -80,8 +107,8 @@ static const reg_map_t com_map[] =
   TC_N(temperature,             0x002B, T_FLT4, 1),   /* one float  */
   TC(flag,                      0x002D, T_U16),
 
-  ARR(0x002E, T_STR, SZ_APPKEY, OBJ_APPKEY),          /* 16 bytes   */
-  ARR(0x0036, T_STR, SZ_DEVEUI, OBJ_DEVEUI),          /*  8 bytes   */
+  ARR(0x002E, T_STR, CV_APPKEY_SIZE, OBJ_APPKEY),          /* 16 bytes   */
+  ARR(0x0036, T_STR, CV_DEVEUI_SIZE, OBJ_DEVEUI),          /*  8 bytes   */
 
   CS(flash_target,              0x0040, T_U16),
   CS(flash_addr,                0x0041, T_U32),
@@ -240,8 +267,8 @@ static volatile void *obj_ptr(uint8_t obj)
     case OBJ_WORKING: return (volatile void *)&Sns_Cfg_struct.Working_data;
     case OBJ_CFG:     return (volatile void *)&Sns_Cfg_struct;
     case OBJ_TEMPCAL: return (volatile void *)&tempsensor_calib;
-    case OBJ_APPKEY:  return (volatile void *)appkey;
-    case OBJ_DEVEUI:  return (volatile void *)deveui_com;
+    case OBJ_APPKEY:  return (volatile void *)CV_APPKEY_PTR;
+    case OBJ_DEVEUI:  return (volatile void *)CV_DEVEUI_PTR;
     case OBJ_DEVICE:  return (volatile void *)&Connected_device;
     case OBJ_SENSORS: return (volatile void *)&sensors_status;
     case OBJ_CMD:     return (volatile void *)&cmd_state;
@@ -772,6 +799,24 @@ uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
   return 6u;
 }
 
+
+/* ==========================================================================
+ * Modbus slave address.
+ *
+ * Derived from the device serial number exactly like the reference design:
+ *     address = ((SerialHi << 16) | SerialLo) % 100,  0 -> 100
+ * Frames addressed to another slave are ignored (the receiver stays silent).
+ * Broadcast addresses 0x00 and 0xFF are always accepted.
+ * ========================================================================== */
+static uint16_t cv_slave_addr(void)
+{
+  uint32_t sn = ((uint32_t)Sns_Cfg_struct.Config_common.SerialHi << 16) |
+                (uint32_t)Sns_Cfg_struct.Config_common.SerialLo;
+  uint16_t a  = (uint16_t)(sn % 100u);
+
+  return (a == 0u) ? 100u : a;
+}
+
 /* ==========================================================================
  * Dispatcher. CmdFuncN return body length without CRC.
  * ========================================================================== */
@@ -779,6 +824,7 @@ uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
 uint16_t parsing_command(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 {
   uint16_t answer = 0u;
+  uint16_t slave;
   uint8_t  op;
   uint8_t  locked = 0u;
 
@@ -787,6 +833,14 @@ uint16_t parsing_command(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_
     answer = CmdError(out, mas, CMD_ERR_VALUE);
     (void)CreateCRC(out, answer);
     return (uint16_t)(answer + 2u);
+  }
+
+  /* Slave-address filter: our address, or broadcast 0x00 / 0xFF.
+     Anything else is ignored - return 0, the caller sends no answer. */
+  slave = cv_slave_addr();
+  if ((mas[0] != (uint8_t)slave) && (mas[0] != 0x00u) && (mas[0] != 0xFFu))
+  {
+    return 0u;
   }
 
   op = mas[1];
@@ -859,12 +913,20 @@ uint16_t parsing_command(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_
 #define CV_RX_SIZE 300u
 #define CV_TX_SIZE 560u
 
+/* Inter-byte timeout: 3.5 character times at 115200 baud is ~0.3 ms.
+   10 ms is well above one character (87 us) and well below any normal
+   gap between Modbus frames. Timer_Tick_1ms() increments the counter,
+   RxFeed() resets it on every received byte.                          */
+#define CV_RX_TIMEOUT_MS 10u
+
 static struct
 {
   uint8_t  buf[CV_RX_SIZE];
   uint16_t len;
   uint16_t expect;
 } rx;
+
+static volatile uint16_t cv_rx_idle_ms;
 
 static uint8_t tx_buf[CV_TX_SIZE];
 
@@ -893,6 +955,13 @@ static uint16_t expect_len(const uint8_t *b, uint16_t len)
   }
 }
 
+static void cv_rx_reset(void)
+{
+  rx.len       = 0u;
+  rx.expect    = 0u;
+  cv_rx_idle_ms = 0u;
+}
+
 void Command_vector_RxFeed(uint8_t byte)
 {
   if (rx.len >= CV_RX_SIZE)
@@ -901,9 +970,19 @@ void Command_vector_RxFeed(uint8_t byte)
     rx.expect = 0u;
   }
 
+  cv_rx_idle_ms = 0u;
   rx.buf[rx.len++] = byte;
 
-  if (rx.len == 2u) { rx.expect = expect_len(rx.buf, rx.len); }
+  if (rx.len == 2u)
+  {
+    rx.expect = expect_len(rx.buf, rx.len);
+
+    if (rx.expect == 0u)
+    {
+      rx.len    = 0u;
+      return;
+    }
+  }
 
   if ((rx.len == 7u) &&
       ((rx.buf[1] == CMD_OP_WRITE_MULTI) ||
@@ -925,6 +1004,31 @@ void Command_vector_RxFeed(uint8_t byte)
     rx.len    = 0u;
     rx.expect = 0u;
   }
+
+  /* The frame grew past the expected length (byte lost inside a
+     variable-length frame, or expect was computed from garbage).
+     Reset so the next frame starts clean. */
+  if ((rx.expect != 0u) && (rx.len > rx.expect))
+  {
+    rx.len    = 0u;
+    rx.expect = 0u;
+  }
+}
+
+
+/* Frame timeout: called every 1 ms from Timer_Tick_1ms(). If no bytes
+   arrived for CV_RX_TIMEOUT_MS the in-progress frame is abandoned.
+   This is the Modbus 3.5-character-time re-synchronisation mechanism. */
+void Uart_Command_Receive_Timer_Inc(void)
+{
+  if (rx.len == 0u) { return; }
+
+  cv_rx_idle_ms++;
+
+  if (cv_rx_idle_ms >= CV_RX_TIMEOUT_MS)
+  {
+    cv_rx_reset();
+  }
 }
 
 void Command_vector_Init(void)
@@ -933,10 +1037,44 @@ void Command_vector_Init(void)
   memset(&cmd_state, 0, sizeof(cmd_state));
 }
 
-__attribute__((weak)) void Command_vector_Transmit(const uint8_t *data, uint16_t len)
+/* Answer goes out through the project transport: TYPE_USART -> USART_COM
+   (huart5). Context: Receiver Task, never ISR. */
+void Command_vector_Transmit(const uint8_t *data, uint16_t len)
 {
-  (void)data;
-  (void)len;
+  transmit_buffer((uint8_t *)data, len, TYPE_USART);
+}
+
+
+/* ==========================================================================
+ * COM consumer. Strong override of the weak stub in main_vector.c.
+ *
+ * Producer : UART5_IRQHandler -> add_to_buffer(&InputBuffer[TYPE_USART])
+ * Consumer : this function, Receiver Task, every VECTOR_TASKS_RECEIVER_DELAY_MS
+ * Answer   : Command_vector_Transmit() -> transmit_buffer(..., TYPE_USART)
+ *
+ * The ring is SPSC (buffer.h): ISR owns 'end', this thread owns 'begin',
+ * so no critical section is needed. Parsing, Sys_Cfg_Lock() and the answer
+ * transmission all happen here in thread context, never in the ISR.
+ * ========================================================================== */
+void command_message(void)
+{
+#if CONFIG_UART
+  static uint8_t cv_started = 0u;
+  uint8_t b;
+
+  if (cv_started == 0u)
+  {
+    cv_started = 1u;
+    Command_vector_Init();
+  }
+
+  /* Drain everything the ISR has collected since the previous pass. */
+  while (check_buffer(&InputBuffer[TYPE_USART]) != 0u)
+  {
+    if (receive_buffer(&InputBuffer[TYPE_USART], &b) == 0u) { break; }
+    Command_vector_RxFeed(b);
+  }
+#endif
 }
 
 /* ==========================================================================

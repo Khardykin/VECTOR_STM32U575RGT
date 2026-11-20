@@ -460,8 +460,6 @@ typedef struct
 extern Message_buffer_uart_lora buffer_uart_lora;
 extern uint8_t deveui[8];
 extern uint8_t appkey[16];
-#define SZ_APPKEY   ((uint8_t)sizeof(appkey))       /* 16*/
-#define SZ_DEVEUI   ((uint8_t)sizeof(deveui_com))   /*  8*/
 //===========================================================================================================================
 // 9. PUBLIC API
 //===========================================================================================================================

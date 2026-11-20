@@ -113,7 +113,10 @@ void MX_UART5_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN UART5_Init 2 */
-
+  volatile uint32_t dummy = huart5.Instance->RDR;
+  (void)dummy;
+  __HAL_UART_ENABLE_IT(&huart5, UART_IT_ERR);
+  __HAL_UART_ENABLE_IT(&huart5, UART_IT_RXNE);
   /* USER CODE END UART5_Init 2 */
 
 }

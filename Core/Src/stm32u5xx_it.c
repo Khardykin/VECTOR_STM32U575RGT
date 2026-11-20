@@ -593,7 +593,6 @@ void UART5_IRQHandler(void)
 		/* Режим обмена: устанавливаем биты и перезапускаем таймер.
 		   Сброс - в Vector_Options_System по таймауту. */
 		SET_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);
-		SET_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);
 		START_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END, TIME_RTC_DATA_EXCHANGE_END);
 #endif
 	}
