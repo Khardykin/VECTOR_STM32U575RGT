@@ -117,7 +117,7 @@ def main():
     if port:
         if serial is None:
             print("pyserial missing: py -m pip install pyserial"); return 2
-        ser = serial.Serial(port, 115200, timeout=1)
+        ser = serial.Serial(port, 115200, timeout=0.05)
         print("port=%s 115200 8N1 slave=%d\n" % (port, slave))
 
     for name, frame, expect in cases:

@@ -441,7 +441,7 @@ void Sys_Cfg_Lock(void)
 {
   if ((cfg_mtx_ok != 0u) && (tx_thread_identify() != (TX_THREAD *)0))
   {
-    (void)tx_mutex_get(&cfg_mtx, TX_WAIT_FOREVER);
+    (void)tx_mutex_get(&cfg_mtx, 50);
   }
 }
 

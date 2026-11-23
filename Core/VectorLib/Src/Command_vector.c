@@ -639,7 +639,7 @@ uint16_t CmdFunc12(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 /* ==========================================================================
  * 0x14 - log search by time interval.
  * ========================================================================== */
-
+volatile uint32_t cv_dbg_cmd20_calls;
 uint16_t CmdFunc20(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 {
   uint32_t t_from = rd32be(&mas[2]);
@@ -647,7 +647,7 @@ uint16_t CmdFunc20(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
   uint32_t pf = 0u;
   uint32_t pt = 0u;
   int rc;
-
+  cv_dbg_cmd20_calls++;
   (void)len;
 
   if (cap < 12u)     { return CmdError(out, mas, CMD_ERR_VALUE); }
