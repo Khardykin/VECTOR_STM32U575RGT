@@ -891,7 +891,8 @@ uint16_t parsing_command(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_
       break;
 
     default:
-      answer = CmdError(out, mas, CMD_ERR_ILLEGAL_FUNCTION);
+      /* Неизвестная функция: игнорируем, не отвечаем */
+      answer = 0u;
       break;
   }
 

@@ -28,7 +28,7 @@ def make_frame_log_read(slave, ptr=0, cnt=4):
     """Кадр 0x0C: 10 байт."""
     import struct
     data = struct.pack(">BB I H", slave, 0x0C, ptr, cnt)
-    crc = modbus_crc(data) if 'modbus_crc' in dir() else crc16(data)
+    crc = crc16(data) crc16(data)
     return data + struct.pack("<H", crc)
 
 import sys

@@ -86,7 +86,7 @@ def make_frame_log_read(slave, ptr=0, cnt=4):
     import struct
     data = struct.pack(">BB I H", slave, 0x0C, ptr, cnt)
     # struct ">BB I H" = 1+1+4+2 = 8 байт данных
-    crc = modbus_crc(data)
+    crc = crc16(data)
     return data + struct.pack("<H", crc)
 
 def make_cases(slave):
@@ -109,7 +109,7 @@ def make_cases(slave):
         ("hole 0x0059",                  rd(0x03, 0x0059, 1, slave),  "exc 02"),
         ("hole 0x0F00",                  rd(0x03, 0x0F00, 1, slave),  "exc 02"),
         ("bad function 0x08",            rd(0x08, 0x0001, 1, slave),  "exc 01"),
-        ("log read ptr0 x4",             bytes([slave, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04]) + crc16_bytes(bytes([slave, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04])),  "4*40 B or exc 02 if empty"),
+        ("log read ptr0 x4",             make_frame_log_read(slave, 0, 4),  "expect: 3 + cnt*40 + 2 bytes"),
         ("log find time",                add_crc(bytes([slave, 0x14]) +
                                          struct.pack(">II", 0, 0xFFFFFFFF)), "ptr_from/to"),
     ]
@@ -148,7 +148,7 @@ def main():
     
     if broadcast:
         slave = 0
-        print("BROADCAST MODE: slave=0 (no response expect: 3 + cnt*40 + 2 bytes (log entries × 40)
+        print("BROADCAST MODE: slave=0 (no response expected)")
     
     cases, write_cases = make_cases(slave)
     cases = cases + (write_cases if do_write else [])
