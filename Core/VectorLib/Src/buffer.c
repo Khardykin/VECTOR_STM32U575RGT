@@ -142,8 +142,14 @@ void transmit_buffer(uint8_t *pData, uint16_t Size, uint8_t type_transmit)
 			HAL_UART_Transmit_DMA(huart_ptr, &buffer_transmit[type_transmit][0], Size);
 		}
 #else
+		if(type_transmit == TYPE_USART){
+			HAL_HalfDuplex_EnableTransmitter(huart_ptr);
+		}
 		// Обычный блокирующий режим (Polling)
 		HAL_UART_Transmit(huart_ptr, pData, Size, 100);
+		if(type_transmit == TYPE_USART){
+			HAL_HalfDuplex_EnableReceiver(huart_ptr);
+		}
 #endif
 	}
 #endif
