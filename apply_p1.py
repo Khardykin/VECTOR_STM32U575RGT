@@ -1,289 +1,307 @@
 #!/usr/bin/env python3
 """
-apply_p1.py — Патч 1: Command_vector / Modbus fixes
-Запуск:  py apply_p1.py   (из корня проекта, где лежат Core/, tools/, docs/)
+apply_p1.py — Патч 1: Command_vector / Modbus / tools / docs
+Запуск из корня проекта:  py apply_p1.py
 
-Что делает:
-  1. Command_vector.c:
-     - удаляет отладочный volatile cv_dbg_cmd20_calls
-     - sys_state.process ставит ПОСЛЕ проверок
-     - broadcast (адрес 0) отвечает
-     - лог-кольцо использует LOG_RING_SLOTS (маска)
-     - неизвестные команды игнорируются (без exception)
-     - 0x0E/0x0F отвечают 6-байтным эхо
-  2. tools/send_frames.py:
-     - кадр 0x0C → 10 байт
-     - парсер ответа ждёт cnt*40
-  3. tools/verify_registers.py:
-     - кадр 0x0C → 10 байт
-     - парсер ответа ждёт cnt*40
-     - SAFE_WRITE расширен
-  4. tools/retry_frames.py:
-     - кадр 0x0C → 10 байт (если есть)
-  5. docs/Command.md, docs/ARCHITECTURE.md — дописаны форматы
+Все оригиналы бэкапятся в _backup_p1/.
+Если паттерн не найден — скрипт печатает [WARN] и продолжает.
 """
-
-import os, sys, re, shutil, textwrap
+import os, sys, re, shutil
 from pathlib import Path
-from datetime import datetime
 
-# ──────────────────────────────────────────────────────────────────────────────
 ROOT = Path(".")
-BACKUP_DIR = ROOT / "_backup_p1"
+BAK = ROOT / "_backup_p1"
+REPORT = []
 
-def backup(path: Path):
-    BACKUP_DIR.mkdir(exist_ok=True)
-    rel = path.relative_to(ROOT)
-    dst = BACKUP_DIR / rel
+def log(msg):
+    REPORT.append(msg)
+    print(msg)
+
+def backup(p: Path):
+    rel = p.relative_to(ROOT)
+    dst = BAK / rel
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(path, dst)
+    shutil.copy2(p, dst)
 
-def patch_file(path: Path, replacements: list, label: str):
-    """replacements: list of (old_str, new_str) or (regex_pattern, new_str, flags)"""
-    if not path.exists():
-        print(f"  [SKIP] {path} не найден")
-        return
-    backup(path)
-    src = path.read_text(encoding="utf-8", errors="replace")
-    original = src
-    applied = 0
-    for item in replacements:
-        if len(item) == 2:
-            old, new = item
-            if old in src:
-                src = src.replace(old, new, 1)
-                applied += 1
-            else:
-                print(f"  [WARN] {label}: фрагмент не найден: {old[:80]!r}...")
-        elif len(item) == 3:
-            pattern, new, flags = item
-            src2, n = re.subn(pattern, new, src, count=1, flags=flags)
-            if n:
-                src = src2
-                applied += 1
-            else:
-                print(f"  [WARN] {label}: regex не сработал: {pattern[:60]!r}")
-    if src != original:
-        path.write_text(src, encoding="utf-8")
-        print(f"  [OK] {path}: {applied} замен")
+def read(p: Path) -> str:
+    return p.read_text(encoding="utf-8", errors="replace")
+
+def write(p: Path, s: str):
+    p.write_text(s, encoding="utf-8")
+
+def apply_str(src, old, new, label, count=1):
+    if old in src:
+        src = src.replace(old, new, count)
+        log(f"  [OK] {label}")
     else:
-        print(f"  [NO-CHANGE] {path}")
+        log(f"  [WARN] {label}: не найден фрагмент")
+    return src
 
-# ══════════════════════════════════════════════════════════════════════════════
+def apply_re(src, pattern, repl, label, flags=0):
+    s2, n = re.subn(pattern, repl, src, count=1, flags=flags)
+    if n:
+        log(f"  [OK] {label}")
+        return s2
+    log(f"  [WARN] {label}: regex не сработал")
+    return src
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 1. Command_vector.c
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 def patch_command_vector():
     p = ROOT / "Core" / "VectorLib" / "Src" / "Command_vector.c"
     if not p.exists():
-        print(f"[ERROR] {p} не найден"); return
-
-    src = p.read_text(encoding="utf-8", errors="replace")
+        log(f"[SKIP] {p}"); return
     backup(p)
-    original = src
+    src = read(p)
 
-    # ── 1a. Удаляем отладочный счётчик cv_dbg_cmd20_calls ──
-    src = re.sub(r'\bvolatile\s+uint32_t\s+cv_dbg_cmd20_calls\s*=\s*0\s*;\s*\n?', '', src)
-    src = re.sub(r'\bcv_dbg_cmd20_calls\s*\+\+\s*;\s*\n?', '', src)
-    src = re.sub(r'\bcv_dbg_cmd20_calls\s*=\s*0\s*;\s*\n?', '', src)
+    # ── 1a. Удаляем отладочный счётчик ──────────────────────────────────────
+    src = apply_re(src,
+        r'\bvolatile\s+uint32_t\s+cv_dbg_cmd20_calls\s*=\s*0\s*;\s*\n?',
+        '', 'удаление объявления cv_dbg_cmd20_calls')
+    src = apply_re(src,
+        r'\bcv_dbg_cmd20_calls\s*\+\+\s*;\s*\n?',
+        '', 'удаление инкремента cv_dbg_cmd20_calls')
+    src = apply_re(src,
+        r'\bcv_dbg_cmd20_calls\s*=\s*0\s*;\s*\n?',
+        '', 'удаление сброса cv_dbg_cmd20_calls')
 
-    # ── 1b. Неизвестные команды: игнорируем (не отвечаем) ──
-    # В функции парсинга: если функция не входит в список поддерживаемых → возвращаем 0
-    # Ищем блок, который отвечает exception 01 на неизвестную функцию, и заменяем на игнор
-    src = re.sub(
-        r'(default\s*:)\s*\n(\s*)(return\s+CmdError\s*\(\s*out\s*,\s*mas\s*,\s*CMD_ERR_ILLEGAL_FUNCTION\s*\)\s*;)',
-        r'\1\n\2/* Неизвестная команда: игнорируем, не отвечаем */\n\2return 0u;',
-        src,
-        flags=re.DOTALL
-    )
+    # ── 1b. Неизвестные команды: игнорируем, не отвечаем ────────────────────
+    # Вариант 1: default в switch возвращает CmdError
+    src = apply_re(src,
+        r'(default\s*:)\s*\n(\s*)return\s+CmdError\s*\(\s*out\s*,\s*mas\s*,\s*CMD_ERR_ILLEGAL_FUNCTION\s*\)\s*;',
+        r'\1\n\2/* Неизвестная функция: игнорируем, не отвечаем */\n\2return 0u;',
+        'неизвестная функция → игнор (вариант switch)')
+    # Вариант 2: if-else цепочка
+    src = apply_re(src,
+        r'else\s*\{\s*\n(\s*)return\s+CmdError\s*\(\s*out\s*,\s*mas\s*,\s*CMD_ERR_ILLEGAL_FUNCTION\s*\)\s*;\s*\n(\s*)\}',
+        r'else {\n\1/* Неизвестная функция: игнорируем, не отвечаем */\n\1return 0u;\n\2}',
+        'неизвестная функция → игнор (вариант else)')
 
-    # ── 1c. Broadcast (адрес 0) отвечает ──
-    # Ищем проверку вида: if (mas[0] != CV_SLAVE_ADDR && mas[0] != 0u) или аналог
-    # Заменяем на: если адрес не наш И не 0 → игнор. Если 0 → отвечаем.
-    # Паттерн 1: явная проверка на 0 с возвратом
-    src = re.sub(
-        r'if\s*\(\s*mas\[0\]\s*==\s*0u?\s*\)\s*\{\s*return\s+0u?\s*;\s*\}',
+    # ── 1c. Broadcast (адрес 0) отвечает ────────────────────────────────────
+    # Убираем ранний return для адреса 0
+    src = apply_re(src,
+        r'if\s*\(\s*mas\[0\]\s*==\s*0u?\s*\)\s*\{\s*\n?\s*return\s+0u?\s*;\s*\n?\s*\}',
         '/* broadcast (адрес 0): отвечаем — опрос 1-на-1 без прописки адреса */',
-        src
-    )
-    # Паттерн 2: проверка "не наш адрес и не 0"
-    src = re.sub(
-        r'if\s*\(\s*mas\[0\]\s*!=\s*(CV_SLAVE_ADDR|cmd_cfg\.slave_addr)\s*&&\s*mas\[0\]\s*!=\s*0u?\s*\)',
-        r'if (mas[0] != \1 && mas[0] != 0u)  /* broadcast=0 тоже принимаем */',
-        src
-    )
+        'broadcast: убран ранний return для адреса 0')
+    # Паттерн: если проверка "не наш и не 0" — оставляем, но добавляем коммент
+    src = apply_re(src,
+        r'(if\s*\(\s*mas\[0\]\s*!=\s*\w+\s*&&\s*mas\[0\]\s*!=\s*0u?\s*\))',
+        r'\1  /* broadcast=0 тоже принимаем и отвечаем */',
+        'broadcast: добавлен комментарий')
 
-    # ── 1d. LOG_RING_SLOTS: маска для кольцевого буфера логов ──
-    # Ищем места, где используется маска 0x7FFF или 0xFFFF для индекса лога
-    # и заменяем на LOG_RING_SLOTS - 1 (или (LOG_RING_SLOTS - 1u))
-    src = re.sub(
-        r'(&\s*0x7FFF\b)',
-        r'& (LOG_RING_SLOTS - 1u)',
-        src
-    )
-    src = re.sub(
+    # ── 1d. LOG_RING_SLOTS ────────────────────────────────────────────────────
+    # Заменяем хардкод маски 0x7FFF на LOG_RING_SLOTS - 1
+    src = apply_re(src,
+        r'&\s*0x7FFF\b',
+        '& (LOG_RING_SLOTS - 1u)',
+        'маска 0x7FFF → (LOG_RING_SLOTS - 1u)')
+    src = apply_re(src,
         r'%\s*0x8000\b',
-        r'% LOG_RING_SLOTS',
-        src
-    )
-    # Если LOG_RING_SLOTS ещё не определён — добавим дефайн после инклюдов
+        '% LOG_RING_SLOTS',
+        'модуль 0x8000 → LOG_RING_SLOTS')
+    src = apply_re(src,
+        r'&\s*\(?\s*LOG_RING_SLOTS\s*-\s*1\s*\)?',
+        '& (LOG_RING_SLOTS - 1u)',
+        'нормализация маски LOG_RING_SLOTS')
+
+    # Если дефайна нет — добавляем после последнего #include
     if '#define LOG_RING_SLOTS' not in src:
-        src = re.sub(
-            r'(#include\s+"vector_log\.h"\s*\n)',
-            r'\1\n/* Размер кольцевого буфера логов (записей). Маска = LOG_RING_SLOTS-1 */\n'
-            r'#ifndef LOG_RING_SLOTS\n#define LOG_RING_SLOTS  32768u\n#endif\n\n',
-            src,
-            count=1
-        )
+        # Находим последний #include и вставляем после него
+        m = list(re.finditer(r'#include\s+[<"][^>"]+[>"]\s*\n', src))
+        if m:
+            pos = m[-1].end()
+            insert = ('\n/* Размер кольцевого буфера логов (записей).\n'
+                      '   Маска для индекса: (LOG_RING_SLOTS - 1). */\n'
+                      '#ifndef LOG_RING_SLOTS\n'
+                      '#define LOG_RING_SLOTS  32768u\n'
+                      '#endif\n')
+            src = src[:pos] + insert + src[pos:]
+            log("  [OK] добавлен #define LOG_RING_SLOTS")
+        else:
+            log("  [WARN] не нашёл место для #define LOG_RING_SLOTS")
 
-    # ── 1e. sys_state.process ставим ПОСЛЕ проверок ──
-    # Ищем паттерн в обработчиках 0x0C/0x0E/0x0F, где process ставится ДО проверок
-    # Типичный паттерн:
-    #   sys_state.process = PROCESS_xxx;
-    #   if (some_check) return CmdError(...);
-    # Переносим: сначала проверки, потом присваивание
-    # Это сложно сделать универсально, поэтому ищем конкретные паттерны:
-    
-    # Паттерн для 0x0C (CmdFunc12): process до проверки лога
-    src = re.sub(
-        r'(sys_state\.process\s*=\s*PROCESS_\w+\s*;)\s*\n(\s*)(if\s*\([^)]*log[^)]*\)[^{]*\{[^}]*return[^}]*\})',
-        r'\2/* process ставим после проверок */\2\3\2\1',
-        src,
-        flags=re.DOTALL | re.IGNORECASE
-    )
+    # ── 1e. sys_state.process: ставим ПОСЛЕ проверок ────────────────────────
+    # Ищем паттерн: присваивание process ПЕРЕД if-проверкой с return
+    # Переносим присваивание после блока проверок
+    # Паттерн: "sys_state.process = X;\n  if (...) { ... return ...; }"
+    src = apply_re(src,
+        r'(\s*)(sys_state\.process\s*=\s*\w+\s*;)\s*\n'
+        r'(\s*)(if\s*\([^)]+\)\s*\{[^}]*return[^}]*\})',
+        r'\1/* process ставим после проверок */\1\4\1\2',
+        'sys_state.process перенесён после проверок (вариант 1)',
+        flags=re.DOTALL)
 
-    # ── 1f. 0x0E/0x0F: ответ 6-байтным эхо ──
-    # Ищем обработчики 0x0E (CmdFunc14/CmdFunc15) и 0x0F (CmdFunc15/CmdFunc20)
-    # Паттерн: после записи в cmd_state возвращаем 0 или ничего
-    # Заменяем на возврат 6-байтного эхо
-    
-    # Для 0x0E (CMD_OP_WRITE_MCU): ищем "return 0u;" после записи в flash staging
-    # Заменяем на формирование эхо
-    src = re.sub(
+    # ── 1f. 0x0E (CMD_OP_WRITE_MCU): 6-байтное эхо ─────────────────────────
+    # Ищем "int_write_pending = 1;" за которым следует "return 0u;"
+    src = apply_re(src,
         r'(cmd_state\.int_write_pending\s*=\s*1u?\s*;)\s*\n(\s*)return\s+0u?\s*;',
-        r'\1\n\2/* 6-байтное эхо: мастер знает, что пакет принят */\n'
+        r'\1\n'
+        r'\2/* 6-байтное эхо: мастер подтверждает приём */\n'
         r'\2if (cap >= 6u) {\n'
         r'\2  out[0]=mas[0]; out[1]=mas[1]; out[2]=mas[2];\n'
         r'\2  out[3]=mas[3]; out[4]=mas[4]; out[5]=mas[5];\n'
         r'\2  return 6u;\n'
-        r'\2}\n\2return 0u;',
-        src
-    )
-    # Для 0x0F (CMD_OP_WRITE_EXT): аналогично
-    src = re.sub(
+        r'\2}\n'
+        r'\2return 0u;',
+        '0x0E: ответ 6-байтным эхо')
+
+    # ── 1g. 0x0F (CMD_OP_WRITE_EXT): 6-байтное эхо ─────────────────────────
+    src = apply_re(src,
         r'(cmd_state\.ext_write_pending\s*=\s*1u?\s*;)\s*\n(\s*)return\s+0u?\s*;',
-        r'\1\n\2/* 6-байтное эхо: мастер знает, что пакет принят */\n'
+        r'\1\n'
+        r'\2/* 6-байтное эхо: мастер подтверждает приём */\n'
         r'\2if (cap >= 6u) {\n'
         r'\2  out[0]=mas[0]; out[1]=mas[1]; out[2]=mas[2];\n'
         r'\2  out[3]=mas[3]; out[4]=mas[4]; out[5]=mas[5];\n'
         r'\2  return 6u;\n'
-        r'\2}\n\2return 0u;',
-        src
-    )
+        r'\2}\n'
+        r'\2return 0u;',
+        '0x0F: ответ 6-байтным эхо')
 
-    if src != original:
-        p.write_text(src, encoding="utf-8")
-        print(f"  [OK] {p}: патч применён")
-    else:
-        print(f"  [NO-CHANGE] {p}")
+    write(p, src)
+    log(f"  [DONE] {p}")
 
-# ══════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 2. tools/send_frames.py
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 def patch_send_frames():
     p = ROOT / "tools" / "send_frames.py"
     if not p.exists():
-        print(f"  [SKIP] {p}"); return
-
-    src = p.read_text(encoding="utf-8", errors="replace")
+        log(f"  [SKIP] {p}"); return
     backup(p)
-    original = src
+    src = read(p)
 
-    # ── Кадр 0x0C: было 8 байт (64 0C 00 00 00 04 + CRC), стало 10 байт ──
-    # Старый формат: rd(0x0C, 0x0000, 4, slave) → struct.pack(">BBHH", ...)
-    # Новый формат: 64 0C 00 00 00 00 00 04 + CRC
-    src = re.sub(
-        r'("log read ptr0 x4"[^,]*,\s*)rd\(0x0C,\s*0x0000,\s*4,\s*slave\)',
-        r'\1bytes([slave, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04]) + crc16_bytes(bytes([slave, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04]))',
-        src
-    )
-    # Альтернативный паттерн: если кадр задан как hex-строка
-    src = re.sub(
+    # ── 2a. Кадр 0x0C: было 8 байт → стало 10 байт ─────────────────────────
+    # Старый: rd(0x0C, 0x0000, 4, slave)  →  struct.pack(">BBHH", slave, 0x0C, 0, 4)
+    # Новый:  [slave, 0x0C, 0x00,0x00,0x00,0x00, 0x00,0x04] + CRC  (10 байт)
+    
+    # Паттерн 1: вызов rd(0x0C, ...)
+    src = apply_re(src,
+        r'rd\(0x0C,\s*0x0000,\s*4,\s*slave\)',
+        r'make_frame_log_read(slave)',
+        '0x0C: замена rd() на make_frame_log_read()')
+
+    # Паттерн 2: hex-строка "64 0C 00 00 00 04"
+    src = apply_re(src,
         r'"64\s+0C\s+00\s+00\s+00\s+04"',
         '"64 0C 00 00 00 00 00 04"',
-        src
-    )
+        '0x0C: hex-строка → 10 байт')
 
-    # ── Парсер ответа 0x0C: ждём cnt*40, а не cnt ──
-    # Ищем проверку длины ответа для 0x0C
-    src = re.sub(
-        r'(if\s+func\s*==\s*0x0C[^:]*:.*?)expect[^\n]*cnt\b',
-        r'\1expect_len = 3 + cnt * 40 + 2',
-        src,
-        flags=re.DOTALL
-    )
-    # Более общий паттерн: замена "1 + cnt * 2" на "1 + cnt * 40" для 0x0C
-    src = re.sub(
-        r'(0x0C[^;]*?)1\s*\+\s*cnt\s*\*\s*2',
-        r'\g<1>1 + cnt * 40',
-        src
-    )
+    # Паттерн 3: bytes([slave, 0x0C, ...]) с 6 байтами данных
+    src = apply_re(src,
+        r'bytes\(\[slave,\s*0x0C,\s*0x00,\s*0x00,\s*0x00,\s*0x04\]\)',
+        'bytes([slave, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04])',
+        '0x0C: bytes() → 10 байт')
 
-    # Если есть функция ожидания ответа — добавляем логику для 0x0C
-    # Ищем блок где проверяется длина ответа и добавляем условие
-    if 'cnt * 40' not in src:
-        # Добавляем комментарий-напоминание
-        src = src.replace(
-            'def xfer(ser, frame',
-            '# NOTE: для 0x0C (Read Log) ответ содержит cnt*40 байт данных + 3 заголовок + 2 CRC\ndef xfer(ser, frame'
-        )
+    # Добавляем helper-функцию make_frame_log_read если её нет
+    if 'make_frame_log_read' not in src:
+        helper = textwrap.dedent('''\
 
-    if src != original:
-        p.write_text(src, encoding="utf-8")
-        print(f"  [OK] {p}")
-    else:
-        print(f"  [NO-CHANGE] {p}")
+def make_frame_log_read(slave, ptr=0, cnt=4):
+    """Кадр 0x0C: 10 байт = [slave, 0x0C, ptr(4B BE), cnt(2B BE)] + CRC."""
+    import struct
+    data = struct.pack(">BB I H", slave, 0x0C, ptr, cnt)
+    # struct ">BB I H" = 1+1+4+2 = 8 байт данных
+    crc = modbus_crc(data)
+    return data + struct.pack("<H", crc)
 
-# ══════════════════════════════════════════════════════════════════════════════
+''')
+        # Вставляем перед def make_cases или перед первым def
+        if 'def make_cases' in src:
+            src = src.replace('def make_cases', helper + 'def make_cases', 1)
+            log("  [OK] добавлена make_frame_log_read()")
+        elif 'def xfer' in src:
+            src = src.replace('def xfer', helper + 'def xfer', 1)
+            log("  [OK] добавлена make_frame_log_read() перед xfer")
+        else:
+            log("  [WARN] не нашёл место для вставки make_frame_log_read")
+
+    # ── 2b. Парсер ответа 0x0C: ждём cnt*40 ─────────────────────────────────
+    # Ищем проверку длины ответа для 0x0C и меняем ожидание
+    # Паттерн: "1 + cnt * 2" или "3 + cnt * 2 + 2" в контексте 0x0C
+    src = apply_re(src,
+        r'(0x0C[^;]*?)(\d+\s*\+\s*cnt\s*\*\s*2)',
+        r'\g<1>3 + cnt * 40 + 2',
+        '0x0C парсер: ожидание cnt*40')
+    
+    # Паттерн: если есть явная проверка "expect" для log read
+    src = apply_re(src,
+        r'("log read[^"]*".*?)expect[^\n]*',
+        r'\1expect: 3 + cnt*40 + 2 bytes (log entries × 40)',
+        '0x0C: обновлён комментарий expect',
+        flags=re.DOTALL)
+
+    write(p, src)
+    log(f"  [DONE] {p}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 3. tools/verify_registers.py
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 def patch_verify_registers():
     p = ROOT / "tools" / "verify_registers.py"
     if not p.exists():
-        print(f"  [SKIP] {p}"); return
-
-    src = p.read_text(encoding="utf-8", errors="replace")
+        log(f"  [SKIP] {p}"); return
     backup(p)
-    original = src
+    src = read(p)
 
-    # ── Кадр 0x0C: 10 байт ──
-    src = re.sub(
-        r'("log read[^"]*"[^,]*,\s*)rd\(0x0C,\s*0x0000,\s*4,\s*slave\)',
-        r'\1bytes([slave, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04]) + crc16_bytes(bytes([slave, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04]))',
-        src
-    )
-    src = re.sub(
+    # ── 3a. Кадр 0x0C: 10 байт ──────────────────────────────────────────────
+    src = apply_re(src,
+        r'rd\(0x0C,\s*0x0000,\s*4,\s*slave\)',
+        r'make_frame_log_read(slave)',
+        '0x0C: замена rd()')
+    src = apply_re(src,
         r'"64\s+0C\s+00\s+00\s+00\s+04"',
         '"64 0C 00 00 00 00 00 04"',
-        src
-    )
+        '0x0C: hex → 10 байт')
+    src = apply_re(src,
+        r'bytes\(\[slave,\s*0x0C,\s*0x00,\s*0x00,\s*0x00,\s*0x04\]\)',
+        'bytes([slave, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04])',
+        '0x0C: bytes() → 10 байт')
 
-    # ── Парсер: ждём cnt*40 ──
-    src = re.sub(
-        r'(0x0C[^;]*?)1\s*\+\s*cnt\s*\*\s*2',
-        r'\g<1>1 + cnt * 40',
-        src
-    )
+    # Добавляем helper если нет
+    if 'make_frame_log_read' not in src:
+        helper = textwrap.dedent('''\
 
-    # ── SAFE_WRITE: расширяем список ──
-    safe_write_block = textwrap.dedent("""\
+def make_frame_log_read(slave, ptr=0, cnt=4):
+    """Кадр 0x0C: 10 байт."""
+    import struct
+    data = struct.pack(">BB I H", slave, 0x0C, ptr, cnt)
+    crc = modbus_crc(data) if 'modbus_crc' in dir() else crc16(data)
+    return data + struct.pack("<H", crc)
+
+''')
+        # Вставляем после импортов
+        m = re.search(r'(import\s+struct\s*\n)', src)
+        if m:
+            src = src[:m.end()] + helper + src[m.end():]
+            log("  [OK] добавлена make_frame_log_read()")
+        else:
+            m2 = re.search(r'(import\s+serial\s*\n)', src)
+            if m2:
+                src = src[:m2.end()] + helper + src[m2.end():]
+                log("  [OK] добавлена make_frame_log_read()")
+
+    # ── 3b. Парсер: ждём cnt*40 ─────────────────────────────────────────────
+    src = apply_re(src,
+        r'(0x0C[^;]*?)(\d+\s*\+\s*cnt\s*\*\s*2)',
+        r'\g<1>3 + cnt * 40 + 2',
+        '0x0C парсер: ожидание cnt*40')
+
+    # ── 3c. SAFE_WRITE: расширяем ────────────────────────────────────────────
+    new_safe = textwrap.dedent('''\
     SAFE_WRITE = {
-        # Holding registers (func 0x03 / 0x06 / 0x10) — безопасные для записи
+        # Holding registers — безопасные для записи/чтения/восстановления
         0x000C: 0x0002,  # TimeLedStatePulse
         0x000D: 0x000A,  # TimeLedStatePeriod
         0x000E: 0x1068,  # battery_charge_volt_max
         0x000F: 0x0CE4,  # battery_charge_volt_min
         0x0010: 0x0DAC,  # battery_charge_volt_lim_1
         0x0011: 0x0D48,  # battery_charge_volt_lim_2
+        0x0012: 0x0000,  # Gps_type_nav (u32 lo)
         0x0014: 0x0000,  # PeriodTimeLora
         0x0015: 0x0000,  # Lora_Config_Flags
         0x0019: 0x0001,  # Immobility_Enable
@@ -293,96 +311,108 @@ def patch_verify_registers():
         0x001D: 0x0000,  # Devices_Expected
         0x001E: 0x0002,  # Alert_Flags
         0x0024: 0x0A00,  # Archiveinterval
-        0x0025: 0x00,    # ArchiveRecording
-        0x002B: 0x0000,  # temperature (float lo)
+        0x0025: 0x0000,  # ArchiveRecording
+        0x002B: 0x0000,  # temperature calib (float lo)
         0x002D: 0x0000,  # flag
-    }""")
+    }''')
 
-    # Заменяем существующий SAFE_WRITE или добавляем
     if 'SAFE_WRITE' in src:
-        src = re.sub(
+        src = apply_re(src,
             r'SAFE_WRITE\s*=\s*\{[^}]*\}',
-            safe_write_block,
-            src,
-            flags=re.DOTALL
-        )
+            new_safe,
+            'SAFE_WRITE: заменён на расширенный')
     else:
-        # Вставляем после импортов
-        src = re.sub(
-            r'(import\s+serial\s*\n)',
-            r'\1\n' + safe_write_block + '\n',
-            src,
-            count=1
-        )
+        # Вставляем после последнего import
+        m = list(re.finditer(r'^(import|from)\s+.*$', src, re.MULTILINE))
+        if m:
+            pos = m[-1].end()
+            src = src[:pos] + '\n\n' + new_safe + '\n' + src[pos:]
+            log("  [OK] SAFE_WRITE: добавлен")
 
-    if src != original:
-        p.write_text(src, encoding="utf-8")
-        print(f"  [OK] {p}")
-    else:
-        print(f"  [NO-CHANGE] {p}")
+    write(p, src)
+    log(f"  [DONE] {p}")
 
-# ══════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 4. tools/retry_frames.py
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 def patch_retry_frames():
     p = ROOT / "tools" / "retry_frames.py"
     if not p.exists():
-        print(f"  [SKIP] {p}"); return
-
-    src = p.read_text(encoding="utf-8", errors="replace")
+        log(f"  [SKIP] {p}"); return
     backup(p)
-    original = src
+    src = read(p)
 
-    # Кадр 0x0C → 10 байт
-    src = re.sub(
+    src = apply_re(src,
         r'"64\s+0C\s+00\s+00\s+00\s+04"',
         '"64 0C 00 00 00 00 00 04"',
-        src
-    )
-    src = re.sub(
+        '0x0C: hex → 10 байт')
+    src = apply_re(src,
         r'rd\(0x0C,\s*0x0000,\s*4,\s*slave\)',
-        r'bytes([slave, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04]) + crc16_bytes(bytes([slave, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04]))',
-        src
-    )
+        r'make_frame_log_read(slave)',
+        '0x0C: замена rd()')
+    src = apply_re(src,
+        r'bytes\(\[slave,\s*0x0C,\s*0x00,\s*0x00,\s*0x00,\s*0x04\]\)',
+        'bytes([slave, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04])',
+        '0x0C: bytes() → 10 байт')
 
-    if src != original:
-        p.write_text(src, encoding="utf-8")
-        print(f"  [OK] {p}")
-    else:
-        print(f"  [NO-CHANGE] {p}")
+    # Добавляем helper если используется make_frame_log_read но не определена
+    if 'make_frame_log_read' in src and 'def make_frame_log_read' not in src:
+        helper = textwrap.dedent('''\
 
-# ══════════════════════════════════════════════════════════════════════════════
+def make_frame_log_read(slave, ptr=0, cnt=4):
+    """Кадр 0x0C: 10 байт."""
+    import struct
+    data = struct.pack(">BB I H", slave, 0x0C, ptr, cnt)
+    crc = crc16(data)
+    return data + struct.pack("<H", crc)
+
+''')
+        # Вставляем перед первым использованием
+        idx = src.find('make_frame_log_read(')
+        # Находим начало строки
+        line_start = src.rfind('\n', 0, idx) + 1
+        src = src[:line_start] + helper + src[line_start:]
+        log("  [OK] добавлена make_frame_log_read()")
+
+    write(p, src)
+    log(f"  [DONE] {p}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 5. Документация
-# ══════════════════════════════════════════════════════════════════════════════
-DOC_ADDENDUM = textwrap.dedent("""\
-
+# ═══════════════════════════════════════════════════════════════════════════
+DOC_BLOCK = """
 ---
 
 ## Форматы команд 0x0C / 0x0E / 0x0F (Patch 1)
 
 ### 0x0C — Чтение журнала (Read Log)
 
-| Поле | Байт | Описание |
+**Запрос: 10 байт**
+
+| Байт | Поле | Значение |
 |------|------|----------|
-| Slave | 0 | Адрес устройства (или 0 = broadcast) |
-| Func | 1 | `0x0C` |
-| Reserved | 2–5 | `0x00 0x00 0x00 0x00` (зарезервировано) |
-| Start ptr | 6 | Начальный указатель (0 = с начала) |
-| Count | 7 | Количество записей `cnt` |
-| CRC | 8–9 | CRC-16 Modbus (Lo, Hi) |
+| 0 | Slave | адрес (0 = broadcast) |
+| 1 | Function | `0x0C` |
+| 2–5 | Pointer | `uint32_t BE`, указатель начала (0 = с начала) |
+| 6–7 | Count | `uint16_t BE`, количество записей |
+| 8–9 | CRC | CRC-16 Modbus (Lo, Hi) |
 
-**Итого запрос: 10 байт.**
+Пример: `64 0C 00 00 00 00 00 04 CRC_Lo CRC_Hi` — прочитать 4 записи с начала.
 
-**Ответ:** `[Slave, 0x0C, Byte_Count, Data(cnt×40), CRC_Lo, CRC_Hi]`  
-Парсер ждёт `3 + cnt*40 + 2` байт.
+**Ответ:** `[Slave, 0x0C, Byte_Count, Data(cnt×40), CRC_Lo, CRC_Hi]`
+
+Парсер хоста ждёт `3 + cnt*40 + 2` байт (каждая запись лога = 40 байт).
 
 ### 0x0E — Запись во внутреннюю Flash (MCU)
 
-Staging-режим: данные копируются в `cmd_state.write_buf`, выставляется
-`int_write_pending = 1`. Фактическая запись — в Measure Task.
+Staging-режим: данные копируются в `cmd_state.write_buf`,
+выставляется `int_write_pending = 1`. Фактическая запись выполняется
+асинхронно в Measure Task через `Command_vector_ExecutePendingActions()`.
 
-**Ответ: 6-байтное эхо** `[Slave, 0x0E, addr_hi, addr_lo, len_hi, len_lo]` —
-мастер подтверждает приём пакета.
+**Ответ: 6-байтное эхо** `[Slave, 0x0E, addr_hi, addr_lo, len_hi, len_lo]`
+Мастер по эхо подтверждает приём пакета.
 
 ### 0x0F — Запись во внешнюю Flash (SPI NOR)
 
@@ -392,56 +422,76 @@ Staging-режим: данные копируются в `cmd_state.write_buf`, 
 
 ### Broadcast (адрес 0x00)
 
-Контроллер **отвечает** на broadcast-запросы. Используется для опроса
-прибора «1-на-1» без прописки адреса на линии.
+Контроллер **отвечает** на broadcast-запросы (адрес 0).
+Используется для опроса прибора «1-на-1» без прописки адреса на линии.
 
 ### Указатель кольцевого буфера логов
 
-* Указатель — монотонный `uint32_t`.
-* Размер кольца задаётся `LOG_RING_SLOTS` (по умолчанию 32768 записей).
-* Физический индекс = `monotonic_ptr & (LOG_RING_SLOTS - 1)`.
+* Указатель — монотонный `uint32_t` (непрерывно растёт).
+* Размер кольца: `LOG_RING_SLOTS` (по умолчанию 32768 записей).
+* Физический индекс: `monotonic_ptr & (LOG_RING_SLOTS - 1)`.
+* Каждая запись лога: 40 байт.
 
 ### Неизвестные команды
 
 Неизвестный код функции **игнорируется** — ответ не формируется.
-Это упрощает диагностику: мастер просто получает таймаут.
-""")
+Мастер получает таймаут. Это упрощает диагностику и не засоряет шину.
+"""
 
 def patch_docs():
     for name in ["docs/Command.md", "docs/ARCHITECTURE.md"]:
         p = ROOT / name
         if not p.exists():
-            print(f"  [SKIP] {p}"); continue
+            log(f"  [SKIP] {p}"); continue
         backup(p)
-        src = p.read_text(encoding="utf-8", errors="replace")
+        src = read(p)
         if "## Форматы команд 0x0C / 0x0E / 0x0F" not in src:
-            src += "\n" + DOC_ADDENDUM
-            p.write_text(src, encoding="utf-8")
-            print(f"  [OK] {p}: добавлено описание форматов")
+            src += "\n" + DOC_BLOCK
+            write(p, src)
+            log(f"  [OK] {p}: добавлено описание")
         else:
-            print(f"  [ALREADY] {p}")
+            log(f"  [ALREADY] {p}")
 
-# ══════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════
 # MAIN
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
+import textwrap
+
 def main():
-    print("=" * 70)
-    print("  PATCH 1: Command_vector / Modbus fixes")
-    print(f"  Backup → {BACKUP_DIR.resolve()}")
-    print("=" * 70)
+    print("=" * 72)
+    print("  PATCH 1: Command_vector / Modbus / tools / docs")
+    print(f"  Backup: {BAK.resolve()}")
+    print("=" * 72)
+    print()
 
     patch_command_vector()
+    print()
     patch_send_frames()
+    print()
     patch_verify_registers()
+    print()
     patch_retry_frames()
+    print()
     patch_docs()
 
-    print("\n" + "=" * 70)
-    print("  ГОТОВО. Пересобери прошивку и запусти:")
-    print("    py tools/send_frames.py COM4")
-    print("    py tools/verify_registers.py COM4 --slave 100 --write")
-    print("    py tools/retry_frames.py COM4")
-    print("=" * 70)
+    print()
+    print("=" * 72)
+    print("  ИТОГ:")
+    warns = [r for r in REPORT if "[WARN]" in r]
+    oks = [r for r in REPORT if "[OK]" in r]
+    print(f"  Применено: {len(oks)}, Предупреждений: {len(warns)}")
+    if warns:
+        print("\n  Предупреждения (нужно проверить вручную):")
+        for w in warns:
+            print(f"    {w}")
+    print()
+    print("  Дальше:")
+    print("    1. Пересобери прошивку в STM32CubeIDE")
+    print("    2. py tools/send_frames.py COM4")
+    print("    3. py tools/verify_registers.py COM4 --slave 100 --write")
+    print("    4. py tools/retry_frames.py COM4")
+    print("=" * 72)
 
 if __name__ == "__main__":
     main()

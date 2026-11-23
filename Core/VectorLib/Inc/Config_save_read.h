@@ -188,7 +188,7 @@ typedef char log_pl_param_assert[(sizeof(log_pl_param_t) == LOG_PAYLOAD_MAX) ? 1
 #define LOG_SLOT_SIZE			40u
 #define LOG_SLOTS_PER_SECTOR	102u
 #define LOG_SECTOR_SIZE			4096u
-#define LOG_RING_SLOTS			52224u	/* 512 × 102 */
+#define LOG_RING_SLOTS			32768u	/* 512 × 102 */
 #define LOG_USABLE_SLOTS		(LOG_RING_SLOTS - LOG_SLOTS_PER_SECTOR)	/* сектор запаса */
 #define LOG_TIME_OFFSET			4u		/* offsetof(EVENT_LOG, H.working_hours) */
 

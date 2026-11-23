@@ -80,6 +80,15 @@ def xfer(ser, frame, idle_ms=15, total_ms=300):
 
     return bytes(buf), t_first, (time.time() - t0) * 1000.0
 
+
+def make_frame_log_read(slave, ptr=0, cnt=4):
+    """Кадр 0x0C: 10 байт = [slave, 0x0C, ptr(4B BE), cnt(2B BE)] + CRC."""
+    import struct
+    data = struct.pack(">BB I H", slave, 0x0C, ptr, cnt)
+    # struct ">BB I H" = 1+1+4+2 = 8 байт данных
+    crc = modbus_crc(data)
+    return data + struct.pack("<H", crc)
+
 def make_cases(slave):
     cases = [
         ("link: hole 0x0000",            rd(0x03, 0x0000, 1, slave),  "exc 02"),
@@ -139,7 +148,7 @@ def main():
     
     if broadcast:
         slave = 0
-        print("BROADCAST MODE: slave=0 (no response expected for reads)")
+        print("BROADCAST MODE: slave=0 (no response expect: 3 + cnt*40 + 2 bytes (log entries × 40)
     
     cases, write_cases = make_cases(slave)
     cases = cases + (write_cases if do_write else [])

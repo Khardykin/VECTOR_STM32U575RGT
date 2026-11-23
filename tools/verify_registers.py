@@ -23,6 +23,14 @@ import argparse
 import os
 import re
 import struct
+
+def make_frame_log_read(slave, ptr=0, cnt=4):
+    """Кадр 0x0C: 10 байт."""
+    import struct
+    data = struct.pack(">BB I H", slave, 0x0C, ptr, cnt)
+    crc = modbus_crc(data) if 'modbus_crc' in dir() else crc16(data)
+    return data + struct.pack("<H", crc)
+
 import sys
 import time
 
@@ -40,13 +48,14 @@ OBJ_NAMES = {"OBJ_APPKEY": "appkey", "OBJ_DEVEUI": "deveui_com",
 
 # Plain settings, no side effects - safe to poke and restore.
 SAFE_WRITE = {
-    # Holding registers (func 0x03 / 0x06 / 0x10) — безопасные для записи
+    # Holding registers — безопасные для записи/чтения/восстановления
     0x000C: 0x0002,  # TimeLedStatePulse
     0x000D: 0x000A,  # TimeLedStatePeriod
     0x000E: 0x1068,  # battery_charge_volt_max
     0x000F: 0x0CE4,  # battery_charge_volt_min
     0x0010: 0x0DAC,  # battery_charge_volt_lim_1
     0x0011: 0x0D48,  # battery_charge_volt_lim_2
+    0x0012: 0x0000,  # Gps_type_nav (u32 lo)
     0x0014: 0x0000,  # PeriodTimeLora
     0x0015: 0x0000,  # Lora_Config_Flags
     0x0019: 0x0001,  # Immobility_Enable
@@ -56,8 +65,8 @@ SAFE_WRITE = {
     0x001D: 0x0000,  # Devices_Expected
     0x001E: 0x0002,  # Alert_Flags
     0x0024: 0x0A00,  # Archiveinterval
-    0x0025: 0x00,    # ArchiveRecording
-    0x002B: 0x0000,  # temperature (float lo)
+    0x0025: 0x0000,  # ArchiveRecording
+    0x002B: 0x0000,  # temperature calib (float lo)
     0x002D: 0x0000,  # flag
 }
 
