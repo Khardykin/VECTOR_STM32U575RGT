@@ -110,6 +110,7 @@ typedef struct
   /* Staging buffer for 0x0E / 0x0F. */
   volatile uint8_t int_write_pending;
   volatile uint8_t ext_write_pending;
+  volatile uint8_t audio_reload_pending;
   uint32_t write_addr;
   uint16_t write_len;
   uint8_t  write_buf[CV_WRITE_BUF_SIZE];

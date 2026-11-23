@@ -1229,4 +1229,13 @@ void Command_vector_ExecutePendingActions(void)
         ? CV_ST_OK : CV_ST_VERIFY;
     return;
   }
+
+  /* --- audio reload image --------------------------------------------- */
+  if (cmd_state.audio_reload_pending != 0u)
+  {
+    cmd_state.audio_reload_pending = 0u;
+    audio_reload_image();
+    cmd_state.flash_status = CV_ST_OK;
+    return;
+  }
 }
