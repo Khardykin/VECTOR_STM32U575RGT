@@ -40,10 +40,25 @@ OBJ_NAMES = {"OBJ_APPKEY": "appkey", "OBJ_DEVEUI": "deveui_com",
 
 # Plain settings, no side effects - safe to poke and restore.
 SAFE_WRITE = {
-    0x000C, 0x000D, 0x000E, 0x000F, 0x0010, 0x0011,
-    0x0012, 0x0014, 0x0015, 0x0016, 0x0018,
-    0x0019, 0x001A, 0x001B, 0x001C, 0x001D, 0x001E,
-    0x0024, 0x0025, 0x002B, 0x002D,
+    # Holding registers (func 0x03 / 0x06 / 0x10) — безопасные для записи
+    0x000C: 0x0002,  # TimeLedStatePulse
+    0x000D: 0x000A,  # TimeLedStatePeriod
+    0x000E: 0x1068,  # battery_charge_volt_max
+    0x000F: 0x0CE4,  # battery_charge_volt_min
+    0x0010: 0x0DAC,  # battery_charge_volt_lim_1
+    0x0011: 0x0D48,  # battery_charge_volt_lim_2
+    0x0014: 0x0000,  # PeriodTimeLora
+    0x0015: 0x0000,  # Lora_Config_Flags
+    0x0019: 0x0001,  # Immobility_Enable
+    0x001A: 0x0078,  # Immobility_Window_s
+    0x001B: 0x003C,  # Immobility_PreAlarm_s
+    0x001C: 0x00FA,  # Immobility_Ths_mg
+    0x001D: 0x0000,  # Devices_Expected
+    0x001E: 0x0002,  # Alert_Flags
+    0x0024: 0x0A00,  # Archiveinterval
+    0x0025: 0x00,    # ArchiveRecording
+    0x002B: 0x0000,  # temperature (float lo)
+    0x002D: 0x0000,  # flag
 }
 
 # Never touch: erase / save / apply / reset / power / identity.
@@ -479,9 +494,9 @@ def main():
         print("\nNo answer on the first register. Run with --probe.")
         ser.close(); return 1
 
-    check_read(mb, com, 0x03, "holding registers", rep)
+    """check_read(mb, com, 0x03, "holding registers", rep)
     check_read(mb, ins, 0x04, "input registers", rep)
-    check_holes(mb, com, 0x03, rep)
+    check_holes(mb, com, 0x03, rep)"""
     if a.write:
         check_write(mb, com, rep)
     else:

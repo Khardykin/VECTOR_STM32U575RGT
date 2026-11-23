@@ -49,6 +49,7 @@ def wr16(addr, vals, slave):
 def hx(b):
     return " ".join("%02X" % x for x in b)
 
+# NOTE: для 0x0C (Read Log) ответ содержит cnt*40 байт данных + 3 заголовок + 2 CRC
 def xfer(ser, frame, idle_ms=15, total_ms=300):
     """Send one frame, read until the line is idle for idle_ms.
 
@@ -99,7 +100,7 @@ def make_cases(slave):
         ("hole 0x0059",                  rd(0x03, 0x0059, 1, slave),  "exc 02"),
         ("hole 0x0F00",                  rd(0x03, 0x0F00, 1, slave),  "exc 02"),
         ("bad function 0x08",            rd(0x08, 0x0001, 1, slave),  "exc 01"),
-        ("log read ptr0 x4",             rd(0x0C, 0x0000, 4, slave),  "4*40 B or exc 02 if empty"),
+        ("log read ptr0 x4",             bytes([slave, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04]) + crc16_bytes(bytes([slave, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04])),  "4*40 B or exc 02 if empty"),
         ("log find time",                add_crc(bytes([slave, 0x14]) +
                                          struct.pack(">II", 0, 0xFFFFFFFF)), "ptr_from/to"),
     ]
