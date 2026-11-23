@@ -28,7 +28,7 @@ def make_frame_log_read(slave, ptr=0, cnt=4):
     """Кадр 0x0C: 10 байт."""
     import struct
     data = struct.pack(">BB I H", slave, 0x0C, ptr, cnt)
-    crc = crc16(data) crc16(data)
+    crc = crc16(data)
     return data + struct.pack("<H", crc)
 
 import sys
@@ -354,7 +354,7 @@ def check_holes(mb, rows, func, rep):
 
 
 def check_write(mb, rows, rep):
-    print("\n== write / read back / restore ==")
+    print("\n== write / read back (NO RESTORE, SAFE_WRITE values) ==")
 
     busy = []
     for a, nm in ((0x0049, "erase_req"), (0x004A, "save_config"),
@@ -375,18 +375,15 @@ def check_write(mb, rows, rep):
         a, span, name = r["addr"], r["span"], r["name"]
         if a not in SAFE_WRITE or forbidden(a, span):
             continue
-        try:
-            orig = mb.read(0x03, a, span)
-        except MbError as e:
-            rep.line("FAIL", "0x%04X %-26s read before write -> %s" % (a, name, e))
-            continue
-        if orig is None:
-            rep.line("FAIL", "0x%04X %-26s read before write -> no answer" % (a, name))
-            continue
-
-        probe = [(v ^ 0x0001) & 0xFFFF for v in orig]
-        if probe == orig:
-            probe = [(v + 1) & 0xFFFF for v in orig]
+        
+        # Берём значение прямо из SAFE_WRITE
+        val = SAFE_WRITE[a]
+        
+        if span == 1:
+            probe = [val]
+        else:
+            # Для T_U32 / T_FLT4: разбиваем значение на младший и старший регистры
+            probe = [val & 0xFFFF, (val >> 16) & 0xFFFF]
 
         try:
             wok = mb.write_multi(a, probe)
@@ -397,31 +394,20 @@ def check_write(mb, rows, rep):
 
         good = wok and back == probe
 
-        try:
-            mb.write_multi(a, orig)
-            rest = mb.read(0x03, a, span)
-        except MbError:
-            rest = None
-        restored = rest == orig
-
         detail = "wrote %s, read %s" % (
             ",".join("0x%04X" % v for v in probe),
             ",".join("0x%04X" % v for v in back) if back else "none")
-        if not restored:
-            detail += "  RESTORE FAILED"
-        rep.line("OK" if (good and restored) else "FAIL",
+        rep.line("OK" if good else "FAIL",
                  "0x%04X %-26s %s" % (a, name, detail))
 
+    # Одиночная запись (функция 0x06) тоже берёт значение из SAFE_WRITE
     target = 0x000D
     try:
-        orig = mb.read(0x03, target, 1)
-        if orig:
-            val = (orig[0] + 1) & 0xFFFF
-            ok6 = mb.write_single(target, val)
-            back = mb.read(0x03, target, 1)
-            mb.write_single(target, orig[0])
-            rep.line("OK" if (ok6 and back and back[0] == val) else "FAIL",
-                     "0x%04X func 0x06 single write" % target)
+        val = SAFE_WRITE.get(target, 0x000A)
+        ok6 = mb.write_single(target, val)
+        back = mb.read(0x03, target, 1)
+        rep.line("OK" if (ok6 and back and back[0] == val) else "FAIL",
+                 "0x%04X func 0x06 single write" % target)
     except MbError as e:
         rep.line("FAIL", "0x%04X func 0x06 -> %s" % (target, e))
 
