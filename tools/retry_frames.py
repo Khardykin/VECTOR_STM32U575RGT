@@ -27,6 +27,28 @@ def frame(slave, fn, addr, cnt):
     c = crc16_v2(d)
     return d + bytes([c & 0xFF, c >> 8])
 
+def xfer(ser, req, idle_ms=20, total_ms=400):
+    """Send one frame, read until the line is idle for idle_ms.
+
+    read(300) with timeout=1 used to wait a full second per attempt,
+    because a Modbus answer is only 5..165 bytes long.
+    """
+    ser.reset_input_buffer()
+    t0 = time.time()
+    ser.write(req)
+    ser.flush()
+    buf = bytearray()
+    t_last = t0
+    while (time.time() - t0) * 1000.0 < total_ms:
+        b = ser.read(1)
+        now = time.time()
+        if b:
+            buf += b
+            t_last = now
+        elif buf and (now - t_last) * 1000.0 >= idle_ms:
+            break
+    return bytes(buf)
+
 port = sys.argv[1] if len(sys.argv) > 1 else "COM4"
 SLAVE = 100
 
@@ -45,7 +67,7 @@ for name, f in tests:
     v1, v2 = crc16_v1(body), crc16_v2(body)
     print("  %-14s v1=%04X v2=%04X %s" % (name, v1, v2, "MATCH" if v1 == v2 else "!!! DIFFER"))
 
-ser = serial.Serial(port, 115200, timeout=1)
+ser = serial.Serial(port, 115200, timeout=0.005)
 
 # prime the port: a few dummy bytes so UART receiver syncs
 ser.write(b"\xFF\xFF\xFF"); ser.flush(); time.sleep(0.05)
@@ -55,14 +77,11 @@ print("\n== retries ==")
 for name, f in tests:
     got = None
     for attempt in range(1, 4):
-        ser.reset_input_buffer()
-        ser.write(f); ser.flush()
-        time.sleep(0.15)
-        raw = ser.read(300)
+        raw = xfer(ser, f)
         if raw:
             got = raw
             break
-        time.sleep(0.2)
+        time.sleep(0.05)
     if got:
         tag = ""
         if len(got) >= 3 and (got[1] & 0x80):

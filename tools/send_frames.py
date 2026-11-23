@@ -49,6 +49,36 @@ def wr16(addr, vals, slave):
 def hx(b):
     return " ".join("%02X" % x for x in b)
 
+def xfer(ser, frame, idle_ms=15, total_ms=300):
+    """Send one frame, read until the line is idle for idle_ms.
+
+    Returns (raw, t_first_ms, t_total_ms).  t_first_ms is the real answer
+    latency (first byte), t_total_ms includes the trailing idle window.
+    An answer is normally 7..165 bytes, so reading a fixed 300 bytes with
+    the port timeout (the old behaviour) added a fake ~50 ms to every row.
+    """
+    ser.reset_input_buffer()
+    t0 = time.time()
+    ser.write(frame)
+    ser.flush()
+
+    buf = bytearray()
+    t_first = None
+    t_last = t0
+
+    while (time.time() - t0) * 1000.0 < total_ms:
+        b = ser.read(1)
+        now = time.time()
+        if b:
+            if t_first is None:
+                t_first = (now - t0) * 1000.0
+            buf += b
+            t_last = now
+        elif t_first is not None and (now - t_last) * 1000.0 >= idle_ms:
+            break
+
+    return bytes(buf), t_first, (time.time() - t0) * 1000.0
+
 def make_cases(slave):
     cases = [
         ("link: hole 0x0000",            rd(0x03, 0x0000, 1, slave),  "exc 02"),
@@ -117,7 +147,9 @@ def main():
     if port:
         if serial is None:
             print("pyserial missing: py -m pip install pyserial"); return 2
-        ser = serial.Serial(port, 115200, timeout=0.05)
+        # Small timeout: xfer() polls one byte at a time and times the first
+        # byte.  With timeout=0.05 every read(1) could block up to 50 ms.
+        ser = serial.Serial(port, 115200, timeout=0.005)
         print("port=%s 115200 8N1 slave=%d\n" % (port, slave))
 
     for name, frame, expect in cases:
@@ -127,24 +159,27 @@ def main():
             name, hx(frame), expect, "OK" if tx_crc_ok else "BAD"))
         
         if ser:
-            ser.reset_input_buffer()
-            t0 = time.time()
-            ser.write(frame)
-            ser.flush()
-            time.sleep(0.05)
-            raw = ser.read(300)
-            dt_ms = (time.time() - t0) * 1000
+            raw, t_first, t_total = xfer(ser, frame)
+            retries = 0
+
+            # On this USB-RS485 link roughly one frame in ten is lost even
+            # when the device answers every solo request (20/20).  One retry
+            # makes the run deterministic: 20/20 with a single resend.
+            while (not broadcast) and ((not raw) or (not verify_crc(raw))) and (retries < 2):
+                retries += 1
+                time.sleep(0.005)
+                raw, t_first, t_total = xfer(ser, frame)
             
             if not raw:
                 if broadcast:
-                    print("%-30s RX: (no response - broadcast)  Δt=%.1f ms" % ("", dt_ms))
+                    print("%-30s RX: (no response - broadcast)  wait=%.1f ms" % ("", t_total))
                 else:
-                    print("%-30s RX: (empty)  Δt=%.1f ms" % ("", dt_ms))
+                    print("%-30s RX: (empty)  wait=%.1f ms  retry=%d" % ("", t_total, retries))
             else:
                 rx_crc_ok = verify_crc(raw)
-                print("%-30s RX: %s  Δt=%.1f ms  CRC: %s" % (
+                print("%-30s RX: %s  first=%.1f ms  total=%.1f ms  retry=%d  CRC: %s" % (
                     "", hx(raw[:24]) + (" ..." if len(raw) > 24 else ""),
-                    dt_ms, "OK" if rx_crc_ok else "BAD"))
+                    t_first, t_total, retries, "OK" if rx_crc_ok else "BAD"))
                 if len(raw) >= 3 and (raw[1] & 0x80):
                     print("%-30s     exception 0x%02X" % ("", raw[2]))
             print()

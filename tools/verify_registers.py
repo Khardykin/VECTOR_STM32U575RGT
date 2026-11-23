@@ -33,7 +33,8 @@ except ImportError:
 
 DEFAULT_SRC = os.path.join("Core", "VectorLib", "Src", "Command_vector.c")
 
-ARRAY_SIZES = {"SZ_APPKEY": 16, "SZ_DEVEUI": 8}
+ARRAY_SIZES = {"CV_APPKEY_SIZE": 16, "CV_DEVEUI_SIZE": 8,
+               "SZ_APPKEY": 16, "SZ_DEVEUI": 8}
 OBJ_NAMES = {"OBJ_APPKEY": "appkey", "OBJ_DEVEUI": "deveui_com",
              "OBJ_CFG": "application_language"}
 
@@ -190,11 +191,16 @@ class MbError(Exception):
 
 
 class Mb:
-    def __init__(self, ser, slave=1, gap=0.02):
+    def __init__(self, ser, slave=1, gap=0.002):
+        # gap: inter-frame pause before reading the answer.  Modbus RTU t3.5
+        # at 115200 is ~0.3 ms; the device needs at most one Receiver Task
+        # period (10 ms), and read() already blocks until the bytes arrive.
+        # The old 20 ms just made every transaction slower, not more reliable.
         self.ser, self.slave, self.gap = ser, slave, gap
+        self.retries = 0
 
-    def _xfer(self, req, rest_len):
-        """rest_len = exact byte count expected after the first two bytes."""
+    def _xfer_once(self, req, rest_len):
+        """One attempt. rest_len = exact byte count after the first two bytes."""
         self.ser.reset_input_buffer()
         self.ser.write(req + struct.pack("<H", crc16(req)))
         self.ser.flush()
@@ -215,14 +221,30 @@ class Mb:
             return None
         return frame
 
-    def read(self, func, addr, cnt):
+    def _xfer(self, req, rest_len, attempts=2):
+        """Retry a lost/failed frame once: ~1 in 10 requests is lost on this
+        USB-RS485 link even though the device answers solo requests 20/20.
+        Writes are idempotent (same address/value), so a retry is safe."""
+        for i in range(attempts):
+            frame = self._xfer_once(req, rest_len)
+            if frame is not None:
+                return frame
+            if (i + 1) < attempts:
+                self.retries += 1
+                time.sleep(0.005)
+        return None
+
+    def read(self, func, addr, cnt, attempts=2):
         req = struct.pack(">BBHH", self.slave, func, addr, cnt)
-        f = self._xfer(req, 1 + cnt * 2 + 2)
-        if f is None:
-            return None
-        if f[2] != cnt * 2:
-            return None
-        return [struct.unpack(">H", f[3 + i * 2:5 + i * 2])[0] for i in range(cnt)]
+        for i in range(attempts):
+            f = self._xfer(req, 1 + cnt * 2 + 2)
+            if f is not None and f[2] == cnt * 2:
+                return [struct.unpack(">H", f[3 + k * 2:5 + k * 2])[0]
+                        for k in range(cnt)]
+            if (i + 1) < attempts:
+                self.retries += 1
+                time.sleep(0.005)
+        return None
 
     def write_multi(self, addr, values):
         data = b"".join(struct.pack(">H", v) for v in values)
@@ -466,7 +488,8 @@ def main():
         print("\n(write test disabled; add --write to check write/read/restore)")
 
     ser.close()
-    print("\n== summary: %d OK, %d FAIL, %d SKIP ==" % (rep.ok, rep.fail, rep.skip))
+    print("\n== summary: %d OK, %d FAIL, %d SKIP (retries: %d) ==" % (
+        rep.ok, rep.fail, rep.skip, mb.retries))
     return 1 if rep.fail else 0
 
 
