@@ -945,7 +945,8 @@ static uint16_t expect_len(const uint8_t *b, uint16_t len)
     case CMD_OP_WRITE_MULTI:
     case CMD_OP_WRITE_MCU:
     case CMD_OP_WRITE_EXT:
-      return (len >= 7u) ? (uint16_t)(7u + (uint16_t)b[6] + 2u) : 0u;
+    	if (len < 7u) { return 7u; }
+    	return (uint16_t)(7u + (uint16_t)b[6] + 2u);
 
     default:
       return 0u;
