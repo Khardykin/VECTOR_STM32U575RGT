@@ -1,80 +1,140 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-apply_p8.py — Fix chunk size to fit full USB packets (no latency tail).
-No firmware changes. No UART timing changes.
-Run from project root: py apply_p8.py
+apply_p10.py — Fix Erase Logic: Don't set OK before loop completes.
+Run from project root: py apply_p10.py
 """
-import os
+import re, shutil
 from pathlib import Path
 
 ROOT = Path(".")
-TARGET = ROOT / "tools" / "test_flash_write.py"
+BAK = ROOT / "_backup_p10"
+REPORT = []
 
-if not TARGET.exists():
-    print(f"[SKIP] {TARGET} not found")
-    exit(1)
+def log(msg):
+    REPORT.append(msg)
+    print(msg)
 
-print(f"Patching {TARGET}...")
+def backup(p):
+    rel = p.relative_to(ROOT)
+    dst = BAK / rel
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if not dst.exists():
+        shutil.copy2(p, dst)
 
-# Read file
-with open(TARGET, "r", encoding="utf-8") as f:
-    content = f.read()
+def read(p): return p.read_text(encoding="utf-8", errors="replace")
+def write(p, s): p.write_text(s, encoding="utf-8")
 
-# Replace default chunk size logic
-# We want max chunk such that (chunk + 9) is multiple of 64 OR <= 64
-# Best balance: Chunk 247 -> Frame 256 bytes (4 packets)
-# Or Chunk 119 -> Frame 128 bytes (2 packets)
-# Let's use 247 for speed, but add safety check in code.
+def patch_command_vector_c():
+    p = ROOT / "Core" / "VectorLib" / "Src" / "Command_vector.c"
+    if not p.exists():
+        log(f"[SKIP] {p}")
+        return
+    
+    backup(p)
+    src = read(p)
+    changed = False
 
-old_arg = 'ap.add_argument("--chunk",type=int,default=256)'
-new_arg = 'ap.add_argument("--chunk",type=int,default=247) # Max for 4 full USB packets (256B frame)'
-
-if old_arg in content:
-    content = content.replace(old_arg, new_arg)
-    print("  [OK] Default chunk changed to 247")
-else:
-    # Try finding generic line if format differs slightly
-    import re
-    pattern = r'(--chunk.*default=\d+)'
-    match = re.search(pattern, content)
+    # Ищем блок обработки erase для SOUND/LOG/FW
+    # Паттерн: cmd_state.flash_status = CV_ST_OK; сразу перед for (...)
+    pattern = r'(if \(\(target == CV_TGT_SOUND\) \|\| \(target == CV_TGT_FW\) \|\| \(target == CV_TGT_LOG\)\)\s*\{\s*uint32_t base;\s*uint32_t limit;\s*uint32_t a;\s*.*?cmd_state\.flash_status = CV_ST_OK;\s*for \(a = 0u; a < cmd_state\.flash_len; a \+= 4096u\))'
+    
+    match = re.search(pattern, src, re.DOTALL)
     if match:
-        print(f"  [WARN] Found existing arg: {match.group(1)}. Replacing manually recommended.")
-        # Simple replace for common cases
-        content = re.sub(r'default=\d+', 'default=247', content)
-        print("  [OK] Default chunk forced to 247 via regex")
+        old_block = match.group(0)
+        
+        # Замена: убираем установку OK до цикла
+        new_block = old_block.replace(
+            "cmd_state.flash_status = CV_ST_OK;\n      for (a = 0u; a < cmd_state.flash_len; a += 4096u)",
+            "// Status remains BUSY until all sectors erased\n      for (a = 0u; a < cmd_state.flash_len; a += 4096u)"
+        )
+        
+        # Добавляем установку OK ПОСЛЕ цикла
+        # Ищем конец блока else if ((addr + size) > limit) ... return; }
+        # Нужно найти закрывающую скобку после цикла for
+        
+        # Проще: найдем весь блок if target==... и заменим его целиком на исправленную версию
+        
+        full_pattern = r'(if \(\(target == CV_TGT_SOUND\) \|\| \(target == CV_TGT_FW\) \|\| \(target == CV_TGT_LOG\)\)\s*\{.*?\n\s*return;\s*\})'
+        
+        replacement_code = """if ((target == CV_TGT_SOUND) || (target == CV_TGT_FW) || (target == CV_TGT_LOG))
+    {
+      uint32_t base;
+      uint32_t limit;
+      uint32_t a;
+
+      if (target == CV_TGT_SOUND)   { base = SF_SOUNDS_BASE; limit = SF_SOUNDS_SIZE; }
+      else if (target == CV_TGT_FW) { base = SF_BOOT_BASE;   limit = SF_BOOT_SIZE;   }
+      else                          { base = SF_LOG_BASE;    limit = SF_LOG_SIZE;    }
+
+      if ((cmd_state.flash_len == 0u) || (cmd_state.flash_len > limit))
+      {
+        cmd_state.flash_len = limit;
+      }
+
+      // НЕ ставим OK здесь! Ждем завершения всех секторов
+      
+      for (a = 0u; a < cmd_state.flash_len; a += 4096u)
+      {
+        int rc = ext_erase_sector(base + cmd_state.flash_addr + a);
+
+        if (rc == EXT_BUSY)
+        {
+          /* resume from this offset on the next pass */
+          cmd_state.flash_addr  += a;
+          cmd_state.flash_len   -= a;
+          cmd_state.erase_req    = 1u;
+          cmd_state.erase_mode   = mode;
+          cmd_state.flash_status = CV_ST_BUSY;
+          return;
+        }
+
+        if (rc != 0)
+        {
+          cmd_state.flash_status = CV_ST_IO;
+          return;
+        }
+      }
+      
+      // Все сектора стерты успешно
+      cmd_state.flash_status = CV_ST_OK;
+      return;
+    }"""
+    
+    src_new = re.sub(full_pattern, replacement_code, src, count=1, flags=re.DOTALL)
+    
+    if src_new != src:
+        write(p, src_new)
+        log("  [OK] Исправлена логика Erase: статус OK ставится только после полного цикла")
+        changed = True
     else:
-        print("  [ERROR] Could not find --chunk argument definition")
-        exit(1)
+        log("  [WARN] Не удалось автоматически заменить блок. Проверь вручную.")
+        
+    if changed:
+        log(f"  [DONE] {p}")
+    else:
+        log(f"  [INFO] Файл не изменен (или якорь не найден)")
 
-# Add validation logic right after parsing args
-validation_code = """
-    # Validate chunk size against USB packet boundaries
-    # Frame length = chunk + 9. Must be <= 64*k to avoid partial packet delay > 10ms timeout
-    frame_len = a.chunk + 9
-    if frame_len % 64 != 0 and frame_len > 64:
-        print(f"WARNING: Frame length {frame_len} is not multiple of 64. Last packet will have tail ({frame_len % 64} bytes).")
-        print(f"         This may cause timeouts with CV_RX_TIMEOUT_MS=10. Consider using chunk={247} or {119}.")
-        # Auto-adjust to nearest safe value below current
-        while (a.chunk + 9) % 64 != 0 and a.chunk > 55:
-            a.chunk -= 1
-        print(f"         Adjusted chunk to {a.chunk} (Frame len {a.chunk+9}).")
-"""
+def main():
+    print("=" * 72)
+    print("  PATCH 10: Fix Erase Logic (Status OK only after completion)")
+    print(f"  Backup: {BAK.resolve()}")
+    print("=" * 72)
+    print()
 
-# Insert validation after 'a=ap.parse_args()'
-insert_marker = "    a=ap.parse_args()\n"
-if insert_marker in content:
-    content = content.replace(insert_marker, insert_marker + validation_code)
-    print("  [OK] Added USB packet alignment validation")
-else:
-    print("  [WARN] Could not find parse_args marker. Validation skipped.")
+    patch_command_vector_c()
 
-# Write back
-with open(TARGET, "w", encoding="utf-8") as f:
-    f.write(content)
+    print()
+    print("=" * 72)
+    oks = [r for r in REPORT if "[OK]" in r]
+    warns = [r for r in REPORT if "[WARN]" in r]
+    print(f"  Применено: {len(oks)}, Предупреждений: {len(warns)}")
+    for w in warns: print("   " + w)
+    print("\n  Дальше:")
+    print("    1. Build Project + ПРОШЕЙ плату.")
+    print("    2. Запусти запись снова:")
+    print("       py tools/test_flash_write_final.py COM4 --slave 100 --file tools/sounds.bin --chunk 255")
+    print("=" * 72)
 
-print("\nDone. Next steps:")
-print("1. Ensure device is ON (sys_state.power != DEVICE_TURNED_OFF)")
-print("2. Run test:")
-print("   py tools/test_flash_write.py COM4 --slave 100 --file tools/sounds.bin --no-erase")
-print("(It will automatically use chunk 247 which fits 4 full USB packets)")
+if __name__ == "__main__":
+    main()

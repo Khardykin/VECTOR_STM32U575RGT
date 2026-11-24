@@ -1152,9 +1152,7 @@ void Command_vector_ExecutePendingActions(void)
       {
         cmd_state.flash_len = limit;
       }
-
-      cmd_state.flash_status = CV_ST_OK;
-
+      
       for (a = 0u; a < cmd_state.flash_len; a += 4096u)
       {
         int rc = ext_erase_sector(base + cmd_state.flash_addr + a);
@@ -1176,11 +1174,11 @@ void Command_vector_ExecutePendingActions(void)
           return;
         }
       }
+      
+      // Все сектора стерты успешно
+      cmd_state.flash_status = CV_ST_OK;
       return;
     }
-
-    cmd_state.flash_status = CV_ST_ADDR;
-    return;
   }
 
   /* --- internal flash program ----------------------------------------- */
