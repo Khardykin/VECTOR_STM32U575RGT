@@ -141,13 +141,25 @@ def main():
         mb.write_u32(0x0043, erase_size) # flash_len = размер для стирания
         mb.write_reg(0x0049, 1)       # erase_req = 1
         
+        # КРИТИЧНО: Ждем, пока Measure Task увидит флаг и сменит статус на BUSY
+        # Иначе мы прочитаем старый OK=0 до начала работы
+        print("   Waiting for task to pick up request...")
+        t_wait = time.time()
+        while time.time() - t_wait < 2.0: # Ждем максимум 1 секунду
+            st = mb.read_reg(0x0047)
+            if st == 1: # CV_ST_BUSY
+                break
+            time.sleep(0.05)
+        
+        # Теперь начинаем замер реального времени стирания
         erase_time = mb.wait_status_ok(timeout_sec=120)
+        
         if erase_time < 0:
             print("ERASE FAILED")
             return 1
             
         avg_erase_ms = (erase_time * 1000) / sectors_count
-        print(f"   Erase OK. Time: {erase_time:.2f}s | Avg per sector: {avg_erase_ms:.1f}ms")
+        print(f"   Erase OK. Real Time: {erase_time:.2f}s | Avg per sector: {avg_erase_ms:.1f}ms")
         
         # Теперь устанавливаем реальную длину файла для проверки границ в CmdFunc15
         mb.write_u32(0x0043, filesize) 

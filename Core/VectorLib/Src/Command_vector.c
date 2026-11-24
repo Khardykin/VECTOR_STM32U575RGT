@@ -710,11 +710,7 @@ uint16_t CmdFunc14(const uint8_t *mas, uint16_t len, uint8_t *out)
     return CmdError(out, mas, CMD_ERR_ADDR);
   }
 
-  if (cmd_state.int_write_pending != 0u)
-  {
-    cmd_state.flash_status = CV_ST_BUSY;
-    return CmdError(out, mas, CMD_ERR_BUSY);
-  }
+  /* int_write_pending check removed for Path B */
 
   cmd_state.write_addr = addr;
   cmd_state.write_len  = size;
@@ -791,11 +787,7 @@ uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
     return CmdError(out, mas, CMD_ERR_ADDR);
   }
 
-  if (cmd_state.ext_write_pending != 0u)
-  {
-    cmd_state.flash_status = CV_ST_BUSY;
-    return CmdError(out, mas, CMD_ERR_BUSY);
-  }
+  /* ext_write_pending check removed for Path B */
 
   cmd_state.write_addr = base + addr;
   cmd_state.write_len  = size;
@@ -1214,53 +1206,9 @@ void Command_vector_ExecutePendingActions(void)
     }
   }
 
-  /* --- internal flash program ----------------------------------------- */
-  if (cmd_state.int_write_pending != 0u)
-  {
-    int rc;
+  /* int_write_pending: handled directly in CmdFunc14 (Path B) */
 
-    cmd_state.int_write_pending = 0u;
-    rc = boot_flash_write(cmd_state.write_addr, cmd_state.write_buf, cmd_state.write_len);
-
-    if (rc == 0)       { cmd_state.flash_status = CV_ST_OK; }
-    else if (rc == -2) { cmd_state.flash_status = CV_ST_VERIFY; }
-    else               { cmd_state.flash_status = CV_ST_IO; }
-    return;
-  }
-
-  /* --- external flash program + verify -------------------------------- */
-  if (cmd_state.ext_write_pending != 0u)
-  {
-    uint8_t verify[CV_WRITE_BUF_SIZE];
-    int rc;
-
-    rc = ext_write(cmd_state.write_addr, cmd_state.write_buf, cmd_state.write_len);
-    if (rc == EXT_BUSY)
-    {
-      cmd_state.flash_status = CV_ST_BUSY;
-      return;                       /* keep pending, retry next pass */
-    }
-
-    cmd_state.ext_write_pending = 0u;
-
-    if (rc != 0)
-    {
-      cmd_state.flash_status = CV_ST_IO;
-      return;
-    }
-
-    rc = ext_read(cmd_state.write_addr, verify, cmd_state.write_len);
-    if (rc != 0)
-    {
-      cmd_state.flash_status = CV_ST_IO;
-      return;
-    }
-
-    cmd_state.flash_status =
-        (memcmp(verify, cmd_state.write_buf, cmd_state.write_len) == 0)
-        ? CV_ST_OK : CV_ST_VERIFY;
-    return;
-  }
+  /* ext_write_pending: handled directly in CmdFunc15 (Path B) */
 
   /* --- audio reload image --------------------------------------------- */
   if (cmd_state.audio_reload_pending != 0u)
