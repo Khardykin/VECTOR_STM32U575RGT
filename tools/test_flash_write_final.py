@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-test_flash_write_final.py - Надежная запись звука с обработкой BUSY и гарантированным Erase.
+test_flash_write_final.py - Запись звука с замером времени Erase/Write.
 """
 import serial, struct, sys, time, os, argparse
 
@@ -21,7 +21,6 @@ class ModbusMaster:
         self.ser.close()
 
     def send_recv(self, req_bytes, expected_resp_len):
-        """Отправка и получение ответа с проверкой CRC."""
         frame = req_bytes + struct.pack("<H", crc16(req_bytes))
         
         # Повтор при ошибке связи (шум в линии)
@@ -32,7 +31,6 @@ class ModbusMaster:
             
             resp = self.ser.read(expected_resp_len)
             if len(resp) == expected_resp_len:
-                # Проверка CRC ответа
                 rx_crc = struct.unpack("<H", resp[-2:])[0]
                 calc_crc = crc16(resp[:-2])
                 if rx_crc == calc_crc:
@@ -65,59 +63,46 @@ class ModbusMaster:
         return ok2
 
     def wait_status_ok(self, timeout_sec=60):
-        """Ждем пока flash_status станет 0 (OK)."""
-        t0 = time.time()
-        while time.time() - t0 < timeout_sec:
+        """Ждем пока flash_status станет 0 (OK). Возвращает время ожидания в сек."""
+        t_start = time.time()
+        while time.time() - t_start < timeout_sec:
             try:
                 st = self.read_reg(0x0047) # flash_status
                 if st == 0:
-                    return True
+                    return time.time() - t_start # Успех, вернули время
                 elif st in [2, 3, 4, 5]: # PROT, ADDR, VERIFY, IO
                     print(f"  ERROR STATUS: {st}")
-                    return False
+                    return -1
             except Exception as e:
                 print(f"  Status read fail: {e}")
             time.sleep(0.1)
         print("  TIMEOUT waiting for status")
-        return False
+        return -1
 
     def write_chunk_safe(self, offset, data, max_retries=10):
         """Запись чанка с повторами при BUSY."""
         size = len(data)
         if size > 255: size = 255
         
-        # Формируем кадр 0x0F
-        # Slave | Func | AddrHi | AddrLo | Size | Data...
-        hdr = struct.pack(">BBHI", self.slave, 0x0F, offset, size) 
-        # Внимание! В оригинальном коде CmdFunc15 парсит адрес как rd32be(&mas[2]).
-        # То есть байты 2,3,4,5.
-        # mas[0]=Slave, mas[1]=Func, mas[2..5]=Addr(U32 BE), mas[6]=Size, mas[7..]=Data
         req_body = struct.pack(">BBI", self.slave, 0x0F, offset) + bytes([size]) + data
         
         for i in range(max_retries):
             try:
-                # Ожидаемый ответ: Slave(1)+Func(1)+EchoAddr(4)+CRC(2) = 8 байт? 
-                # Нет, CmdFunc15 возвращает memcpy(out, mas, 6u); return 6u;
-                # Ответ без CRC добавляется позже. Тело ответа 6 байт. Плюс CRC 2 = 8 байт всего.
                 resp = self.send_recv(req_body, 8)
                 
                 if resp[1] & 0x80:
                     code = resp[2]
                     if code == 0x06: # BUSY
-                        print(f"  [BUSY] Retry {i+1}/{max_retries} @ {offset}", end="\r")
-                        time.sleep(0.15) # Ждем завершения текущей операции Measure Task
+                        time.sleep(0.15)
                         continue
                     else:
                         raise RuntimeError(f"Chunk write exception: 0x{code:02X}")
                 
-                # Успех
                 return True
                 
             except IOError:
-                print(f"  [COMM ERR] Retry {i+1}/{max_retries}", end="\r")
                 time.sleep(0.1)
                 
-        print("\n  FAIL chunk after retries")
         return False
 
 def main():
@@ -135,10 +120,11 @@ def main():
     mb = ModbusMaster(args.port, args.slave)
     
     print(f"Start writing {args.file} ({filesize} bytes)")
+    total_start_time = time.time()
     
     try:
         # 1. Блокировка звука
-        print("1. Block Sound")
+        print("\n1. Block Sound")
         mb.write_reg(0x0058, 1) # block_sound
         
         # 2. Настройка ключа и цели
@@ -147,26 +133,27 @@ def main():
         mb.write_reg(0x0040, 1) # flash_target = SOUND
         
         # 3. ГАРАНТИРОВАННОЕ СТИРАНИЕ ОБЛАСТИ SOUNDS
-        # Мы стираем весь объем файла + округление до сектора
         erase_size = ((filesize + 4095) // 4096) * 4096
-        print(f"3. Erasing {erase_size} bytes of SOUNDS area...")
+        sectors_count = erase_size // 4096
+        print(f"\n3. Erasing {erase_size} bytes ({sectors_count} sectors)...")
         
-        # Настраиваем параметры erase
         mb.write_u32(0x0041, 0)       # flash_addr = 0
         mb.write_u32(0x0043, erase_size) # flash_len = размер для стирания
         mb.write_reg(0x0049, 1)       # erase_req = 1
         
-        # Ждем завершения стирания (может занять до минуты для 3МБ)
-        if not mb.wait_status_ok(timeout_sec=120):
+        erase_time = mb.wait_status_ok(timeout_sec=120)
+        if erase_time < 0:
             print("ERASE FAILED")
             return 1
-        print("   Erase OK")
+            
+        avg_erase_ms = (erase_time * 1000) / sectors_count
+        print(f"   Erase OK. Time: {erase_time:.2f}s | Avg per sector: {avg_erase_ms:.1f}ms")
         
         # Теперь устанавливаем реальную длину файла для проверки границ в CmdFunc15
         mb.write_u32(0x0043, filesize) 
         
         # 4. Запись данных
-        print("4. Writing chunks...")
+        print(f"\n4. Writing chunks (chunk={args.chunk} bytes)...")
         with open(args.file, "rb") as f:
             offset = 0
             total_chunks = (filesize + args.chunk - 1) // args.chunk
@@ -183,59 +170,40 @@ def main():
                 
                 offset += len(data)
                 
-                # Прогресс каждые 5%
+                # Прогресс каждые 5% или каждый 100-й чанк
                 pct = 100.0 * offset / filesize
-                if int(pct) % 5 == 0 and offset > 0:
+                current_chunk_num = offset // args.chunk
+                if (int(pct) % 5 == 0 and offset > 0) or (current_chunk_num % 100 == 0):
                      elapsed = time.time() - start_time
                      rate = offset / elapsed if elapsed > 0 else 0
                      eta = (filesize - offset) / rate if rate > 0 else 0
-                     print(f"  {pct:.1f}% | Rate: {rate:.0f} B/s | ETA: {eta:.0f}s", end="\r")
+                     print(f"  {pct:.1f}% | Chunks: {current_chunk_num}/{total_chunks} | Rate: {rate:.0f} B/s | ETA: {eta:.0f}s", end="\r")
 
-        print("\n   Write Complete")
-        
-        # --- ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА ДАННЫХ (Spot Check) ---
-        print("6. Verifying data integrity (spot checks)...")
-        
-        # Берем 3 точки: начало (после header), середина, конец
-        check_offsets = [
-            1024,           # Сразу после заголовка
-            filesize // 2,  # Середина
-            filesize - 256  # Предпоследний чанк
-        ]
-        
-        with open(args.file, "rb") as f:
-            for offset in check_offsets:
-                if offset >= filesize: continue
-                
-                # Читаем оригинальные данные из файла
-                f.seek(offset)
-                expected_data = f.read(256)
-                
-                # Читаем данные из Flash через команду ext_read (упрощенно, через регистры или спецкоманду)
-                # В текущем протоколе нет прямой команды "прочитать N байт из FLASH".
-                # Но есть команда 0x0C (Log Read) для журнала. Для звука такой команды нет.
-                
-                # ВАРИАНТ А: Использовать отладчик CubeIDE (Expressions -> memory view)
-                # Адрес SF_SOUNDS_BASE + offset. Сравнить байты.
-                
-                # ВАРИАНТ Б (Костыль): Попросить МК прочитать кусок звука и отправить его обратно?
-                # Нет такой команды. Придется использовать ST-LINK Utility / STM32 Programmer.
-                
-                pass 
+        write_time = time.time() - start_time
+        avg_write_ms = (write_time * 1000) / total_chunks
+        print(f"\n   Write Complete. Time: {write_time:.2f}s | Avg per chunk: {avg_write_ms:.1f}ms")
         
         # 5. Перезагрузка образа звука
-        print("5. Reload Audio Image")
+        print("\n5. Reload Audio Image")
+        reload_start = time.time()
         mb.write_reg(0x0059, 1) # audio_reload_pending
         mb.wait_status_ok(timeout_sec=5)
+        reload_time = time.time() - reload_start
+        print(f"   Reload done. Time: {reload_time:.2f}s")
         
     finally:
         # 6. Разблокировка звука
-        print("6. Unblock Sound")
+        print("\n6. Unblock Sound")
         mb.write_reg(0x0058, 0)
         mb.close()
         
-    print("\nDONE.")
+    total_time = time.time() - total_start_time
+    print(f"\n{'='*40}")
+    print(f"DONE. Total operation time: {total_time:.2f}s")
+    print(f"Erase: {erase_time:.2f}s | Write: {write_time:.2f}s | Reload: {reload_time:.2f}s")
+    print(f"Avg throughput (write phase): {(filesize/write_time)/1024:.1f} KB/s")
+    print('='*40)
     return 0
 
-if __name__ == "__main__":
+if __name__=="__main__":
     sys.exit(main())

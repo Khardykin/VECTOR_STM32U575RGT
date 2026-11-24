@@ -1152,19 +1152,19 @@ void Command_vector_ExecutePendingActions(void)
       {
         cmd_state.flash_len = limit;
       }
-      
+
       for (a = 0u; a < cmd_state.flash_len; a += 4096u)
       {
         int rc = ext_erase_sector(base + cmd_state.flash_addr + a);
 
         if (rc == EXT_BUSY)
         {
-          /* resume from this offset on the next pass */
+          /* Шина занята. Сохраняем прогресс и выходим. */
           cmd_state.flash_addr  += a;
           cmd_state.flash_len   -= a;
           cmd_state.erase_req    = 1u;
           cmd_state.erase_mode   = mode;
-          cmd_state.flash_status = CV_ST_BUSY;
+          cmd_state.flash_status = CV_ST_BUSY; // Явно подтверждаем BUSY
           return;
         }
 
@@ -1175,8 +1175,9 @@ void Command_vector_ExecutePendingActions(void)
         }
       }
       
-      // Все сектора стерты успешно
+      // Все сектора успешно стерты за этот проход
       cmd_state.flash_status = CV_ST_OK;
+      cmd_state.erase_req    = 0u; // Сбрасываем флаг запроса
       return;
     }
   }

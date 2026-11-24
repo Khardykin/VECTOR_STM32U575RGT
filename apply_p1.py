@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-apply_p10.py — Fix Erase Logic: Don't set OK before loop completes.
-Run from project root: py apply_p10.py
+apply_p13.py — Fix Erase Status Race Condition.
+Ensure flash_status is BUSY before starting erase loop.
+Run from project root: py apply_p13.py
 """
 import re, shutil
 from pathlib import Path
 
 ROOT = Path(".")
-BAK = ROOT / "_backup_p10"
+BAK = ROOT / "_backup_p13"
 REPORT = []
 
 def log(msg):
@@ -36,26 +37,13 @@ def patch_command_vector_c():
     changed = False
 
     # Ищем блок обработки erase для SOUND/LOG/FW
-    # Паттерн: cmd_state.flash_status = CV_ST_OK; сразу перед for (...)
-    pattern = r'(if \(\(target == CV_TGT_SOUND\) \|\| \(target == CV_TGT_FW\) \|\| \(target == CV_TGT_LOG\)\)\s*\{\s*uint32_t base;\s*uint32_t limit;\s*uint32_t a;\s*.*?cmd_state\.flash_status = CV_ST_OK;\s*for \(a = 0u; a < cmd_state\.flash_len; a \+= 4096u\))'
+    # Нам нужно заменить весь блок if ((target == CV_TGT_SOUND) ...) { ... }
+    
+    pattern = r'(if \(\(target == CV_TGT_SOUND\) \|\| \(target == CV_TGT_FW\) \|\| \(target == CV_TGT_LOG\)\)\s*\{.*?\n\s*return;\s*\})'
     
     match = re.search(pattern, src, re.DOTALL)
     if match:
         old_block = match.group(0)
-        
-        # Замена: убираем установку OK до цикла
-        new_block = old_block.replace(
-            "cmd_state.flash_status = CV_ST_OK;\n      for (a = 0u; a < cmd_state.flash_len; a += 4096u)",
-            "// Status remains BUSY until all sectors erased\n      for (a = 0u; a < cmd_state.flash_len; a += 4096u)"
-        )
-        
-        # Добавляем установку OK ПОСЛЕ цикла
-        # Ищем конец блока else if ((addr + size) > limit) ... return; }
-        # Нужно найти закрывающую скобку после цикла for
-        
-        # Проще: найдем весь блок if target==... и заменим его целиком на исправленную версию
-        
-        full_pattern = r'(if \(\(target == CV_TGT_SOUND\) \|\| \(target == CV_TGT_FW\) \|\| \(target == CV_TGT_LOG\)\)\s*\{.*?\n\s*return;\s*\})'
         
         replacement_code = """if ((target == CV_TGT_SOUND) || (target == CV_TGT_FW) || (target == CV_TGT_LOG))
     {
@@ -72,20 +60,24 @@ def patch_command_vector_c():
         cmd_state.flash_len = limit;
       }
 
-      // НЕ ставим OK здесь! Ждем завершения всех секторов
-      
+      // КРИТИЧНОЕ ИСПРАВЛЕНИЕ:
+      // Статус BUSY ДО начала цикла. 
+      // Дефолт 0 (OK) опасен, так как CV_ST_OK == 0.
+      // Скрипт должен видеть BUSY и ждать смены на OK.
+      cmd_state.flash_status = CV_ST_BUSY; 
+
       for (a = 0u; a < cmd_state.flash_len; a += 4096u)
       {
         int rc = ext_erase_sector(base + cmd_state.flash_addr + a);
 
         if (rc == EXT_BUSY)
         {
-          /* resume from this offset on the next pass */
+          /* Шина занята. Сохраняем прогресс и выходим. */
           cmd_state.flash_addr  += a;
           cmd_state.flash_len   -= a;
           cmd_state.erase_req    = 1u;
           cmd_state.erase_mode   = mode;
-          cmd_state.flash_status = CV_ST_BUSY;
+          cmd_state.flash_status = CV_ST_BUSY; // Явно подтверждаем BUSY
           return;
         }
 
@@ -96,16 +88,17 @@ def patch_command_vector_c():
         }
       }
       
-      // Все сектора стерты успешно
+      // Все сектора успешно стерты за этот проход
       cmd_state.flash_status = CV_ST_OK;
+      cmd_state.erase_req    = 0u; // Сбрасываем флаг запроса
       return;
     }"""
     
-    src_new = re.sub(full_pattern, replacement_code, src, count=1, flags=re.DOTALL)
+    src_new = re.sub(pattern, replacement_code, src, count=1, flags=re.DOTALL)
     
     if src_new != src:
         write(p, src_new)
-        log("  [OK] Исправлена логика Erase: статус OK ставится только после полного цикла")
+        log("  [OK] Исправлена логика Erase: Статус BUSY ставится ПЕРЕД циклом")
         changed = True
     else:
         log("  [WARN] Не удалось автоматически заменить блок. Проверь вручную.")
@@ -117,7 +110,7 @@ def patch_command_vector_c():
 
 def main():
     print("=" * 72)
-    print("  PATCH 10: Fix Erase Logic (Status OK only after completion)")
+    print("  PATCH 13: Fix Erase Status Race (Default 0 == OK bug)")
     print(f"  Backup: {BAK.resolve()}")
     print("=" * 72)
     print()
