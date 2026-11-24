@@ -1145,13 +1145,6 @@ void Vector_Options_System(void)
 		sys_state.process = SYS_PROC_IDLE;
 	}
 
-  /* Quench block_sound on user interaction (button press / alarm stop) */
-  if ((TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND)) &&
-      (get_button_active() || audio_is_alarm_playing())) {
-	  CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);
-      RESET_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END);
-  }
-
 #endif
 }
 
