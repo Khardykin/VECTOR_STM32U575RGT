@@ -1,154 +1,107 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""test_flash_write.py - запись файла во внешнюю flash"""
-import serial, struct, sys, time, os
+"""test_flash_write.py — запись sounds.bin во внешнюю flash + audio_reload.
 
-def crc16(data):
-    crc = 0xFFFF
-    for b in data:
-        crc ^= b
-        for _ in range(8):
-            crc = (crc >> 1) ^ 0xA001 if (crc & 1) else crc >> 1
-    return crc
+  py tools/test_flash_write.py COM4 --slave 100 --file tools/sounds.bin
+  py tools/test_flash_write.py COM4 --slave 100 --file tools/sounds.bin --no-erase
+"""
+import serial, struct, sys, time, os, argparse
 
-def modbus_write_single(ser, slave, addr, value):
-    req = struct.pack(">BBHH", slave, 0x06, addr, value)
-    req += struct.pack("<H", crc16(req))
-    ser.write(req); ser.flush()
-    time.sleep(0.05)
-    resp = ser.read(8)
-    if len(resp) < 8:
-        return False
-    rx_crc = struct.unpack("<H", resp[-2:])[0]
-    if crc16(resp[:-2]) != rx_crc:
-        return False
-    return resp[0] == slave and resp[1] == 0x06
+def crc16(d):
+    c=0xFFFF
+    for b in d:
+        c^=b
+        for _ in range(8): c=(c>>1)^0xA001 if c&1 else c>>1
+    return c
 
-def modbus_read_single(ser, slave, addr):
-    req = struct.pack(">BBHH", slave, 0x03, addr, 1)
-    req += struct.pack("<H", crc16(req))
-    ser.write(req); ser.flush()
-    time.sleep(0.05)
-    resp = ser.read(7)
-    if len(resp) < 7:
-        return None
-    rx_crc = struct.unpack("<H", resp[-2:])[0]
-    if crc16(resp[:-2]) != rx_crc:
-        return None
-    if resp[0] != slave or (resp[1] & 0x80):
-        return None
-    return struct.unpack(">H", resp[3:5])[0]
+def xfer(ser,req,rest):
+    ser.reset_input_buffer(); ser.write(req+struct.pack("<H",crc16(req))); ser.flush()
+    h=ser.read(2)
+    if len(h)<2: return None
+    if h[1]&0x80:
+        t=ser.read(3); raise RuntimeError("exception 0x%02X"%(t[0] if t else 0))
+    b=ser.read(rest)
+    if len(b)<rest: return None
+    f=h+b
+    if crc16(f[:-2])!=struct.unpack("<H",f[-2:])[0]: return None
+    return f
 
-def write_chunk(ser, slave, addr, data):
-    if len(data) > 256:
-        print(f"Chunk too large: {len(data)} > 256")
-        return False
-    req = struct.pack(">BBI", slave, 0x0F, addr)
-    req += bytes([len(data)])
-    req += data
-    req += struct.pack("<H", crc16(req))
-    ser.write(req); ser.flush()
-    time.sleep(0.1)
-    resp = ser.read(100)
-    if len(resp) < 8:
-        print(f"No response or too short: {len(resp)}")
-        return False
-    rx_crc = struct.unpack("<H", resp[-2:])[0]
-    if crc16(resp[:-2]) != rx_crc:
-        print(f"CRC mismatch")
-        return False
-    if resp[1] & 0x80:
-        print(f"Error response: exception 0x{resp[2]:02X}")
-        return False
-    return True
+def rd(ser,s,a):
+    f=xfer(ser,struct.pack(">BBHH",s,0x03,a,1),5)
+    return struct.unpack(">H",f[3:5])[0] if f else None
+def wr(ser,s,a,v):
+    return xfer(ser,struct.pack(">BBHH",s,0x06,a,v),6) is not None
+def wr32(ser,s,a,v):
+    return wr(ser,s,a,v&0xFFFF) and wr(ser,s,a+1,(v>>16)&0xFFFF)
+
+def wait_status(ser,s,timeout):
+    """0=OK,1=BUSY,2=PROT,3=ADDR,4=VERIFY,5=IO."""
+    t0=time.time()
+    while time.time()-t0<timeout:
+        st=rd(ser,s,0x0047)
+        if st==0: return True
+        if st in (2,3,4,5):
+            print("  flash_status=%d (ошибка)"%st); return False
+        time.sleep(0.05)
+    print("  таймаут flash_status"); return False
+
+def write_chunk(ser,s,addr,data):
+    req=struct.pack(">BBI",s,0x0F,addr)+bytes([len(data)])+data
+    return xfer(ser,req,6) is not None   # эхо 6 байт
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: py test_flash_write.py COM4 [--slave 100] [--file sounds.bin] [--target sound|fw]")
-        return
-    port = sys.argv[1]
-    slave = 100
-    filename = None
-    target = "sound"
-    i = 2
-    while i < len(sys.argv):
-        if sys.argv[i] == '--slave' and i+1 < len(sys.argv):
-            slave = int(sys.argv[i+1]); i += 2
-        elif sys.argv[i] == '--file' and i+1 < len(sys.argv):
-            filename = sys.argv[i+1]; i += 2
-        elif sys.argv[i] == '--target' and i+1 < len(sys.argv):
-            target = sys.argv[i+1]; i += 2
-        else:
-            i += 1
-    if not filename:
-        print("Error: --file required"); return
-    if not os.path.exists(filename):
-        print(f"File not found: {filename}"); return
-    file_size = os.path.getsize(filename)
-    target_val = 1 if target == "sound" else 2
-    print(f"Port: {port}, Slave: {slave}")
-    print(f"File: {filename} ({file_size} bytes)")
-    print(f"Target: {target} ({target_val})")
-    ser = serial.Serial(port, 115200, timeout=1)
-    print("\n1. Блокировка звука (block_sound = 1)...")
-    if not modbus_write_single(ser, slave, 0x0058, 1):
-        print("Failed"); ser.close(); return
-    print("  OK")
-    print("\n2. Установка flash_key...")
-    key_hi, key_lo = 0xDEAD, 0xBEEF
-    if not modbus_write_single(ser, slave, 0x0046, key_hi):
-        print("Failed"); ser.close(); return
-    if not modbus_write_single(ser, slave, 0x0045, key_lo):
-        print("Failed"); ser.close(); return
-    print(f"  OK (key=0x{key_hi:04X}{key_lo:04X})")
-    print("\n3. Установка flash_target...")
-    if not modbus_write_single(ser, slave, 0x0040, target_val):
-        print("Failed"); ser.close(); return
-    print(f"  OK (target={target_val})")
-    print("\n4. Установка flash_len...")
-    len_hi = (file_size >> 16) & 0xFFFF
-    len_lo = file_size & 0xFFFF
-    if not modbus_write_single(ser, slave, 0x0044, len_hi):
-        print("Failed"); ser.close(); return
-    if not modbus_write_single(ser, slave, 0x0043, len_lo):
-        print("Failed"); ser.close(); return
-    print(f"  OK (len={file_size})")
-    print("\n5. Отправка чанков...")
-    with open(filename, "rb") as f:
-        offset, chunk_num = 0, 0
-        while offset < file_size:
-            chunk = f.read(256)
-            chunk_num += 1
-            print(f"  Chunk {chunk_num}: offset={offset}, size={len(chunk)}")
-            if not write_chunk(ser, slave, offset, chunk):
-                print(f"  FAILED at offset {offset}"); ser.close(); return
-            status = modbus_read_single(ser, slave, 0x0047)
-            if status is None:
-                print("  Failed to read flash_status"); ser.close(); return
-            if status != 0:
-                print(f"  flash_status = {status} (expected 0)"); ser.close(); return
-            time.sleep(0.05)
-            offset += len(chunk)
-    print("\n6. Проверка завершения...")
-    pending = modbus_read_single(ser, slave, 0x004F)
-    if pending is None:
-        print("  Failed to read ext_write_pending")
-    elif pending != 0:
-        print(f"  ext_write_pending = {pending} (expected 0)")
-    else:
-        print("  OK")
-    print("\n7. Перезагрузка образа звука (audio_reload_pending = 1)...")
-    if not modbus_write_single(ser, slave, 0x0059, 1):
-        print("  Failed")
-    else:
-        print("  OK")
-    print("\n8. Разблокировка звука (block_sound = 0)...")
-    if not modbus_write_single(ser, slave, 0x0058, 0):
-        print("  Failed")
-    else:
-        print("  OK")
-    ser.close()
-    print("\n=== DONE ===")
+    ap=argparse.ArgumentParser()
+    ap.add_argument("port"); ap.add_argument("--slave",type=int,default=100)
+    ap.add_argument("--file",required=True); ap.add_argument("--no-erase",action="store_true")
+    ap.add_argument("--chunk",type=int,default=256)
+    a=ap.parse_args()
+    if not os.path.exists(a.file): print("Файл не найден: %s"%a.file); return 1
+    size=os.path.getsize(a.file); s=a.slave
+    print("port=%s slave=%d file=%s (%d байт)"%(a.port,s,a.file,size))
+    ser=serial.Serial(a.port,115200,timeout=1)
 
-if __name__ == "__main__":
-    main()
+    print("\n1. block_sound=1 (0x0058)")
+    if not wr(ser,s,0x0058,1): print("FAIL"); return 1
+
+    print("2. flash_key=1, flash_target=SOUND(1)")
+    wr32(ser,s,0x0045,1); wr(ser,s,0x0040,1)
+
+    if not a.no_erase:
+        er=((size+4095)//4096)*4096
+        print("3. erase SOUND: %d байт (%d секторов), жди до 240 с..."%(er,er//4096))
+        wr32(ser,s,0x0041,0); wr32(ser,s,0x0043,er); wr(ser,s,0x0049,1)
+        if not wait_status(ser,s,240): print("FAIL erase"); wr(ser,s,0x0058,0); return 1
+        print("  erase OK")
+    else:
+        print("3. erase пропущен (--no-erase)")
+
+    print("4. flash_len=%d, запись чанками по %d Б"%(size,a.chunk))
+    wr32(ser,s,0x0043,size)
+    t0=time.time(); off=0; n=0; total=(size+a.chunk-1)//a.chunk
+    with open(a.file,"rb") as f:
+        while off<size:
+            data=f.read(a.chunk)
+            if not write_chunk(ser,s,off,data):
+                print("FAIL chunk @%d"%off); wr(ser,s,0x0058,0); return 1
+            if not wait_status(ser,s,2.0):
+                print("FAIL status @%d"%off); wr(ser,s,0x0058,0); return 1
+            off+=len(data); n+=1
+            if n%64==0 or off>=size:
+                el=time.time()-t0; rate=off/el if el>0 else 0
+                eta=(size-off)/rate if rate>0 else 0
+                print("  %d/%d (%.1f%%) %.0f Б/с ETA %.0f с"%(n,total,100.0*off/size,rate,eta))
+
+    print("5. audio_reload_pending=1 (0x0059)")
+    if not wr(ser,s,0x0059,1):
+        print("  FAIL: 0x0059 нет в карте — пересобери и прошей прошивку (патч 5)")
+    else:
+        wait_status(ser,s,3.0); print("  reload запрошен")
+
+    print("6. block_sound=0")
+    wr(ser,s,0x0058,0)
+    ser.close()
+    print("\nDONE. Проверь воспроизведение (кнопка/API) или лог старта 'image ok=1'.")
+    return 0
+
+if __name__=="__main__":
+    sys.exit(main())

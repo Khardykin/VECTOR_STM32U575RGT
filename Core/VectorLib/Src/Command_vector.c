@@ -132,6 +132,7 @@ static const reg_map_t com_map[] =
   SS(fw_pending,                0x0056, T_U8),
   SS(data_exchange,             0x0057, T_U8),
   SS(block_sound,               0x0058, T_U8),
+  CS(audio_reload_pending,      0x0059, T_U8),
 
   { 0u, 0u, 0u, 0u, 0u }
 };
