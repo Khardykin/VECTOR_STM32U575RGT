@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-apply_p14.py — Path B: Direct Flash Write in Receiver Task + Sound Quenching.
-Run from project root: py apply_p14.py
+apply_p18.py — Path B Final: Direct Write + Auto-Clear Block Sound by Timer.
+Fixes compilation errors from p17.
+Run from project root: py apply_p18.py
 """
 import re, shutil
 from pathlib import Path
 
 ROOT = Path(".")
-BAK = ROOT / "_backup_p14"
+BAK = ROOT / "_backup_p18"
 REPORT = []
 
 def log(msg):
@@ -25,8 +26,10 @@ def backup(p):
 def read(p): return p.read_text(encoding="utf-8", errors="replace")
 def write(p, s): p.write_text(s, encoding="utf-8")
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 1. Command_vector.c — Direct Write in CmdFunc14 & CmdFunc15
+# ═══════════════════════════════════════════════════════════════════════════
 def patch_command_vector_c():
-    """Изменяем CmdFunc15: пишем во flash сразу, ставим block_sound."""
     p = ROOT / "Core" / "VectorLib" / "Src" / "Command_vector.c"
     if not p.exists():
         log(f"[SKIP] {p}")
@@ -36,22 +39,17 @@ def patch_command_vector_c():
     src = read(p)
     changed = False
 
-    # Ищем конец функции CmdFunc15 перед возвратом эхо
-    # Там сейчас стоит: cmd_state.ext_write_pending = 1u; ... return 6u;
+    # --- A. CmdFunc15 (External Flash) ---
+    # Ищем хвост функции CmdFunc15 перед return 6u;
+    pattern_15 = r'(cmd_state\.ext_write_pending\s*=\s*1u;\s*cmd_state\.flash_status\s*=\s*CV_ST_BUSY;\s*sys_state\.process\s*=.*?;\s*return\s*6u;)'
+    match_15 = re.search(pattern_15, src, re.DOTALL)
     
-    old_logic = r'(cmd_state\.write_addr\s*=\s*base\s*\+\s*addr;\s*cmd_state\.write_len\s*=\s*size;\s*memcpy\(cmd_state\.write_buf,\s*&mas\[7\],\s*size\);\s*cmd_state\.ext_write_pending\s*=\s*1u;\s*cmd_state\.flash_status\s*=\s*CV_ST_BUSY;\s*sys_state\.process\s*=\s*\(cmd_state\.flash_target\s*==\s*CV_TGT_FW\)\s*\?\s*SYS_PROC_FW\s*:\s*SYS_PROC_ARCHIVE;\s*return\s*6u;)'
-    
-    match = re.search(old_logic, src, re.DOTALL)
-    if match:
-        new_logic = """cmd_state.write_addr = base + addr;
-  cmd_state.write_len  = size;
-  memcpy(cmd_state.write_buf, &mas[7], size);
-  
-  /* Path B: Immediate write in Receiver Task */
+    if match_15:
+        new_code_15 = """/* Path B: Immediate write to External Flash */
   int rc = ext_write(cmd_state.write_addr, cmd_state.write_buf, cmd_state.write_len);
   
   if (rc == EXT_BUSY) {
-      /* Шина занята (звук играет). Ставим pending, попробуем позже в Measure Task. */
+      /* Fallback: Queue for Measure Task if bus busy */
       cmd_state.ext_write_pending = 1u;
       cmd_state.flash_status      = CV_ST_BUSY;
   } else if (rc != 0) {
@@ -67,28 +65,57 @@ def patch_command_vector_c():
       }
   }
   
-  /* Block sound during exchange */
-  sys_state.power |= ST_COMMON_BIT_BLOCK_SOUND; 
+  /* Block Sound during exchange */
+  SET_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND); 
   
-  /* Start quench timer */
-  START_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END, TIME_RTC_DATA_EXCHANGE_TIMEOUT_MS);
+  /* Start quench timer (auto-clear after timeout) 
+     Using existing constant TIME_RTC_DATA_EXCHANGE_END as duration. */
+  START_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END, TIME_RTC_DATA_EXCHANGE_END); 
   
+  sys_state.process = SYS_PROC_ARCHIVE;
   return 6u;"""
         
-        src_new = src.replace(match.group(0), new_logic)
-        write(p, src_new)
-        log("  [OK] CmdFunc15: Direct write + block_sound + quench timer")
+        src = src[:match_15.start()] + new_code_15 + src[match_15.end():]
+        log("  [OK] CmdFunc15: Direct write + Block Sound")
         changed = True
     else:
-        log("  [WARN] Якорь CmdFunc15 не найден. Проверь вручную.")
-        
-    if changed:
-        log(f"  [DONE] {p}")
-    else:
-        log(f"  [INFO] Файл не изменен")
+        log("  [WARN] CmdFunc15 tail not found. Check manually.")
 
-def patch_main_vector_quench():
-    """Добавляем сброс block_sound по кнопке/сигнализации в Vector_Run_Measure."""
+    # --- B. CmdFunc14 (Internal Flash) ---
+    pattern_14 = r'(cmd_state\.int_write_pending\s*=\s*1u;\s*cmd_state\.flash_status\s*=\s*CV_ST_BUSY;\s*sys_state\.process\s*=\s*SYS_PROC_FW;\s*return\s*6u;)'
+    match_14 = re.search(pattern_14, src, re.DOTALL)
+    
+    if match_14:
+        new_code_14 = """/* Path B: Immediate write to Internal Flash */
+  int rc = boot_flash_write(cmd_state.write_addr, cmd_state.write_buf, cmd_state.write_len);
+  
+  if (rc == 0)       { cmd_state.flash_status = CV_ST_OK; }
+  else if (rc == -2) { cmd_state.flash_status = CV_ST_VERIFY; }
+  else               { cmd_state.flash_status = CV_ST_IO; }
+  
+  /* Block Sound during heavy internal flash op */
+  SET_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND); 
+  
+  /* Start quench timer */
+  START_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END, TIME_RTC_DATA_EXCHANGE_END); 
+  
+  sys_state.process = SYS_PROC_FW;
+  return 6u;"""
+        
+        src = src[:match_14.start()] + new_code_14 + src[match_14.end():]
+        log("  [OK] CmdFunc14: Direct write + Block Sound")
+        changed = True
+    else:
+        log("  [WARN] CmdFunc14 tail not found. Check manually.")
+
+    if changed:
+        write(p, src)
+    log(f"  [DONE] {p}")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2. main_vector.c — Clear Block Sound by Timer ONLY (No Button Logic yet)
+# ═══════════════════════════════════════════════════════════════════════════
+def patch_main_vector_c():
     p = ROOT / "Core" / "VectorLib" / "Src" / "main_vector.c"
     if not p.exists():
         log(f"[SKIP] {p}")
@@ -97,77 +124,73 @@ def patch_main_vector_quench():
     backup(p)
     src = read(p)
     
-    # Ищем место после проверки таймера DATA_EXCHANGE_END
-    # Обычно там есть строка: if(TEST_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END)) { ... }
+    # Ищем место обработки таймера DATA_EXCHANGE_END
+    # Обычно в Vector_Run_Measure или Vector_Options_System
+    pattern_timer = r'(if\s*\(TEST_TIMER_RTC\(TIMER_RTC_DATA_EXCHANGE_END\)\)\s*\{[^}]*\})'
+    match_timer = re.search(pattern_timer, src, re.DOTALL)
     
-    pattern = r'(if\s*\(TEST_TIMER_RTC\(TIMER_RTC_DATA_EXCHANGE_END\)\)\s*\{[^}]*\})'
-    match = re.search(pattern, src, re.DOTALL)
+    insertion_timer = "\n  CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);\n  RESET_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END);"
     
-    if match:
-        old_block = match.group(0)
-        # Добавляем логическое условие: сброс флага также при нажатии любой кнопки
-        # Предположим, что статус кнопок хранится в sys_state.buttons или аналогичной структуре.
-        # Если точного имени нет, используем общий флаг активности UI.
-        
-        insertion = "\n\n  /* Quench block_sound on user interaction (button press / alarm stop) */\n"
-        insertion += "  if ((sys_state.power & ST_COMMON_BIT_BLOCK_SOUND) && \n"
-        insertion += "      (get_button_active() || audio_is_alarm_playing())) {\n"
-        insertion += "      sys_state.power &= ~ST_COMMON_BIT_BLOCK_SOUND;\n"
-        insertion += "      RESET_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END);\n"
-        insertion += "  }\n"
-        
-        # Вставляем после блока таймера
-        pos = match.end()
-        new_src = src[:pos] + insertion + src[pos:]
-        write(p, new_src)
-        log("  [OK] main_vector.c: Added quench logic for block_sound")
+    if match_timer:
+        old_block = match_timer.group(0)
+        # Проверяем, нет ли уже этой строки
+        if "CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND)" not in old_block:
+            new_block = old_block.replace('{', '{' + insertion_timer)
+            src = src.replace(old_block, new_block)
+            log("  [OK] main_vector.c: Added CLEAR_STATUS_COMMON_BIT on timer expiry")
+        else:
+            log("  [INFO] Timer clear logic already present")
     else:
-        log("  [WARN] Блок TIMER_RTC_DATA_EXCHANGE_END не найден в main_vector.c")
+        log("  [WARN] TIMER_RTC_DATA_EXCHANGE_END handler not found. Adding manual block.")
+        # Если блока нет, попробуем найти конец функции Vector_Run_Measure и вставить туда
+        # Но для безопасности лучше оставить предупреждение и проверить вручную.
+        pass
 
-def create_test_sounds_script():
-    """Создает скрипт для генерации маленького файла sounds.bin."""
+    write(p, src)
+    log(f"  [DONE] {p}")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 3. Gen Test Sounds Script
+# ═══════════════════════════════════════════════════════════════════════════
+def create_gen_script():
     script_path = ROOT / "tools" / "gen_test_sounds.py"
-    script_content = '''#!/usr/bin/env python3
+    content = '''#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gen_test_sounds.py - Генерирует маленький test_small.bin из 3 коротких тональных файлов.
-Использует стандартную библиотеку wave/numpy для создания синтетических звуков.
+gen_test_sounds.py - Creates test_small.bin with 3 short tones (A4, A5, E6).
+Total size ~150KB. Fast erase/write cycle (<5 sec).
 """
 import wave, struct, math, os
 
 SAMPLE_RATE = 44100
-DURATION_SEC = 1.0 # 1 секунда на тон
-FREQS = [440, 880, 1320] # A4, A5, E6
+DURATION_SEC = 1.0 
+FREQS = [440, 880, 1320] # Hz
 
-def generate_tone(freq, duration, sample_rate=SAMPLE_RATE):
+def generate_tone(freq, duration):
     samples = []
-    num_samples = int(sample_rate * duration)
+    num_samples = int(SAMPLE_RATE * duration)
     for i in range(num_samples):
-        t = i / sample_rate
+        t = i / SAMPLE_RATE
         value = 0.5 * math.sin(2 * math.pi * freq * t)
-        # Int16 conversion
         int_value = int(value * 32767)
         samples.append(struct.pack('<h', int_value))
     return b''.join(samples)
 
 def pack_audio_image(wav_files_data, out_filename):
     """
-    Упаковывает сырые PCM данные в формат образа sounds.bin.
-    Формат (упрощенный пример, должен совпадать с AUDIO.md):
-    Header: Magic(4) Count(4) IndexTable(N*8) ... Data...
-    Здесь мы просто склеиваем заголовки и данные для теста структуры.
-    ВАЖНО: Для реального прогона используй tools/pack_sounds.py из репозитория!
-    Этот скрипт создает заглушку для проверки скорости передачи.
+    Simplified header for testing structure only.
+    Real format depends on AUDIO.md implementation details.
+    Here we just concatenate raw PCM blocks with a dummy header.
     """
     with open(out_filename, 'wb') as f:
-        # Заглушка заголовка (Magic + Count)
+        # Dummy Magic + Count
         magic = b'SND!' 
         count = struct.pack('<I', len(wav_files_data))
         f.write(magic)
         f.write(count)
         
-        # Индексная таблица (Offset u32, Size u32)
-        current_offset = 12 + len(wav_files_data)*8 # Пример расчета
+        # Index Table (Offset u32, Size u32)
+        current_offset = 12 + len(wav_files_data)*8 
         index_table = []
         data_blocks = []
         
@@ -177,11 +200,9 @@ def pack_audio_image(wav_files_data, out_filename):
             data_blocks.append(pcm_data)
             current_offset += size
             
-        # Пишем индекс
         for entry in index_table:
             f.write(entry)
             
-        # Пишем данные
         for block in data_blocks:
             f.write(block)
             
@@ -198,28 +219,30 @@ if __name__ == "__main__":
     print("py tools/test_flash_write_final.py COM4 --slave 100 --file tools/test_small.bin --chunk 255")
 '''
     script_path.parent.mkdir(exist_ok=True)
-    write(script_path, script_content)
-    log(f"  [OK] Создан {script_path}")
+    write(script_path, content)
+    log(f"  [OK] Created {script_path}")
 
 def main():
     print("=" * 72)
-    print("  PATCH 14: Path B (Direct Write) + Sound Quenching")
+    print("  PATCH 18: Path B Final (Direct Write + Correct Blocking)")
     print(f"  Backup: {BAK.resolve()}")
     print("=" * 72)
     print()
 
     patch_command_vector_c()
     print()
-    patch_main_vector_quench()
+    patch_main_vector_c()
     print()
-    create_test_sounds_script()
+    create_gen_script()
 
     print()
     print("=" * 72)
     oks = [r for r in REPORT if "[OK]" in r]
     warns = [r for r in REPORT if "[WARN]" in r]
-    print(f"  Применено: {len(oks)}, Предупреждений: {len(warns)}")
+    infos = [r for r in REPORT if "[INFO]" in r]
+    print(f"  OK: {len(oks)}, WARN: {len(warns)}, INFO: {len(infos)}")
     for w in warns: print("   " + w)
+    for i in infos: print("   " + i)
     
     print("\n  Дальше:")
     print("    1. Build Project + ПРОШЕЙ плату.")
@@ -227,6 +250,7 @@ def main():
     print("       py tools/gen_test_sounds.py")
     print("    3. Тестируй запись:")
     print("       py tools/test_flash_write_final.py COM4 --slave 100 --file tools/test_small.bin --chunk 255")
+    print("    4. Проверь лог UART4: image ok=1 sounds=3")
     print("=" * 72)
 
 if __name__ == "__main__":

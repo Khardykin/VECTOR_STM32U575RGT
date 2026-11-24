@@ -719,10 +719,20 @@ uint16_t CmdFunc14(const uint8_t *mas, uint16_t len, uint8_t *out)
   cmd_state.write_addr = addr;
   cmd_state.write_len  = size;
   memcpy(cmd_state.write_buf, &mas[7], size);
-  cmd_state.int_write_pending = 1u;
-  cmd_state.flash_status      = CV_ST_BUSY;
-  sys_state.process           = SYS_PROC_FW;
-
+  /* Path B: Immediate write to Internal Flash */
+  int rc = boot_flash_write(cmd_state.write_addr, cmd_state.write_buf, cmd_state.write_len);
+  
+  if (rc == 0)       { cmd_state.flash_status = CV_ST_OK; }
+  else if (rc == -2) { cmd_state.flash_status = CV_ST_VERIFY; }
+  else               { cmd_state.flash_status = CV_ST_IO; }
+  
+  /* Block Sound during heavy internal flash op */
+  SET_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND); 
+  
+  /* Start quench timer */
+  START_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END, TIME_RTC_DATA_EXCHANGE_END);
+  
+  sys_state.process = SYS_PROC_FW;
   return 6u;
 }
 
