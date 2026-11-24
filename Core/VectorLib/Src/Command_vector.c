@@ -790,11 +790,33 @@ uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
   cmd_state.write_addr = base + addr;
   cmd_state.write_len  = size;
   memcpy(cmd_state.write_buf, &mas[7], size);
-  cmd_state.ext_write_pending = 1u;
-  cmd_state.flash_status      = CV_ST_BUSY;
-  sys_state.process = (cmd_state.flash_target == CV_TGT_FW) ? SYS_PROC_FW
-                                                            : SYS_PROC_ARCHIVE;
-
+  
+  /* Path B: Immediate write in Receiver Task */
+  int rc = ext_write(cmd_state.write_addr, cmd_state.write_buf, cmd_state.write_len);
+  
+  if (rc == EXT_BUSY) {
+      /* Шина занята (звук играет). Ставим pending, попробуем позже в Measure Task. */
+      cmd_state.ext_write_pending = 1u;
+      cmd_state.flash_status      = CV_ST_BUSY;
+  } else if (rc != 0) {
+      cmd_state.flash_status = CV_ST_IO;
+  } else {
+      /* Verify immediately */
+      uint8_t verify[CV_WRITE_BUF_SIZE];
+      rc = ext_read(cmd_state.write_addr, verify, cmd_state.write_len);
+      if (rc != 0 || memcmp(verify, cmd_state.write_buf, cmd_state.write_len) != 0) {
+          cmd_state.flash_status = CV_ST_VERIFY;
+      } else {
+          cmd_state.flash_status = CV_ST_OK;
+      }
+  }
+  
+  /* Block sound during exchange */
+  SET_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);
+  
+  /* Start quench timer */
+  START_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END, TIME_RTC_DATA_EXCHANGE_END);
+  
   return 6u;
 }
 
