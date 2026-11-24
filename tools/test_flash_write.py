@@ -53,8 +53,19 @@ def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("port"); ap.add_argument("--slave",type=int,default=100)
     ap.add_argument("--file",required=True); ap.add_argument("--no-erase",action="store_true")
-    ap.add_argument("--chunk",type=int,default=256)
+    ap.add_argument("--chunk",type=int,default=247) # Max for 4 full USB packets (256B frame)
     a=ap.parse_args()
+
+    # Validate chunk size against USB packet boundaries
+    # Frame length = chunk + 9. Must be <= 64*k to avoid partial packet delay > 10ms timeout
+    frame_len = a.chunk + 9
+    if frame_len % 64 != 0 and frame_len > 64:
+        print(f"WARNING: Frame length {frame_len} is not multiple of 64. Last packet will have tail ({frame_len % 64} bytes).")
+        print(f"         This may cause timeouts with CV_RX_TIMEOUT_MS=10. Consider using chunk={247} or {119}.")
+        # Auto-adjust to nearest safe value below current
+        while (a.chunk + 9) % 64 != 0 and a.chunk > 55:
+            a.chunk -= 1
+        print(f"         Adjusted chunk to {a.chunk} (Frame len {a.chunk+9}).")
     if not os.path.exists(a.file): print("Файл не найден: %s"%a.file); return 1
     size=os.path.getsize(a.file); s=a.slave
     print("port=%s slave=%d file=%s (%d байт)"%(a.port,s,a.file,size))

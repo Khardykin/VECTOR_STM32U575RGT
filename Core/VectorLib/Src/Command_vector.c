@@ -916,7 +916,7 @@ uint16_t parsing_command(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_
    10 ms is well above one character (87 us) and well below any normal
    gap between Modbus frames. Timer_Tick_1ms() increments the counter,
    RxFeed() resets it on every received byte.                          */
-#define CV_RX_TIMEOUT_MS 10u
+#define CV_RX_TIMEOUT_MS 50u
 
 static struct
 {
