@@ -787,34 +787,38 @@ uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
     return CmdError(out, mas, CMD_ERR_ADDR);
   }
 
-  /* ext_write_pending check removed for Path B */
+  /* Block sound during exchange */
+  SET_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);
 
+  /* ext_write_pending check removed for Path B */
   cmd_state.write_addr = base + addr;
   cmd_state.write_len  = size;
   memcpy(cmd_state.write_buf, &mas[7], size);
   
   /* Path B: Immediate write in Receiver Task */
   int rc = ext_write(cmd_state.write_addr, cmd_state.write_buf, cmd_state.write_len);
+
+  if (rc == EXT_BUSY){
+    /* "Окно тишины" закрыто. Pending-флаг больше не обслуживается -
+       отдаём мастеру BUSY, он повторит этот же чанк. */
+    cmd_state.flash_status = CV_ST_BUSY;
+    return CmdError(out, mas, CMD_ERR_BUSY);
+  }
+
+  if (rc != 0){
+    cmd_state.flash_status = CV_ST_IO;
+    return CmdError(out, mas, 0x04u);   /* SLAVE DEVICE FAILURE */
+  }
+
   
-  if (rc == EXT_BUSY) {
-      /* Шина занята (звук играет). Ставим pending, попробуем позже в Measure Task. */
-      cmd_state.ext_write_pending = 1u;
-      cmd_state.flash_status      = CV_ST_BUSY;
-  } else if (rc != 0) {
-      cmd_state.flash_status = CV_ST_IO;
-  } else {
-      /* Verify immediately */
-      uint8_t verify[CV_WRITE_BUF_SIZE];
-      rc = ext_read(cmd_state.write_addr, verify, cmd_state.write_len);
-      if (rc != 0 || memcmp(verify, cmd_state.write_buf, cmd_state.write_len) != 0) {
-          cmd_state.flash_status = CV_ST_VERIFY;
-      } else {
-          cmd_state.flash_status = CV_ST_OK;
-      }
+  uint8_t verify[CV_WRITE_BUF_SIZE];
+  rc = ext_read(cmd_state.write_addr, verify, cmd_state.write_len);
+  if (rc != 0 || memcmp(verify, cmd_state.write_buf, cmd_state.write_len) != 0){
+	  cmd_state.flash_status = CV_ST_VERIFY;
+	  return CmdError(out, mas, 0x04u);
   }
   
-  /* Block sound during exchange */
-  SET_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);
+  cmd_state.flash_status = CV_ST_OK;
   
   /* Start quench timer */
   START_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END, TIME_RTC_DATA_EXCHANGE_END);
