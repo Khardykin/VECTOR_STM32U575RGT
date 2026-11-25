@@ -429,6 +429,7 @@ typedef struct
   volatile uint32_t since_ms;   /* метка запуска (для отсечки завершения)    */
   volatile uint32_t cnt_start;  /* запусков                                  */
   volatile uint32_t cnt_done;   /* завершений                                */
+  volatile uint16_t count;      /* звуков в образе (audio_count), только R    */
 } sound_test_t;
 
 extern volatile sound_test_t sound_test;

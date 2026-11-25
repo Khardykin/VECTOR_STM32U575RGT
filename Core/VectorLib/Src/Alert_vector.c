@@ -1892,6 +1892,10 @@ static void SoundTest_Finish(const char *why)
 /* Разбор заявок и завершения. КОНТЕКСТ: Measure Task (Alert_Tick).         */
 static void SoundTest_Tick(void)
 {
+  /* Свежее число звуков образа для конфигуратора/теста (0x006C).
+     Дёшево: одно чтение audio_status.image_count, раз в 100 мс.           */
+  sound_test.count = audio_count();
+
   if (sound_test.stop != 0u)
   {
     sound_test.stop = 0u;

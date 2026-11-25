@@ -146,6 +146,7 @@ static const reg_map_t com_map[] =
   SN(last_index,                0x0067, T_U16),
   SN(cnt_start,                 0x0068, T_U32),
   SN(cnt_done,                  0x006A, T_U32),
+  SN(count,                     0x006C, T_U16),   /* звуков в образе (R)     */
 
   { 0u, 0u, 0u, 0u, 0u }
 };

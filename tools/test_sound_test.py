@@ -19,6 +19,7 @@ test_sound_test.py — проверка тестового воспроизве�
   py tools/test_sound_test.py COM4 --slave 100
   py tools/test_sound_test.py COM4 --slave 100 --interactive   # + кнопка и гейт
   py tools/test_sound_test.py COM4 --slave 100 --monitor       # только наблюдение
+  py tools/test_sound_test.py COM4 --slave 100 --all           # прогнать ВСЕ клипы образа
 """
 import argparse, struct, sys, time
 
@@ -29,7 +30,7 @@ except ImportError:
 
 R_REQ, R_STOP, R_INDEX, R_REPEATS, R_LOOP = 0x0060, 0x0061, 0x0062, 0x0063, 0x0064
 R_ACTIVE, R_SOURCE, R_LAST = 0x0065, 0x0066, 0x0067
-R_CNT_START, R_CNT_DONE = 0x0068, 0x006A
+R_CNT_START, R_CNT_DONE, R_COUNT = 0x0068, 0x006A, 0x006C
 R_BLOCK, R_POWER, R_FST = 0x0058, 0x0054, 0x0047
 
 EXC = {0x01: "ILLEGAL_FUNCTION", 0x02: "ILLEGAL_ADDRESS",
@@ -104,10 +105,11 @@ class MB:
         self._xfer(struct.pack(">BBHH", self.slave, 0x06, addr, val & 0xFFFF))
 
     def state(self):
-        w = self.rd(R_REQ, 12)
+        w = self.rd(R_REQ, 13)
         return dict(req=w[0], stop=w[1], index=w[2], repeats=w[3], loop=w[4],
                     active=w[5], source=w[6], last=w[7],
-                    start=w[8] | (w[9] << 16), done=w[10] | (w[11] << 16))
+                    start=w[8] | (w[9] << 16), done=w[10] | (w[11] << 16),
+                    count=w[12])
 
 
 RESULTS = []
@@ -153,6 +155,37 @@ def one_shot(mb, index, tag, timeout=20.0):
     return src
 
 
+def sweep_all(mb, timeout_per=30.0):
+    """Прогнать ВСЕ клипы образа по одному: каждый обязан взвестись и
+    завершиться сам (cnt_done +1). Клип длиннее timeout_per -> FAIL, но
+    перебор продолжается дальше (next start сам погасит зависший через
+    Alert_Stop() внутри SoundTest_Tick)."""
+    n = mb.state()["count"]
+    print("S. полный перебор образа: %d звуков" % n)
+    if n == 0:
+        check("S: образ непустой", False, "count=0 (образа нет или он пуст)")
+        return
+    ok = 0
+    for i in range(n):
+        before = mb.state()
+        start(mb, i, 1, 0)
+        s, t_on = wait_active(mb, 1, 3.0)
+        if s["active"] != 1:
+            check("S[%d]: взведён" % i, False, "не взводится за 3 с")
+            continue
+        src = s["source"]
+        s, t_off = wait_active(mb, 0, timeout_per)
+        good = (s["active"] == 0) and (s["done"] == before["done"] + 1)
+        note = "%.2f с, source=%d" % (t_off, src)
+        if t_off < 0:
+            note += " (ТАЙМАУТ %g с - клип длиннее или завис)" % timeout_per
+        check("S[%d]: проигран" % i, good, note)
+        if good:
+            ok += 1
+    print("   перебор: %d/%d клипов отыграли полностью" % (ok, n))
+    check("S: все клипы отыграли", ok == n, "%d/%d" % (ok, n))
+
+
 def monitor(mb):
     print("Мониторинг (Ctrl+C для выхода). Жми кнопки / пиши регистры из конфигуратора.")
     prev = None
@@ -177,6 +210,10 @@ def main():
     ap.add_argument("--interactive", action="store_true",
                     help="добавить тесты с кнопкой и гейтом block_sound")
     ap.add_argument("--monitor", action="store_true")
+    ap.add_argument("--all", action="store_true",
+                    help="перебрать весь образ: прогнать каждый клип по одному")
+    ap.add_argument("--sweep-timeout", type=float, default=30.0,
+                    help="секунд на один клип при --all (по умолчанию 30)")
     a = ap.parse_args()
 
     mb = MB(a.port, a.slave)
@@ -268,6 +305,11 @@ def main():
         mb.wr(R_STOP, 1)
         wait_active(mb, 0, 3.0)
         print()
+
+        # --- S. полный перебор образа --------------------------------------
+        if a.all:
+            sweep_all(mb, a.sweep_timeout)
+            print()
 
         # --- F/G. интерактив ------------------------------------------------
         if a.interactive:
