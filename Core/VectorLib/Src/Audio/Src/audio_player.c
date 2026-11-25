@@ -686,6 +686,22 @@ static void queue_clear(void)
   ap_pending_idx = -1;
 }
 
+/* --- блокировка звука (ST_COMMON_BIT_BLOCK_SOUND) ------------------------
+ * Единый gate: пока бит поднят, плеер НЕ запускает клипы образа. Аварийный
+ * писк (audio_beep) не блокируется: он из внутренней flash, SPI не занимает
+ * и должен оставаться слышимым (SOS, включение прибора).
+ * КОНТЕКСТ: поток плеера; чтение выровненного u32 атомарно.               */
+#include "shared_types.h"
+#include "shared_macros.h"
+
+/* Запрос квитирования: ставит ISR любой кнопки, разбирает Measure Task. */
+volatile uint8_t audio_ack_req = 0u;
+
+static uint8_t ap_sound_blocked(void)
+{
+  return (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND));
+}
+
 /* --------------------------------------------------------------- поток ----
  * Тело потока плеера - ЕДИНСТВЕННЫЙ владелец SAI/DMA и ap_buf.
  *
@@ -827,6 +843,11 @@ static void ap_thread_entry(ULONG arg)
         LOG_I(VLOG_M_AUDIO, "stop: queue cleared, loop off (loop=%u)",
               (uint32_t)audio_status.loop_enabled);
       }
+      else if (((cmd == AUDIO_CMD_PLAY_NOW) || (cmd == AUDIO_CMD_PLAY)) && (ap_sound_blocked() != 0u))
+      {
+        audio_status.cnt_dropped++;
+        LOG_I(VLOG_M_AUDIO, "play_now dropped: sound blocked");
+      }
       else if (cmd == AUDIO_CMD_PLAY_NOW)
       {
         /* Прервать текущий и СРАЗУ запустить новый - одна команда вместо пары
@@ -886,6 +907,21 @@ static void ap_thread_entry(ULONG arg)
            чтобы окончание текущего звука успело сняться в этом же проходе.   */
     stream_service();
 #endif
+
+    /* 1.6 Блокировка поднялась во время звучания: гасим клип образа и
+           запрещаем автозапуск (отложенный звук и повтор цикла).
+           Писк (AUDIO_OUT_BEEP) не трогаем.                              */
+    if (ap_sound_blocked() != 0u)
+    {
+      if (audio_status.output == AUDIO_OUT_SOUND)
+      {
+        stop_now();
+        queue_clear();
+      }
+      ap_pending_idx = -1;
+      audio_status.loop_index = -1;
+      audio_status.loop_next_at_ms = 0;
+    }
 
     /* 2. Освободились - решаем, что играть дальше.
           приоритет: одноразовый audio_play() -> повтор цикла -> тишина.      */

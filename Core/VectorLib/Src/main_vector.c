@@ -59,6 +59,10 @@
 #include "main_vector.h"
 #include "Command_vector.h"
 
+/* Запрос квитирования звука из ISR кнопок (определение - audio_player.c).
+   TODO: перенести объявление в audio_player.h. */
+extern volatile uint8_t audio_ack_req;
+
 /* Глобальные переменные состояния */
 uint16_t FlashErase = 0;   /* 1 = стереть, 2 = стереть + перезаписать */
 
@@ -1142,6 +1146,7 @@ void Vector_Options_System(void)
 		RESET_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END);
 		CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);
 		CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);
+		sys_state.block_sound = 0u;
 		sys_state.process = SYS_PROC_IDLE;
 	}
 
