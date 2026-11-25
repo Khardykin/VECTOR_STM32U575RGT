@@ -846,8 +846,8 @@ uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
   }
   else if (cmd_state.flash_target == CV_TGT_FW)
   {
-    base  = SF_BOOT_BASE;
-    limit = SF_BOOT_SIZE;
+    base  = SF_APP_STAGE_BASE;
+    limit = SF_APP_STAGE_SIZE;
   }
   else
   {
@@ -1278,16 +1278,14 @@ void Command_vector_ExecutePendingActions(void)
         return;
       }
 
-      rc = (mode == 2u) ? boot_flash_restore() : boot_flash_erase();
+      /* Бутлоадер НЕ хранится во внешней flash: его копия наружу не делается,
+         поэтому restore удалён. erase_mode (0x0048) оставлен в карте для
+         совместимости, но любое ненулевое значение = erase. */
+      rc = boot_flash_erase();
 
-      /* rc: -1 защита, -2 ошибка шины/стирания, -3 битый образ,
-         -4 не сошлась CRC, -5/-6 ошибка стирания/записи при restore.       */
+      /* rc: -1 защита, -2 ошибка шины/стирания. */
       if (rc == 0)       { cmd_state.flash_status = CV_ST_OK; }
       else if (rc == -1) { cmd_state.flash_status = CV_ST_PROT; }
-      else if ((mode == 2u) && ((rc == -3) || (rc == -4)))
-      {
-        cmd_state.flash_status = CV_ST_VERIFY;
-      }
       else               { cmd_state.flash_status = CV_ST_IO; }
 
       LOG_I(VLOG_M_FLASH, "erase boot: rc=%d boot_st=%u", rc,
@@ -1302,7 +1300,7 @@ void Command_vector_ExecutePendingActions(void)
       uint32_t a;
 
       if (target == CV_TGT_SOUND)   { base = SF_SOUNDS_BASE; limit = SF_SOUNDS_SIZE; }
-      else if (target == CV_TGT_FW) { base = SF_BOOT_BASE;   limit = SF_BOOT_SIZE;   }
+      else if (target == CV_TGT_FW) { base = SF_APP_STAGE_BASE;   limit = SF_APP_STAGE_SIZE;   }
       else                          { base = SF_LOG_BASE;    limit = SF_LOG_SIZE;    }
 
       if ((cmd_state.flash_len == 0u) || (cmd_state.flash_len > limit))

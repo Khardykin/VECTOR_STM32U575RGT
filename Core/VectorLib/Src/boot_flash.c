@@ -1,7 +1,7 @@
 #include "boot_flash.h"
 #include <string.h>
 #include "main_vector.h"      /* FLASH_ADDRESS_*_BOOTLOADER */
-#include "sfmap.h"            /* SF_BOOT_BASE */
+#include "sfmap.h"            /* SF_APP_STAGE_BASE */
 #include "spiflash.h"         /* sf_read */
 #include "stm32u5xx_hal.h"
 
@@ -117,82 +117,6 @@ int boot_flash_write(uint32_t addr, const uint8_t *src, uint32_t len)
   {
     boot_flash_status = BOOT_ST_VERIFY_ERR;
     return -2;
-  }
-  boot_flash_status = BOOT_ST_OK;
-  return 0;
-}
-
-int boot_flash_restore(void)
-{
-  boot_img_hdr_t h;
-  uint8_t  buf[256];
-  uint32_t done = 0u;
-  uint32_t crc  = 0xFFFFFFFFu;
-  uint32_t chunk;
-  uint32_t i;
-  uint8_t  b;
-
-  if (boot_flash_allowed() == 0)
-  {
-    boot_flash_status = BOOT_ST_PROTECTED;
-    return -1;
-  }
-  if (sf_read(SF_BOOT_BASE, (uint8_t *)&h, sizeof(h)) != HAL_OK)
-  {
-    boot_flash_status = BOOT_ST_IMG_ERR;
-    return -2;
-  }
-  if ((h.magic != BOOT_IMG_MAGIC) || (h.size == 0u) || ((h.size & 0x0Fu) != 0u) ||
-      (h.size > ((uint32_t)FLASH_ADDRESS_STOP_BOOTLOADER -
-                 (uint32_t)FLASH_ADDRESS_START_BOOTLOADER)))
-  {
-    boot_flash_status = BOOT_ST_IMG_ERR;
-    return -3;
-  }
-
-  while (done < h.size)
-  {
-    chunk = ((h.size - done) > sizeof(buf)) ? (uint32_t)sizeof(buf) : (h.size - done);
-    if (sf_read(SF_BOOT_BASE + sizeof(h) + done, buf, chunk) != HAL_OK)
-    {
-      boot_flash_status = BOOT_ST_IMG_ERR;
-      return -2;
-    }
-    for (i = 0u; i < chunk; i++)
-    {
-      crc ^= (uint32_t)buf[i];
-      for (b = 0u; b < 8u; b++)
-      {
-        crc = (crc & 1u) ? ((crc >> 1) ^ 0xEDB88320u) : (crc >> 1);
-      }
-    }
-    done += chunk;
-  }
-  if ((~crc) != h.crc32)
-  {
-    boot_flash_status = BOOT_ST_IMG_ERR;
-    return -4;
-  }
-
-  if (boot_flash_erase() != 0)
-  {
-    return -5;
-  }
-
-  done = 0u;
-  while (done < h.size)
-  {
-    chunk = ((h.size - done) > sizeof(buf)) ? (uint32_t)sizeof(buf) : (h.size - done);
-    if (sf_read(SF_BOOT_BASE + sizeof(h) + done, buf, chunk) != HAL_OK)
-    {
-      boot_flash_status = BOOT_ST_IMG_ERR;
-      return -2;
-    }
-    if (boot_flash_write((uint32_t)FLASH_ADDRESS_START_BOOTLOADER + done, buf, chunk) != 0)
-    {
-      return -6;
-    }
-    done += chunk;
   }
   boot_flash_status = BOOT_ST_OK;
   return 0;

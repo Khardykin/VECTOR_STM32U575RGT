@@ -1119,19 +1119,11 @@ void Vector_Options_System(void)
 		}
 	}
 	//----------------------------------------------------------------------------
-	/* Стирание/перезапись бутлоадера (аналог if(FlashErase) в Vector_Options_System).
-	   Выполняется здесь: стирание страницы того же банка останавливает CPU
-	   на единицы мс - звук к этому моменту уже заблокирован режимом обмена. */
-	if(cmd_state.erase_mode){
-		uint16_t mode = cmd_state.erase_mode;
-		cmd_state.erase_mode = 0;
-		if(mode == 2u){
-			(void)boot_flash_restore();
-		}
-		else{
-			(void)boot_flash_erase();
-		}
-	}
+	/* Стирание бутлоадера выполняется ТОЛЬКО в Command_vector_ExecutePendingActions
+	   (Measure Task) по флагу erase_req + target CV_TGT_BOOT: там есть проверка
+	   boot_flash_allowed(), маппинг rc -> flash_status и единая точка входа.
+	   Дубль здесь убран: он не проверял защиту области и молча глотал ошибку
+	   через (void), а при слинковке с 0x08000000 пытался бы стирать сам себя. */
 	if(timer.flag_start_work_bat_sys){
 		timer.flag_start_work_bat_sys = 0;
 		if(RTC_ReadTime() != Sns_Cfg_struct.Working_data.working_hours){

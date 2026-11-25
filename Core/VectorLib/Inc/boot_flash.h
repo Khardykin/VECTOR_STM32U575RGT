@@ -20,7 +20,6 @@
 #endif
 
 #define BOOT_FLASH_PAGE_SIZE   0x2000u        /* 8 КБ - страница STM32U575 */
-#define BOOT_IMG_MAGIC         0x544F4F42u    /* "BOOT" */
 
 typedef struct __attribute__((packed))
 {
@@ -44,7 +43,6 @@ extern volatile uint8_t boot_flash_status;
 int      boot_flash_allowed(void);
 int      boot_flash_erase(void);
 int      boot_flash_write(uint32_t addr, const uint8_t *src, uint32_t len);
-int      boot_flash_restore(void);
 uint32_t boot_crc32(const uint8_t *p, uint32_t len);
 
 #endif /* BOOT_FLASH_H */
