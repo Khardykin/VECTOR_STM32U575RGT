@@ -132,6 +132,20 @@ void        audio_stop(void);
 void        audio_beep(void);
 void audio_beep_ms(uint16_t ms);   /* писк заданной длины, мс (0 = по умолчанию) */      /* аварийный писк из внутренней flash */
 
+/* --- БЛОКИРОВКА ЗВУКА (ST_COMMON_BIT_BLOCK_SOUND) ------------------------
+ * Пока бит поднят, клипы образа НЕ читаются из внешней flash (писк из
+ * внутренней flash остаётся слышимым). Один бит = OR двух источников:
+ *   manual - регистр 0x0058, зеркало sys_state.block_sound (мастер);
+ *   ack    - кнопка во время звукового оповещения.
+ * Автоматической блокировки на время записи flash НЕТ: мастер сам ставит
+ * 0x0058 = 1 перед обменом. Прямой SET/CLEAR_STATUS_COMMON_BIT
+ * (ST_COMMON_BIT_BLOCK_SOUND) запрещён - только через эти функции.
+ * Все короткие, контекст - любой поток.                                    */
+void    audio_sound_block_manual(uint8_t on);   /* 0 снимает manual+ack   */
+uint8_t audio_sound_block_manual_state(void);   /* текущая ручная защёлка */
+void    audio_sound_block_ack(uint8_t on);      /* кнопка: 1 заглушить    */
+void    audio_sound_block_reset(void);          /* всё 0 (старт/таймаут)  */
+
 /* --- ХУКИ платформенного вывода SAI/DMA: реализованы в audio_player.c,
    вызываются из vector_macros.c (там живут HAL-колбэки SAI - библиотека
    кроссплатформенная и HAL не зовёт). КОНТЕКСТ: ISR GPDMA1_Channel11 -

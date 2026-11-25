@@ -59,10 +59,6 @@
 #include "main_vector.h"
 #include "Command_vector.h"
 
-/* Запрос квитирования звука из ISR кнопок (определение - audio_player.c).
-   TODO: перенести объявление в audio_player.h. */
-extern volatile uint8_t audio_ack_req;
-
 /* Глобальные переменные состояния */
 uint16_t FlashErase = 0;   /* 1 = стереть, 2 = стереть + перезаписать */
 
@@ -880,6 +876,11 @@ void Vector_Run_Pre_Init(void)
      порог детектора движения (Immobility_Ths_mg). Дальше реестр крутит
      Alert_Tick() (100 мс) в measure_task_function, а движок -
      Alert_IndicationTick() (~10 мс) в lvgl_task_function.                    */
+  /* Блокировка звука: в конфиге бит State мог «залипнуть» с прошлого
+     выключения/обмена. Гасим все источники ДО запуска индикации, иначе
+     первый же статус прозвучит в тишину.                                   */
+  audio_sound_block_reset();
+
   Alert_Init();
 
 #if (CONFIG_TYPE_LCD_TFT != 0) && VECTOR_LCD_USE_LVGL
@@ -1145,8 +1146,10 @@ void Vector_Options_System(void)
 	if(TEST_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END)){
 		RESET_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END);
 		CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);
-		CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);
-		sys_state.block_sound = 0u;
+		/* Обмен закончился - снимаем блокировку звука целиком (ручную 0x0058
+		   и кнопочную): автоматического источника больше нет, это страховка
+		   от «залипшего» бита, если мастер не снял его сам. */
+		audio_sound_block_reset();
 		sys_state.process = SYS_PROC_IDLE;
 	}
 

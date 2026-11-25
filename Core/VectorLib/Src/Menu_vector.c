@@ -448,6 +448,11 @@ static void decode_button(uint8_t idx, volatile Button_variables *pb)
     {
       press_active[idx] = 1u;
       long_fired[idx]   = 0u;          /* новый фронт нажатия - новый жест   */
+
+      /* Любая кнопка во время звукового оповещения глушит звук (и запрещает
+         плееру читать клипы образа из внешней flash до конца оповещения).
+         Жест при этом НЕ съедаем: меню работает как обычно.                 */
+      (void)Alert_ButtonSoundMute();
     }
 
     /* второй клик начался внутри окна DOUBLE? */
@@ -628,8 +633,8 @@ static void Menu_TurnOff(void)
 #if (CONFIG_TYPE_LCD_TFT != 0)
   ui_reset_visibility_flags();      /* иконки/панели заголовка - в «скрыто» (Avis) */
 #endif
-  CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);      /* Avis: снять блокировку звука    */
   CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_DATA_EXCHANGE);    /* Avis: выйти из режима обмена    */
+  audio_sound_block_reset();                               /* Avis: снять блокировку звука    */
   Sns_Cfg_struct.Config_common.StateErr = 0;               /* Avis: очистка общих ошибок      */
   SET_STATUS_COMMON_BIT(ST_COMMON_BIT_TURN_OFF);           /* «прибор выключен» (логи не ведутся) */
 #if CONFIG_SAVE_PARAM_LOG

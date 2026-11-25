@@ -468,6 +468,9 @@ static uint8_t hold_write(uint16_t addr, uint16_t val)
   const reg_map_t *m = map_find(com_map, addr);
 
   if (m == 0) { return 0u; }
+  /* 0x0058 block_sound только ЗАПИСЫВАЕТСЯ в sys_state.block_sound.
+     Применяет блокировку Command_vector_ExecutePendingActions (Measure Task):
+     запись регистра идёт из Receiver Task, а действие - в исполнении.      */
   return reg_set(m, addr, val);
 }
 
@@ -665,17 +668,27 @@ uint16_t CmdFunc20(const uint8_t *mas, uint16_t len, uint8_t *out, uint16_t cap)
 }
 
 /* ==========================================================================
- * 0x0E - internal flash staging (bootloader area).
+ * 0x0E - внутренняя flash: приём образа бутлоадера.
+ *
+ * Адрес - АБСОЛЮТНЫЙ (0x0800xxxx): в отличие от 0x0F смещение не
+ * прибавляется (обратная совместимость с прежним протоколом). Область одна -
+ * [FLASH_ADDRESS_START_BOOTLOADER, FLASH_ADDRESS_STOP_BOOTLOADER).
+ * Запись синхронная (Path B) в Receiver Task. Блокировку звука мастер ставит
+ * сам регистром 0x0058 ДО обмена - автоматического блока нет.
+ * Статус занятости - CV_ST_BUSY (регистр 0x004E).
+ *
+ * Возврат: 6 - эхо запроса (успех), иначе кадр Modbus exception.
+ * КОНТЕКСТ: Receiver Task.
  * ========================================================================== */
 
 uint16_t CmdFunc14(const uint8_t *mas, uint16_t len, uint8_t *out)
 {
   uint32_t addr = rd32be(&mas[2]);
   uint16_t size = (uint16_t)mas[6];
+  uint32_t off;
+  int rc;
 
   (void)len;
-
-  memcpy(out, mas, 6u);
 
   if ((size == 0u) || (size > CV_WRITE_BUF_SIZE))
   {
@@ -683,7 +696,7 @@ uint16_t CmdFunc14(const uint8_t *mas, uint16_t len, uint8_t *out)
     return CmdError(out, mas, CMD_ERR_VALUE);
   }
 
-  /* STM32U5 programs quad-word only. */
+  /* STM32U5 программирует только quad-word (16 байт). */
   if (((addr & 0x0Fu) != 0u) || ((size & 0x0Fu) != 0u))
   {
     cmd_state.flash_status = CV_ST_ADDR;
@@ -696,50 +709,96 @@ uint16_t CmdFunc14(const uint8_t *mas, uint16_t len, uint8_t *out)
     return CmdError(out, mas, CMD_ERR_VALUE);
   }
 
+  /* Пока приложение слинковано с 0x08000000, boot_flash_allowed() == 0:
+     область занята прошивкой, запись запрещена (CONFIG_BOOTLOADER_PRESENT). */
   if (boot_flash_allowed() == 0)
   {
     cmd_state.flash_status = CV_ST_PROT;
-    boot_flash_status = BOOT_ST_PROTECTED;
+    boot_flash_status      = BOOT_ST_PROTECTED;
     return CmdError(out, mas, CMD_ERR_VALUE);
   }
 
+  /* 64-битная арифметика: addr + size не должно переполнить u32. */
   if ((addr < (uint32_t)FLASH_ADDRESS_START_BOOTLOADER) ||
-      ((addr + size) > (uint32_t)FLASH_ADDRESS_STOP_BOOTLOADER))
+      (((uint64_t)addr + size) > (uint64_t)FLASH_ADDRESS_STOP_BOOTLOADER))
   {
     cmd_state.flash_status = CV_ST_ADDR;
     return CmdError(out, mas, CMD_ERR_ADDR);
   }
 
-  /* int_write_pending check removed for Path B */
+  /* Объявленная длина образа (0x0043) ограничивает запись, если задана. */
+  off = addr - (uint32_t)FLASH_ADDRESS_START_BOOTLOADER;
+  if ((cmd_state.flash_len != 0u) &&
+      (((uint64_t)off + size) > (uint64_t)cmd_state.flash_len))
+  {
+    cmd_state.flash_status = CV_ST_ADDR;
+    return CmdError(out, mas, CMD_ERR_ADDR);
+  }
+
+  /* Один писатель: предыдущая запись ещё не закончена - мастер повторит. */
+  if (cmd_state.int_write_pending != 0u)
+  {
+    cmd_state.flash_status = CV_ST_BUSY;
+    return CmdError(out, mas, CMD_ERR_BUSY);
+  }
 
   cmd_state.write_addr = addr;
   cmd_state.write_len  = size;
   memcpy(cmd_state.write_buf, &mas[7], size);
-  /* Mute BEFORE programming: a page program stalls the CPU, the player
-     must not hold SAI/DMA at that moment. State RMW under cfg mutex. */
 
-  /* Path B: Immediate write to Internal Flash */
-  int rc = boot_flash_write(cmd_state.write_addr, cmd_state.write_buf, cmd_state.write_len);
-  
-  /* 0 OK / -1 protected / -2 verify / -3 align|range / -4 program error.
-     Report a Modbus exception on EVERY failure: returning echo 6u made
-     the master believe a rejected write had succeeded. */
-  if (rc == 0)       { cmd_state.flash_status = CV_ST_OK; }
-  else if (rc == -1) { cmd_state.flash_status = CV_ST_PROT;
-                       return CmdError(out, mas, CMD_ERR_VALUE); }
-  else if (rc == -2) { cmd_state.flash_status = CV_ST_VERIFY;
-                       return CmdError(out, mas, CMD_ERR_IO); }
-  else if (rc == -3) { cmd_state.flash_status = CV_ST_ADDR;
-                       return CmdError(out, mas, CMD_ERR_ADDR); }
-  else               { cmd_state.flash_status = CV_ST_IO;
-                       return CmdError(out, mas, CMD_ERR_IO); }
-
+  /* SYS_PROC_FW - для экрана/диагностики. Блокировку звука мастер ставит
+     сам регистром 0x0058 ДО обмена (автоматического блока нет).            */
   sys_state.process = SYS_PROC_FW;
+
+  cmd_state.int_write_pending = 1u;
+  rc = boot_flash_write(cmd_state.write_addr, cmd_state.write_buf,
+                        cmd_state.write_len);
+  cmd_state.int_write_pending = 0u;
+
+  /* 0 OK / -1 protected / -2 verify / -3 align|range / -4 program error.
+     На ЛЮБУЮ ошибку - Modbus exception: эхо 6 байт мастер принял бы за успех. */
+  if (rc == 0)
+  {
+    cmd_state.flash_status = CV_ST_OK;
+  }
+  else if (rc == -1)
+  {
+    cmd_state.flash_status = CV_ST_PROT;
+    return CmdError(out, mas, CMD_ERR_VALUE);
+  }
+  else if (rc == -2)
+  {
+    cmd_state.flash_status = CV_ST_VERIFY;
+    return CmdError(out, mas, CMD_ERR_IO);
+  }
+  else if (rc == -3)
+  {
+    cmd_state.flash_status = CV_ST_ADDR;
+    return CmdError(out, mas, CMD_ERR_ADDR);
+  }
+  else
+  {
+    cmd_state.flash_status = CV_ST_IO;
+    return CmdError(out, mas, CMD_ERR_IO);
+  }
+
+  LOG_I(VLOG_M_FLASH, "0x0E: %u bytes at %08x ok (boot_st=%u)",
+        (uint32_t)size, (uint32_t)addr, (uint32_t)boot_flash_status);
+
+  memcpy(out, mas, 6u);
   return 6u;
 }
 
 /* ==========================================================================
- * 0x0F - external flash staging (sounds / firmware).
+ * 0x0F - внешняя flash: приём образа звуков (CV_TGT_SOUND) или прошивки
+ *        бутлоадера (CV_TGT_FW). Адрес - СМЕЩЕНИЕ внутри области.
+ *
+ * Запись синхронная (Path B) в Receiver Task. На время обмена звук
+ * заблокирован: плеер не читает клипы из внешней flash. После записи -
+ * отдельная проверка чтением, чтобы IO и VERIFY различались.
+ *
+ * Возврат: 6 - эхо запроса (успех), иначе кадр Modbus exception.
+ * КОНТЕКСТ: Receiver Task.
  * ========================================================================== */
 
 uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
@@ -748,10 +807,10 @@ uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
   uint16_t size = (uint16_t)mas[6];
   uint32_t base;
   uint32_t limit;
+  uint8_t  verify[CV_WRITE_BUF_SIZE];
+  int rc;
 
   (void)len;
-
-  memcpy(out, mas, 6u);
 
   if ((size == 0u) || (size > CV_WRITE_BUF_SIZE))
   {
@@ -781,52 +840,72 @@ uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
     return CmdError(out, mas, CMD_ERR_ADDR);
   }
 
-  if ((cmd_state.flash_len != 0u) && ((addr + size) > cmd_state.flash_len))
+  /* 64-битные проверки: addr + size не должно переполнить u32. */
+  if (((uint64_t)addr + size) > (uint64_t)limit)
   {
     cmd_state.flash_status = CV_ST_ADDR;
     return CmdError(out, mas, CMD_ERR_ADDR);
   }
 
-  if ((addr + size) > limit)
+  if ((cmd_state.flash_len != 0u) &&
+      (((uint64_t)addr + size) > (uint64_t)cmd_state.flash_len))
   {
     cmd_state.flash_status = CV_ST_ADDR;
     return CmdError(out, mas, CMD_ERR_ADDR);
   }
 
-  /* Block sound during exchange. State RMW under cfg mutex (p.65/66). */
-  sys_state.process = (cmd_state.flash_target == CV_TGT_FW) ? SYS_PROC_FW
-                                                            : SYS_PROC_ARCHIVE;
-
-  /* ext_write_pending check removed for Path B */
-  cmd_state.write_addr = base + addr;
-  cmd_state.write_len  = size;
-  memcpy(cmd_state.write_buf, &mas[7], size);
-  
-  /* Path B: Immediate write in Receiver Task */
-  int rc = ext_write(cmd_state.write_addr, cmd_state.write_buf, cmd_state.write_len);
-
-  if (rc == EXT_BUSY){
-    /* "Окно тишины" закрыто. Pending-флаг больше не обслуживается -
-       отдаём мастеру BUSY, он повторит этот же чанк. */
+  /* Один писатель: прошлый чанк ещё пишется - мастер повторит. */
+  if (cmd_state.ext_write_pending != 0u)
+  {
     cmd_state.flash_status = CV_ST_BUSY;
     return CmdError(out, mas, CMD_ERR_BUSY);
   }
 
-  if (rc != 0){
+  sys_state.process = (cmd_state.flash_target == CV_TGT_FW) ? SYS_PROC_FW
+                                                            : SYS_PROC_ARCHIVE;
+
+  cmd_state.write_addr = base + addr;
+  cmd_state.write_len  = size;
+  memcpy(cmd_state.write_buf, &mas[7], size);
+
+  /* Блокировку звука мастер ставит сам регистром 0x0058 ДО обмена
+     (автоматического блока нет).                                          */
+  cmd_state.ext_write_pending = 1u;
+  rc = ext_write(cmd_state.write_addr, cmd_state.write_buf, cmd_state.write_len);
+  if (rc != 0)
+  {
+    cmd_state.ext_write_pending = 0u;
+    if (rc == EXT_BUSY)
+    {
+      /* "Окно тишины" закрыто: мастер повторит этот же чанк. */
+      cmd_state.flash_status = CV_ST_BUSY;
+      return CmdError(out, mas, CMD_ERR_BUSY);
+    }
     cmd_state.flash_status = CV_ST_IO;
-    return CmdError(out, mas, 0x04u);   /* SLAVE DEVICE FAILURE */
+    return CmdError(out, mas, CMD_ERR_IO);
   }
 
-  
-  uint8_t verify[CV_WRITE_BUF_SIZE];
+  /* Проверка чтением - отдельная стадия (IO != VERIFY). */
   rc = ext_read(cmd_state.write_addr, verify, cmd_state.write_len);
-  if (rc != 0 || memcmp(verify, cmd_state.write_buf, cmd_state.write_len) != 0){
-	  cmd_state.flash_status = CV_ST_VERIFY;
-	  return CmdError(out, mas, 0x04u);
+  cmd_state.ext_write_pending = 0u;
+
+  if (rc != 0)
+  {
+    cmd_state.flash_status = CV_ST_IO;
+    return CmdError(out, mas, CMD_ERR_IO);
   }
-  
+  if (memcmp(verify, cmd_state.write_buf, cmd_state.write_len) != 0)
+  {
+    cmd_state.flash_status = CV_ST_VERIFY;
+    return CmdError(out, mas, CMD_ERR_IO);
+  }
+
   cmd_state.flash_status = CV_ST_OK;
 
+  LOG_I(VLOG_M_FLASH, "0x0F: %u bytes at %08x ok", (uint32_t)size,
+        (uint32_t)cmd_state.write_addr);
+
+  memcpy(out, mas, 6u);
   return 6u;
 }
 
@@ -1116,6 +1195,18 @@ void command_message(void)
 
 void Command_vector_ExecutePendingActions(void)
 {
+  /* --- 0x0058 block_sound: применить ручную защёлку ---------------------
+     Регистр (Receiver Task) только пишет sys_state.block_sound; сама
+     блокировка ставится/снимается ЗДЕСЬ, в исполнении (Measure Task, 50 мс).
+     Сравнение с текущей защёлкой обязательно: audio_sound_block_manual(0)
+     снимает и кнопочную защёлку, поэтому звать его каждый проход нельзя.
+     ВАЖНО: стоит ДО гейтов audio_is_busy()/pending - мастер должен успеть
+     заблокировать звук, пока тот ещё читает внешнюю flash.                 */
+  if ((sys_state.block_sound != 0u) != (audio_sound_block_manual_state() != 0u))
+  {
+    audio_sound_block_manual((sys_state.block_sound != 0u) ? 1u : 0u);
+  }
+
   /* Soft reset flag written through register 0x0053: arm the timer once.
      The reset itself is done by the existing logic in Vector_Options_System. */
   if ((sys_state.soft_reset != 0u) &&
@@ -1138,6 +1229,12 @@ void Command_vector_ExecutePendingActions(void)
 
   /* --- quiet window gate ---------------------------------------------- */
   if (audio_is_busy() != 0u) { return; }
+
+  /* --- 0x0E/0x0F ещё пишут: стирание и перечитывание образа подождут ---- */
+  if ((cmd_state.int_write_pending != 0u) || (cmd_state.ext_write_pending != 0u))
+  {
+    return;
+  }
 
   /* --- erase ---------------------------------------------------------- */
   if (cmd_state.erase_req != 0u)
@@ -1162,11 +1259,24 @@ void Command_vector_ExecutePendingActions(void)
       if (boot_flash_allowed() == 0)
       {
         cmd_state.flash_status = CV_ST_PROT;
+        boot_flash_status      = BOOT_ST_PROTECTED;
         return;
       }
 
       rc = (mode == 2u) ? boot_flash_restore() : boot_flash_erase();
-      cmd_state.flash_status = (rc == 0) ? CV_ST_OK : CV_ST_IO;
+
+      /* rc: -1 защита, -2 ошибка шины/стирания, -3 битый образ,
+         -4 не сошлась CRC, -5/-6 ошибка стирания/записи при restore.       */
+      if (rc == 0)       { cmd_state.flash_status = CV_ST_OK; }
+      else if (rc == -1) { cmd_state.flash_status = CV_ST_PROT; }
+      else if ((mode == 2u) && ((rc == -3) || (rc == -4)))
+      {
+        cmd_state.flash_status = CV_ST_VERIFY;
+      }
+      else               { cmd_state.flash_status = CV_ST_IO; }
+
+      LOG_I(VLOG_M_FLASH, "erase boot: rc=%d boot_st=%u", rc,
+            (uint32_t)boot_flash_status);
       return;
     }
 

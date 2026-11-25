@@ -530,6 +530,27 @@ static void phase_off(const alert_phase_t *p)
   }
 }
 
+/* Текущая фаза сценария или NULL, если движок стоит. КОНТЕКСТ: поток LVGL
+   Task (Alert_IndicationTick / decode_button через Alert_ButtonSoundMute).   */
+static const alert_phase_t *seq_cur_phase(void)
+{
+  if ((s_seq == NULL) || (s_state == (uint8_t)NS_IDLE) || (s_idx >= s_seq->n))
+  {
+    return NULL;
+  }
+  return (s_idx == 0u) ? &s_phase : &s_seq->ph[s_idx];
+}
+
+/* Идёт ли СЕЙЧАС звуковое оповещение: движок не стоит и текущая фаза (в том
+   числе пауза между повторами) содержит канал ALERT_CH_SOUND. По этому
+   признаку нажатие кнопки глушит звук, а не просто листает меню.            */
+static uint8_t seq_sound_active(void)
+{
+  const alert_phase_t *p = seq_cur_phase();
+
+  return ((p != NULL) && ((p->ch & (uint8_t)ALERT_CH_SOUND) != 0u)) ? 1u : 0u;
+}
+
 /* Полный останов: погасить активные каналы и сбросить машину.               */
 static void seq_halt(void)
 {
@@ -550,6 +571,10 @@ static void seq_halt(void)
   s_blink    = 0u;
   s_blink_on = 0u;
   s_owner    = (uint8_t)ALERT_NONE;
+
+  /* Оповещение закончилось или вытеснено - защёлка кнопки больше не нужна:
+     следующий сценарий должен звучать (требование автора).                  */
+  audio_sound_block_ack(0u);
 }
 
 /* Сценарий ОТРАБОТАЛ САМ (не вытеснен и не остановлен): если это однократная
@@ -1627,6 +1652,24 @@ uint8_t Alert_AckButton(void)
     /* Сообщение - одноразовый статус без hold: квитирование снимает и статус. */
   if (top == ALERT_MESSAGE) { Alert_Clear(ALERT_MESSAGE); }
 return (uint8_t)top;
+}
+
+/* Нажатие ЛЮБОЙ кнопки во время звукового оповещения: заглушить звук и не
+   дать плееру читать клипы образа из внешней flash до конца оповещения.
+   Статус и его таймеры НЕ трогаем (требование автора п.2) - как и
+   Alert_AckButton, жест не съедаем: меню продолжает работать.
+   Возврат: 1 = звук был и заглушён, 0 = звукового оповещения сейчас нет.
+   КОНТЕКСТ: поток LVGL Task (Menu_Run -> decode_button).                    */
+uint8_t Alert_ButtonSoundMute(void)
+{
+  /* На прогреве и в выключенном приборе индикации нет - гасить нечего. */
+  if (sys_state.power != DEVICE_TURNED_ON) { return 0u; }
+  if (seq_sound_active() == 0u) { return 0u; }
+
+  audio_sound_block_ack(1u);   /* gate плеера: клипы образа больше не читаются */
+  audio_stop();                /* оборвать уже звучащий клип                   */
+  LOG_I(VLOG_M_SYS, "alert: sound muted by button");
+  return 1u;
 }
 
 /* «ОСТОРОЖНО! ГАЗ!» с ID трекера-источника (на экране виден ID).            */

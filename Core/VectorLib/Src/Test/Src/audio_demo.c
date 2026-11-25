@@ -31,10 +31,6 @@
 #include "main.h"
 #include "vector_tick.h"   /* VTICK_MS(): источник времени выбирается в vector_config.h */
 
-/* Запрос квитирования звука (определение - audio_player.c).
-   TODO: перенести объявление в audio_player.h. */
-extern volatile uint8_t audio_ack_req;
-
 #define DEMO_DEBOUNCE_MS   VECTOR_KEY_DEBOUNCE_MS
 #define DEMO_KEYS          3u
 
@@ -132,10 +128,8 @@ void audio_demo_key_handler(uint16_t GPIO_Pin)
   demo_last_ms[key] = now;
   demo_status.cnt_pressed++;
 
-  /* Квитирование: ЛЮБАЯ кнопка просит погасить звук сигнализации.
-     В ISR только флаг - RMW общего State делать здесь нельзя. Решение
-     (есть ли активная сигнализация) принимает Vector_Options_System(). */
-  audio_ack_req = 1u;
+  /* Квитирование звука по кнопке перенесено в decode_button (Menu_vector.c):
+     демо-путь не должен трогать общий бит State. */
 
   if (GPIO_Pin == BUTTON_1_Pin)
   {

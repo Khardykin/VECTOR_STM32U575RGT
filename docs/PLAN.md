@@ -114,16 +114,40 @@ UART-роли (как задумано):
   ограничен 1016K в `.ld`). Оси акселерометра и статусы падения — runtime,
   только в `sensors_status`, во flash не сохраняются (в журнал попадают
   снимком внутри `EVENT_LOG`).
-* **Статусы `ST_COMMON`** (битовое поле): блокировка звука
-  (`BLOCK_SOUND`, `BLOCK_SOUND_LIMIT_CALIB`), блокировка выключения,
-  блокировка калибровки, режим обмена данными, зарядка, BUMP TEST (статус и
-  старт), единица измерения, включение BLE/GPS/GSM/LoRa, run-LED, тест звука,
-  `TURN_OFF = 31`.
-* **Звук статусов**: плеер играет **по индексу** в образе
-  (`audio_play(idx)` / `audio_play_now(idx)`), слой «состояний» удалён.
-  Соответствие «статус → индекс звука» надо задать таблицей в рабочем коде
-  (например, `sound_by_status[]`), а не в плеере. Индексы звуков — в
-  `audio_ids.h` (генерируется `pack_sounds.py` вместе с образом).
+* **Статусы `ST_COMMON`** (битовое поле `Config_common.State`): блокировка звука
+  (`BLOCK_SOUND`), блокировка выключения, блокировка калибровки, режим обмена
+  данными, зарядка, BUMP TEST (статус и старт), единица измерения, включение
+  BLE/GPS/GSM/LoRa, run-LED, тест звука, `TURN_OFF = 31`.
+* **Звук статусов**: соответствие «статус → клип» задаёт колонка `voice`
+  таблицы `s_desc[]` в `Alert_vector.c` (`ALERT_SND_*` из `vector_config.h`;
+  `ALERT_SND_NONE` — статус без голоса). Движок индикации сам зовёт
+  `audio_play_now(idx)` по этому индексу, поэтому отдельная таблица
+  `sound_by_status[]` и слой «состояний» плеера не нужны.
+* **Блокировка звука `BLOCK_SOUND` (бит 0 `State`)** — один физический бит,
+  собранный как OR двух источников (владелец — `audio_player.c`,
+  API `audio_sound_block_*`):
+  - `manual` — регистр `0x0058` (`sys_state.block_sound`): мастер ставит и
+    снимает. Запись регистра идёт в Receiver Task и только пишет зеркало;
+    сама защёлка применяется в `Command_vector_ExecutePendingActions()`
+    (Measure Task, проход 50 мс), в начале функции — до гейтов
+    `audio_is_busy()`/pending. Задержка применения ≤50 мс. Идемпотентность
+    обеспечивает геттер `audio_sound_block_manual_state()`: без сверки
+    `audio_sound_block_manual(0)` каждый проход снимал бы защёлку кнопки.
+    Снятие мастером (`0x0058 = 0`) очищает и `manual`, и `ack`;
+  - `ack` — нажатие любой кнопки во время звукового оповещения
+    (`Alert_ButtonSoundMute()` из `decode_button`); снимается в `seq_halt()`,
+    когда оповещение завершилось или сменило приоритет.
+  Автоматической блокировки «на время обмена с flash» НЕТ: мастер сам ставит
+  `0x0058 = 1` перед записью (`0x0E`/`0x0F`/стирание) и снимает после.
+  Пока бит поднят, плеер НЕ читает клипы образа из внешней flash; аварийный
+  писк `audio_beep()` из внутренней flash остаётся слышимым. Прямой
+  `SET/CLEAR_STATUS_COMMON_BIT(BLOCK_SOUND)` запрещён. RMW слова `State` —
+  под `TX_DISABLE` (его пишет и ISR UART5), а не под `Sys_Cfg_Lock`. При
+  старте (`Vector_Run_Pre_Init`) и выключении (`Menu_TurnOff`) вызывается
+  `audio_sound_block_reset()`: в конфиге бит мог «залипнуть». Тот же сброс
+  делает таймер неактивности обмена 30 с (`TIMER_RTC_DATA_EXCHANGE_END`,
+  взводится ISR UART5 на каждый принятый байт) — страховка на случай, если
+  мастер пропал и не снял `0x0058`.
 
 ---
 
@@ -164,8 +188,10 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
    а прямой write в `TDR` в обработчиках идёт мимо блокировки лога
    (`vlog_bus_lock`) — байты эха вклиниваются в строки лога.
 4. Звук — только через API плеера (`audio_play_now` для немедленного,
-   `audio_play` для очереди, `audio_set_loop(1)` для сигнализации «по кругу»);
-   уважать `ST_COMMON_BIT_BLOCK_SOUND`.
+   `audio_play` для очереди, `audio_set_loop(1)` для сигнализации «по кругу»).
+   `ST_COMMON_BIT_BLOCK_SOUND` напрямую не ставить/не снимать: только
+   `audio_sound_block_manual/manual_state/ack/reset()` — бит собирается из
+   двух источников `manual`/`ack` (раздел 3).
 
 ---
 
@@ -319,8 +345,12 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
       проверено хост-тестом `test_lora_v4` (побайтовая сверка с v4)
 * [ ] LoRa → BLE-ответ (не требуется протоколом v1: downlink адресует трекер;
       порт/DR/класс A/C — в `Lora_Init`, зашиты v3-логикой)
-* [ ] учёт `ST_COMMON_BIT_BLOCK_SOUND`, `BLOCK_SOUND_LIMIT_CALIB`,
-      `DATA_EXCHANGE`, `TURN_ON_BLE/LORA/GPS/GSM`, `TURN_OFF`
+* [x] учёт `ST_COMMON_BIT_BLOCK_SOUND`: единый бит из двух источников
+      (`manual`/`ack`), гейт плеера `ap_sound_blocked()`, API
+      `audio_sound_block_*`, кнопка `Alert_ButtonSoundMute()`, применение
+      `0x0058` в `Command_vector_ExecutePendingActions()` (раздел 3)
+* [ ] учёт `BLOCK_SOUND_LIMIT_CALIB`, `DATA_EXCHANGE`,
+      `TURN_ON_BLE/LORA/GPS/GSM`, `TURN_OFF`
 * [ ] приоритеты: аварийный статус важнее информационного (очередь звуков)
 
 **Этап 4. Кнопки (продуктовая логика)**
@@ -1623,3 +1653,45 @@ Measure Task (1 с): Vector_Run_Measure() --> измерения + Ble_Run(); Lo
       не выполнялась (нет тулчейна в песочнице). Хост-тест tools/test_logq —
       ALL OK; синтаксис Ble_vector.c сведён (балансировка скобок, отсутствие
       не-ASCII/CJK в identifiers).
+
+67. **0x0E/0x0F: запись во внутреннюю/внешнюю flash и единая блокировка звука
+    (задание автора)**:
+    - **`CmdFunc14` (0x0E, внутренняя flash) — аналог `CmdFunc15`**: адрес
+      АБСОЛЮТНЫЙ (`0x0800xxxx`, смещение НЕ прибавляется — обратная
+      совместимость), проверяются размер 1..`CV_WRITE_BUF_SIZE`, кратность 16
+      (quad-word STM32U5), ключ `flash_key`, `boot_flash_allowed()`, диапазон
+      `[FLASH_ADDRESS_START_BOOTLOADER, FLASH_ADDRESS_STOP_BOOTLOADER)` и
+      объявленная длина `flash_len` (64-битная арифметика, без переполнения
+      `u32`). Запись синхронная в Receiver Task; `int_write_pending` виден
+      мастеру (`0x004E`), занятость -> `CV_ST_BUSY` + exception 0x06.
+      Карта rc: `0 -> CV_ST_OK`, `-1 -> CV_ST_PROT`, `-2 -> CV_ST_VERIFY`,
+      `-3 -> CV_ST_ADDR`, `-4 -> CV_ST_IO`; `boot_flash_status` — в лог.
+      Эхо 6 байт отдаётся ТОЛЬКО при успехе: на любую ошибку — Modbus
+      exception (раньше эхо означало «мастер считает запись принятой»).
+    - **`CmdFunc15` (0x0F, внешняя flash)**: те же 64-битные проверки,
+      guard `ext_write_pending` (`0x004F`) -> `CV_ST_BUSY` + exception 0x06,
+      IO и VERIFY разделены (ошибка `ext_read` -> `CV_ST_IO`, расхождение
+      `memcmp` -> `CV_ST_VERIFY`), эхо формируется в конце. Блокировка звука
+      на время обмена возвращена (в прежней правке `SET` был удалён, остался
+      комментарий).
+    - **Блокировка звука**: бит `State` собирается как OR трёх источников
+      (`exchange`/`manual`/`ack`) в `audio_player.c`; RMW — под `TX_DISABLE`
+      (слово `State` пишет и ISR UART5; `Sys_Cfg_Lock` в `reg_set` уже
+      захвачен при 0x10 — вложенный захват запрещён). Регистр `0x0058`
+      (`hold_write`) вызывает `audio_sound_block_manual()`; кнопка —
+      `Alert_ButtonSoundMute()` из `decode_button` (только при активном
+      звуковом оповещении, жест меню не съедается); `seq_halt()` снимает
+      `ack`. 30-секундный таймер обмена снимает только `exchange`; при
+      старте/выключении — `audio_sound_block_reset()`. Аварийный писк из
+      внутренней flash не блокируется.
+    - **`ExecutePendingActions`**: стирание и перечитывание образа не
+      начинаются, пока `int_write_pending`/`ext_write_pending` подняты;
+      стирание тоже ставит `exchange` (клипы не читаются); rc
+      `boot_flash_erase/restore` разложены по `CV_ST_*` (защита -> PROT,
+      битый образ/CRC -> VERIFY, прочее -> IO).
+    - **Ограничение текущей сборки**: `CONFIG_BOOTLOADER_PRESENT` не
+      определён (`config_device.h`) -> `boot_flash_allowed() == 0`, поэтому
+      `0x0E` и стирание `CV_TGT_BOOT` на железе отвечают `CV_ST_PROT` до
+      появления бутлоадера и переноса приложения на `0x08005000`. На железе
+      `0x0E` в этой конфигурации не проверялся; `0x0F` проверяется
+      `tools/send_frames.py`/`verify_registers.py`.

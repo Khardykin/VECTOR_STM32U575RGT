@@ -687,19 +687,99 @@ static void queue_clear(void)
 }
 
 /* --- блокировка звука (ST_COMMON_BIT_BLOCK_SOUND) ------------------------
- * Единый gate: пока бит поднят, плеер НЕ запускает клипы образа. Аварийный
- * писк (audio_beep) не блокируется: он из внутренней flash, SPI не занимает
- * и должен оставаться слышимым (SOS, включение прибора).
- * КОНТЕКСТ: поток плеера; чтение выровненного u32 атомарно.               */
+ * Единый gate: пока бит поднят, плеер НЕ читает клипы образа из внешней
+ * flash. Аварийный писк (audio_beep) не блокируется: он из внутренней flash,
+ * SPI не занимает и должен оставаться слышимым (SOS, включение прибора).
+ *
+ * Один ФИЗИЧЕСКИЙ бит State собирается из ДВУХ источников (OR):
+ *   manual - регистр 0x0058 (зеркало sys_state.block_sound), мастер;
+ *   ack    - кнопка во время звукового оповещения, снимает seq_halt().
+ * Автоматической блокировки на время обмена с flash НЕТ: мастер сам ставит
+ * 0x0058 = 1 перед записью и снимает после. Снимать бит напрямую
+ * (SET/CLEAR_STATUS_COMMON_BIT) больше нельзя: только через
+ * audio_sound_block_*() - иначе источник «залипнет» или потеряется.
+ *
+ * RMW общего слова State: его же пишет ISR UART5, поэтому короткая
+ * критическая секция TX_DISABLE, а НЕ Sys_Cfg_Lock (его уже держит reg_set
+ * при записи 0x10 - вложенный захват недопустим).                          */
 #include "shared_types.h"
 #include "shared_macros.h"
 
-/* Запрос квитирования: ставит ISR любой кнопки, разбирает Measure Task. */
-volatile uint8_t audio_ack_req = 0u;
+static uint8_t ap_blk_manual   = 0u;  /* регистр 0x0058 (ручная защёлка)  */
+static uint8_t ap_blk_ack      = 0u;  /* кнопка во время оповещения       */
 
+/* Пересобрать бит State из источников. КОНТЕКСТ: любой (поток/ISR).
+   Флаги читаются ВНУТРИ критической секции: иначе между снимком и записью
+   другой поток успел бы изменить источник и бит «залип» бы.                 */
+static void ap_block_apply(void)
+{
+  TX_INTERRUPT_SAVE_AREA;
+
+  TX_DISABLE;
+  if ((ap_blk_manual | ap_blk_ack) != 0u)
+  {
+    SET_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);
+  }
+  else
+  {
+    CLEAR_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);
+  }
+  TX_RESTORE;
+}
+
+/* Эффективное состояние бита. КОНТЕКСТ: поток плеера. */
 static uint8_t ap_sound_blocked(void)
 {
   return (TEST_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND));
+}
+
+/* --- API блокировки: источники manual/ack --------------------------------
+ * Все функции короткие (флаги + RMW слова State под TX_DISABLE), поэтому
+ * их можно звать и из потока, и из ISR.                                  */
+
+/* Ручная блокировка регистром 0x0058. on = 0 снимает и manual, и ack: мастер
+   главнее кнопки. КОНТЕКСТ: поток.                                        */
+void audio_sound_block_manual(uint8_t on)
+{
+  if (on != 0u)
+  {
+    ap_blk_manual = 1u;
+  }
+  else
+  {
+    ap_blk_manual = 0u;
+    ap_blk_ack    = 0u;
+  }
+  sys_state.block_sound = ap_blk_manual;   /* зеркало для чтения 0x0058 */
+  ap_block_apply();
+}
+
+/* Текущая ручная защёлка (0/1). Нужна Command_vector_ExecutePendingActions:
+   сравнением с sys_state.block_sound решается, надо ли применять 0x0058
+   (звать audio_sound_block_manual(0) каждый проход нельзя - он снимает и
+   кнопочную защёлку). КОНТЕКСТ: поток.                                     */
+uint8_t audio_sound_block_manual_state(void)
+{
+  return ap_blk_manual;
+}
+
+/* Квитирование кнопкой: 1 = заглушить оповещение, 0 = снять защёлку (зовёт
+   seq_halt, когда оповещение завершилось или сменило приоритет).
+   КОНТЕКСТ: поток LVGL Task.                                              */
+void audio_sound_block_ack(uint8_t on)
+{
+  ap_blk_ack = (on != 0u) ? 1u : 0u;
+  ap_block_apply();
+}
+
+/* Полный сброс блокировки (старт, выключение, таймаут неактивности обмена):
+   гасим оба источника и ручную защёлку. КОНТЕКСТ: любой поток.            */
+void audio_sound_block_reset(void)
+{
+  ap_blk_manual         = 0u;
+  ap_blk_ack            = 0u;
+  sys_state.block_sound = 0u;
+  ap_block_apply();
 }
 
 /* --------------------------------------------------------------- поток ----
