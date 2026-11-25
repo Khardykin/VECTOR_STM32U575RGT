@@ -1,7 +1,6 @@
 #include "boot_flash.h"
 #include <string.h>
 #include "main_vector.h"      /* FLASH_ADDRESS_*_BOOTLOADER */
-#include "sfmap.h"            /* SF_APP_STAGE_BASE */
 #include "spiflash.h"         /* sf_read */
 #include "stm32u5xx_hal.h"
 
