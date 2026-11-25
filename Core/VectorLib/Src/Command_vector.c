@@ -715,19 +715,25 @@ uint16_t CmdFunc14(const uint8_t *mas, uint16_t len, uint8_t *out)
   cmd_state.write_addr = addr;
   cmd_state.write_len  = size;
   memcpy(cmd_state.write_buf, &mas[7], size);
+  /* Mute BEFORE programming: a page program stalls the CPU, the player
+     must not hold SAI/DMA at that moment. State RMW under cfg mutex. */
+
   /* Path B: Immediate write to Internal Flash */
   int rc = boot_flash_write(cmd_state.write_addr, cmd_state.write_buf, cmd_state.write_len);
   
+  /* 0 OK / -1 protected / -2 verify / -3 align|range / -4 program error.
+     Report a Modbus exception on EVERY failure: returning echo 6u made
+     the master believe a rejected write had succeeded. */
   if (rc == 0)       { cmd_state.flash_status = CV_ST_OK; }
-  else if (rc == -2) { cmd_state.flash_status = CV_ST_VERIFY; }
-  else               { cmd_state.flash_status = CV_ST_IO; }
-  
-  /* Block Sound during heavy internal flash op */
-  SET_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND); 
-  
-  /* Start quench timer */
-  START_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END, TIME_RTC_DATA_EXCHANGE_END);
-  
+  else if (rc == -1) { cmd_state.flash_status = CV_ST_PROT;
+                       return CmdError(out, mas, CMD_ERR_VALUE); }
+  else if (rc == -2) { cmd_state.flash_status = CV_ST_VERIFY;
+                       return CmdError(out, mas, CMD_ERR_IO); }
+  else if (rc == -3) { cmd_state.flash_status = CV_ST_ADDR;
+                       return CmdError(out, mas, CMD_ERR_ADDR); }
+  else               { cmd_state.flash_status = CV_ST_IO;
+                       return CmdError(out, mas, CMD_ERR_IO); }
+
   sys_state.process = SYS_PROC_FW;
   return 6u;
 }
@@ -787,8 +793,9 @@ uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
     return CmdError(out, mas, CMD_ERR_ADDR);
   }
 
-  /* Block sound during exchange */
-  SET_STATUS_COMMON_BIT(ST_COMMON_BIT_BLOCK_SOUND);
+  /* Block sound during exchange. State RMW under cfg mutex (p.65/66). */
+  sys_state.process = (cmd_state.flash_target == CV_TGT_FW) ? SYS_PROC_FW
+                                                            : SYS_PROC_ARCHIVE;
 
   /* ext_write_pending check removed for Path B */
   cmd_state.write_addr = base + addr;
@@ -819,10 +826,7 @@ uint16_t CmdFunc15(const uint8_t *mas, uint16_t len, uint8_t *out)
   }
   
   cmd_state.flash_status = CV_ST_OK;
-  
-  /* Start quench timer */
-  START_TIMER_RTC(TIMER_RTC_DATA_EXCHANGE_END, TIME_RTC_DATA_EXCHANGE_END);
-  
+
   return 6u;
 }
 
@@ -1208,6 +1212,10 @@ void Command_vector_ExecutePendingActions(void)
       cmd_state.erase_req    = 0u; // Сбрасываем флаг запроса
       return;
     }
+
+    /* Unknown target: report ADDR, do not leave the master polling BUSY. */
+    cmd_state.flash_status = CV_ST_ADDR;
+    return;
   }
 
   /* int_write_pending: handled directly in CmdFunc14 (Path B) */
