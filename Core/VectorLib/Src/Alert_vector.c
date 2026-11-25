@@ -237,6 +237,15 @@ static const alert_desc_t s_desc[ALERT_ID_COUNT] =
     .period_ms = 0u, .pause_ms = 0u,
     .voice = ALERT_SND_NONE, .hold_s = 0u },
 
+  /* Тест звука: канал (SOUND или BEEP) и индекс клипа подставляет
+     alert_indication_start() по sound_test - таблица const, параметры
+     динамические. ack_button = 1: любая кнопка глушит и снимает тест.     */
+  [ALERT_SOUND_TEST] = {
+    .name = "Тест звука", .prio = ALERT_PRIO_ALARM, .ch = ALERT_CH_LED1,
+    .blink = 0u, .ack_button = 1u, .burst = 0u,
+    .period_ms = ALERT_WAIT_END, .pause_ms = 200u,
+    .voice = ALERT_SND_NONE, .hold_s = 0u },
+
   /* SOS - бит ST_COMMON_BIT_SOS в StateErr (зеркало ControlLora). Индикация
      непрерывная, пока бит поднят; кнопкой не квитировать (ack_button = 0).   */
   [ALERT_SOS] = {
@@ -846,6 +855,25 @@ static void alert_indication_start(alert_id_t id)
     ph.ch = (uint8_t)(ph.ch & (uint8_t)~(ALERT_CH_BEEP | ALERT_CH_SOUND));
   }
 
+  /* Тест звука: канал и индекс динамические (Modbus/меню), берём из
+     sound_test, а не из const-таблицы. Образа нет -> BEEP внутренней flash. */
+  if (id == ALERT_SOUND_TEST)
+  {
+    if (sound_test.source == 0u)
+    {
+      ph.ch        = (uint8_t)(ALERT_CH_LED1 | (uint8_t)ALERT_CH_SOUND);
+      ph.sound_idx = sound_test.index;
+    }
+    else
+    {
+      ph.ch        = (uint8_t)(ALERT_CH_LED1 | (uint8_t)ALERT_CH_BEEP);
+      ph.sound_idx = 0u;
+    }
+    ph.t_on_ms = (uint16_t)ALERT_WAIT_END;
+    ph.repeats = (sound_test.repeats != 0u) ? sound_test.repeats : 1u;
+    count      = (sound_test.loop != 0u) ? (uint8_t)ALERT_REPEAT_FOREVER : 1u;
+  }
+
   s_ind_phase[slot]    = ph;
   s_ind_seq[slot].ph    = &s_ind_phase[slot];
   s_ind_seq[slot].n     = 1u;
@@ -883,7 +911,8 @@ static void alert_indication_arbitrate(void)
        PowerOn (через s_req_seq) не трогаем - он не статус, а прямой сценарий. */
     if ((top != ALERT_NONE) &&
         (top != ALERT_SHUTDOWN) &&
-        (top != ALERT_SOS_COUNTDOWN))
+        (top != ALERT_SOS_COUNTDOWN) &&
+        (top != ALERT_SOUND_TEST))
     {
       s_alert[top].indication = 0u;
       top = ALERT_NONE;
@@ -1668,6 +1697,9 @@ uint8_t Alert_ButtonSoundMute(void)
 
   audio_sound_block_ack(1u);   /* gate плеера: клипы образа больше не читаются */
   audio_stop();                /* оборвать уже звучащий клип                   */
+  /* Тест звука кнопкой закрываем ЦЕЛИКОМ: иначе арбитр поднимал бы его
+     индикацию снова, а плеер дропал бы клипы (немой бесконечный тест).     */
+  if (sound_test.active != 0u) { SoundTest_Stop(); }
   LOG_I(VLOG_M_SYS, "alert: sound muted by button");
   return 1u;
 }
@@ -1823,6 +1855,90 @@ uint8_t Alert_AnyActive(void)
   return (Alert_Top() != ALERT_NONE) ? 1u : 0u;
 }
 
+/* ===========================================================================
+ * ТЕСТОВОЕ ВОСПРОИЗВЕДЕНИЕ: управляющий блок объявлен в Alert_vector.h,
+ * экземпляр здесь. Заявки разбирает SoundTest_Tick() в Alert_Tick (Measure
+ * Task) ДО арбитража: статус взводится/снимается, а индикацию ведёт арбитр.
+ * =========================================================================*/
+volatile sound_test_t sound_test = {0};
+
+void SoundTest_Start(uint16_t index, uint8_t repeats, uint8_t loop)
+{
+  sound_test.index   = index;
+  sound_test.repeats = repeats;
+  sound_test.loop    = (loop != 0u) ? 1u : 0u;
+  sound_test.stop    = 0u;
+  sound_test.req     = 1u;
+}
+
+void SoundTest_Stop(void)
+{
+  sound_test.stop = 1u;
+  sound_test.req  = 0u;
+}
+
+uint8_t SoundTest_Active(void) { return sound_test.active; }
+
+/* Завершить тест: снять статус, посчитать. КОНТЕКСТ: Measure Task.         */
+static void SoundTest_Finish(const char *why)
+{
+  sound_test.active = 0u;
+  sound_test.cnt_done++;
+  Alert_Clear(ALERT_SOUND_TEST);
+  LOG_I(VLOG_M_SYS, "sound test: done (%s), idx=%u src=%u",
+        why, (uint32_t)sound_test.last_index, (uint32_t)sound_test.source);
+}
+
+/* Разбор заявок и завершения. КОНТЕКСТ: Measure Task (Alert_Tick).         */
+static void SoundTest_Tick(void)
+{
+  if (sound_test.stop != 0u)
+  {
+    sound_test.stop = 0u;
+    if (sound_test.active != 0u) { SoundTest_Finish("stop"); }
+  }
+
+  if (sound_test.req != 0u)
+  {
+    sound_test.req = 0u;
+
+    /* Новый индекс во время теста: гасим движок, арбитр поднимет индикацию
+       заново уже с новыми параметрами (фаза строится каждый запуск).       */
+    if (sound_test.active != 0u) { Alert_Stop(); }
+
+    if (audio_image_ok() == 0u)
+    {
+      sound_test.source = 1u;               /* образа нет -> аварийный писк */
+    }
+    else
+    {
+      uint16_t n = audio_count();
+      sound_test.source = 0u;
+      if ((n == 0u) || (sound_test.index >= n)) { sound_test.index = 0u; }
+    }
+
+    sound_test.last_index = sound_test.index;
+    sound_test.since_ms   = VTICK_MS();
+    sound_test.active     = 1u;
+    sound_test.cnt_start++;
+
+    Alert_Set(ALERT_SOUND_TEST);
+    alert_rearm_indication(ALERT_SOUND_TEST);
+    LOG_I(VLOG_M_SYS, "sound test: start idx=%u src=%u rep=%u loop=%u",
+          (uint32_t)sound_test.index, (uint32_t)sound_test.source,
+          (uint32_t)sound_test.repeats, (uint32_t)sound_test.loop);
+  }
+
+  /* Неповторяющийся тест отработал: движок пуст и плеер молчит. Задержка
+     300 мс отсекает окно между заявкой и первым проходом IndicationTick.  */
+  if ((sound_test.active != 0u) && (sound_test.loop == 0u) &&
+      (VTICK_ELAPSED_MS(sound_test.since_ms) >= 300u) &&
+      (Alert_Busy() == 0u) && (audio_is_busy() == 0u))
+  {
+    SoundTest_Finish("played");
+  }
+}
+
 /* Движок реестра: 100 мс из Measure Task.                                   */
 void Alert_Tick(void)
 {
@@ -1923,6 +2039,9 @@ void Alert_Tick(void)
 #endif
   }
 
-  /* 4) Индикация: один лидер (самый приоритетный активный статус).          */
+  /* 4) Тест звука: заявки Modbus/меню -> статус реестра (до арбитража).     */
+  SoundTest_Tick();
+
+  /* 5) Индикация: один лидер (самый приоритетный активный статус).          */
   alert_indication_arbitrate();
 }

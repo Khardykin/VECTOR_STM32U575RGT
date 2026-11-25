@@ -60,6 +60,7 @@ enum
 #define OBJ_SENSORS  8u   /* sensors_status                            */
 #define OBJ_CMD      9u   /* cmd_state                                 */
 #define OBJ_SYS     10u   /* sys_state                                 */
+#define OBJ_SNDTEST 11u
 
 typedef struct
 {

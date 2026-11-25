@@ -60,6 +60,7 @@ static uint8_t cv_deveui_stub[CV_DEVEUI_SIZE];
 #define SS(f,a,t)  { (uint16_t)(a), (uint16_t)offsetof(sys_state_t,f),         (t), 0u, OBJ_SYS }
 #define ST(f,a,t)  { (uint16_t)(a), (uint16_t)offsetof(sensors_status_t,f),    (t), 0u, OBJ_SENSORS }
 #define DV(f,a,t)  { (uint16_t)(a), (uint16_t)offsetof(SNS_Dev_Type,f),        (t), 0u, OBJ_DEVICE }
+#define SN(f,a,t)  { (uint16_t)(a), (uint16_t)offsetof(sound_test_t,f),        (t), 0u, OBJ_SNDTEST }
 
 /* Arrays: element count is the only extra datum. */
 #define TC_N(f,a,t,n) { (uint16_t)(a), (uint16_t)offsetof(TEMPSENSOR_CALIB,f), (t), (n), OBJ_TEMPCAL }
@@ -133,6 +134,18 @@ static const reg_map_t com_map[] =
   SS(data_exchange,             0x0057, T_U8),
   SS(block_sound,               0x0058, T_U8),
   CS(audio_reload_pending,      0x0059, T_U8),
+
+  /* Тест звука: req/stop - заявки (движок сбрасывает сам), остальное R/O. */
+  SN(req,                       0x0060, T_U8),
+  SN(stop,                      0x0061, T_U8),
+  SN(index,                     0x0062, T_U16),
+  SN(repeats,                   0x0063, T_U8),
+  SN(loop,                      0x0064, T_U8),
+  SN(active,                    0x0065, T_U8),
+  SN(source,                    0x0066, T_U8),
+  SN(last_index,                0x0067, T_U16),
+  SN(cnt_start,                 0x0068, T_U32),
+  SN(cnt_done,                  0x006A, T_U32),
 
   { 0u, 0u, 0u, 0u, 0u }
 };
@@ -274,6 +287,7 @@ static volatile void *obj_ptr(uint8_t obj)
     case OBJ_SENSORS: return (volatile void *)&sensors_status;
     case OBJ_CMD:     return (volatile void *)&cmd_state;
     case OBJ_SYS:     return (volatile void *)&sys_state;
+    case OBJ_SNDTEST: return (volatile void *)&sound_test;
     default:          return 0;
   }
 }

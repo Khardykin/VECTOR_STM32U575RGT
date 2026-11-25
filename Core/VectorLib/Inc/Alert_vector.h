@@ -279,6 +279,11 @@ void    Alert_IndicationTick(void);
 typedef enum
 {
   ALERT_NONE = 0,
+  /* ТЕСТОВОЕ ВОСПРОИЗВЕДЕНИЕ (Modbus 0x0060.. / меню). Стоит ПЕРВЫМ после
+     NONE = высший приоритет: вытесняет любую индикацию, включая SOS и
+     отсчёт выключения. Если это нежелательно - перенеси строку ниже
+     ALERT_IMMOBILITY, тогда тревоги жизни останутся выше теста.          */
+  ALERT_SOUND_TEST,
   /* ПРИОРИТЕТ = порядок в enum (alert_top_indication идёт от младшего id):
      отсчёт выключения/включения — высший (таймер действия пользователя,
      не должен прерываться серверными тревогами) -> SOS -> SOS группы ->
@@ -402,6 +407,38 @@ const char *Alert_ParamText(alert_id_t id);
 const char *Alert_SysErrName(uint8_t bit);
 const char *Alert_MessageText(void);    /* UTF-8 текст сообщения сервера     */
 uint8_t     Alert_AnyActive(void);      /* 1 = есть активные статусы         */
+
+/* ===========================================================================
+ * ТЕСТОВОЕ ВОСПРОИЗВЕДЕНИЕ - единый управляющий блок.
+ * Заявка пишется из ЛЮБОГО потока (Modbus-регистры, меню, любой модуль),
+ * применяется в Alert_Tick() (Measure Task). Экземпляр - Alert_vector.c,
+ * объявлен здесь -> доступен всему коду через агрегатор main_vector.h.
+ * Индикацию ведёт сам арбитр Alert (статус ALERT_SOUND_TEST), поэтому тест
+ * не конфликтует с тревогами и переживает смену лидера по приоритету.
+ * =========================================================================*/
+typedef struct
+{
+  volatile uint8_t  req;        /* 1 = заявка на запуск (сбрасывает движок)  */
+  volatile uint8_t  stop;       /* 1 = заявка на останов                     */
+  volatile uint16_t index;      /* индекс клипа в образе sounds.bin          */
+  volatile uint8_t  repeats;    /* повторов фазы (0 и 1 = один)              */
+  volatile uint8_t  loop;       /* 1 = крутить до stop / кнопки              */
+  volatile uint8_t  active;     /* статус взведён (только чтение)            */
+  volatile uint8_t  source;     /* 0 = клип из flash, 1 = beep (образа нет)  */
+  volatile uint16_t last_index; /* что играли в последний раз                */
+  volatile uint32_t since_ms;   /* метка запуска (для отсечки завершения)    */
+  volatile uint32_t cnt_start;  /* запусков                                  */
+  volatile uint32_t cnt_done;   /* завершений                                */
+} sound_test_t;
+
+extern volatile sound_test_t sound_test;
+
+/* Заявка на тест. КОНТЕКСТ: любой поток (только volatile-поля).
+   index >= audio_count() -> 0; образа нет -> аварийный писк (source = 1).
+   Повторный вызов во время теста перезапускает его с новым индексом.       */
+void    SoundTest_Start(uint16_t index, uint8_t repeats, uint8_t loop);
+void    SoundTest_Stop(void);
+uint8_t SoundTest_Active(void);
 
 #ifdef __cplusplus
 }
