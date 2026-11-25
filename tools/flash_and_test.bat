@@ -62,7 +62,7 @@ if errorlevel 1 (
 )
 
 set "MISSING="
-for %%f in (pack_sounds.py test_flash_write_final.py test_sound_test.py who_is_beeping.py) do (
+for %%f in (pack_sounds.py test_flash_write_final.py test_sound_test.py) do (
   if not exist "%%f" set "MISSING=!MISSING! %%f"
 )
 if defined MISSING (
@@ -94,12 +94,12 @@ if errorlevel 1 (
 )
 
 if "%TESTONLY%"=="1" (
-  call :say "STEP 3/5  запись пропущена (/T)"
-  goto bg
+  call :say "STEP 3/4  запись пропущена (/T)"
+  goto run_test
 )
 
 rem --- 3. запись во flash --------------------------------------------
-call :say "STEP 3/5  запись во flash"
+call :say "STEP 3/4  запись во flash"
 call :say "          erase ~70 s + write ~10 min при 5 КБ/с"
 call :say "          ВНИМАНИЕ: сессия отладки закрыта, breakpoint в"
 call :say "          load_image() / плеере СНЯТ - останов ядра рвёт Modbus."
@@ -115,15 +115,11 @@ if errorlevel 1 (
 call :say "          запись завершена, жду 2 с на reload образа"
 timeout /t 2 /nobreak >nul
 
-rem --- 4. фоновые статусы --------------------------------------------
-:bg
-call :say "STEP 4/5  фоновые статусы (кто пищит, когда тест освободит канал)"
-py who_is_beeping.py %PORT% --slave %SLAVE%
-
-rem --- 5. тест воспроизведения ---------------------------------------
-call :say "STEP 5/5  тест воспроизведения"
-set "EXTRA="
-if "%INTERACTIVE%"=="1" set "EXTRA=--interactive"
+:run_test
+rem --- 4. тест воспроизведения ---------------------------------------
+call :say "STEP 4/4  тест воспроизведения"
+set "EXTRA=--all"
+if "%INTERACTIVE%"=="1" set "EXTRA=--all --interactive"
 py test_sound_test.py %PORT% --slave %SLAVE% %EXTRA%
 if errorlevel 1 (
   call :say "РЕЗУЛЬТАТ: есть FAIL - смотри строки выше"
