@@ -18,7 +18,7 @@ BURST = {"CRIT_LOW_BAT", "CRIT_BAT", "ERR_STS4", "ERR_NBIOT", "ERR_BLE",
          "ERR_GPS", "ERR_GSM", "ERR_LORA", "ERR_LCD", "GA_SENSOR_FAIL"}
 
 port = sys.argv[1] if len(sys.argv) > 1 else "COM4"
-slave = 100
+slave = 0
 if "--slave" in sys.argv:
     slave = int(sys.argv[sys.argv.index("--slave") + 1])
 

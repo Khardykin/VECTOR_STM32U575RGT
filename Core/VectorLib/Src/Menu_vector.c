@@ -449,10 +449,9 @@ static void decode_button(uint8_t idx, volatile Button_variables *pb)
       press_active[idx] = 1u;
       long_fired[idx]   = 0u;          /* новый фронт нажатия - новый жест   */
 
-      /* Любая кнопка во время звукового оповещения глушит звук (и запрещает
-         плееру читать клипы образа из внешней flash до конца оповещения).
-         Жест при этом НЕ съедаем: меню работает как обычно.                 */
-      (void)Alert_ButtonSoundMute();
+      /* Alert_ButtonSoundMute() перенесена в menu_navigate() — перед блоком
+         квитирования. Обе функции работают с жестом на одном уровне
+         абстракции; mute срабатывает первым, ack снимает индикацию вторым. */
     }
 
     /* второй клик начался внутри окна DOUBLE? */
@@ -810,6 +809,18 @@ static void menu_navigate(void)
   uint8_t g1 = Menu_Gesture(1u);
   uint8_t g2 = Menu_Gesture(2u);
   uint8_t g3 = Menu_Gesture(3u);
+
+	/* Глушение звука ЛЮБОЙ кнопкой во время звукового оповещения.
+	   Вызывается ДО квитирования: mute гасит звук мгновенно через gate
+	   плеера, ack снимает индикацию в реестре на следующем тике арбитра.
+	   Работает на ЛЮБОМ экране. Возврат игнорируем — жест не съедается,
+	   уходит в навигацию или в квитирование ниже.                         */
+  	  uint8_t g_ack_mute = (((g1 != GEST_NONE) && (g1 != GEST_FAKE)) ||
+  			((g2 != GEST_NONE) && (g2 != GEST_FAKE))||
+			((g2 != GEST_NONE) && (g2 != GEST_FAKE)));
+  	  if(g_ack_mute == 1){
+  		  (void)Alert_ButtonSoundMute();
+  	  }
 
 	/* КВИТИРОВАНИЕ ЗЕЛЁНОЙ кнопкой (номер - ALERT_ACK_BUTTON, vector_config.h):
 	   короткое нажатие гасит ИНДИКАЦИЮ приоритетного статуса (Alert_vector), а

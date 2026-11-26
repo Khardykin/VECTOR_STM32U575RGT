@@ -108,7 +108,7 @@ class ModbusMaster:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("port")
-    ap.add_argument("--slave", type=int, default=100)
+    ap.add_argument("--slave", type=int, default=0)
     ap.add_argument("--file", required=True)
     ap.add_argument("--chunk", type=int, default=255)
     args = ap.parse_args()

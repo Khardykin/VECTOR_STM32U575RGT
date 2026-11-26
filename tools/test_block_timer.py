@@ -11,7 +11,7 @@ import sys, time
 from test_sound_test import MB, R_BLOCK
 
 port = sys.argv[1] if len(sys.argv) > 1 else "COM4"
-slave = 100
+slave = 0
 if "--slave" in sys.argv:
     slave = int(sys.argv[sys.argv.index("--slave") + 1])
 

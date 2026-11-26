@@ -204,7 +204,7 @@ def monitor(mb):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("port")
-    ap.add_argument("--slave", type=int, default=100)
+    ap.add_argument("--slave", type=int, default=0)
     ap.add_argument("--clip", type=int, default=1, help="какой клип проверить (по умолчанию 1)")
     ap.add_argument("--loop-hold", type=float, default=3.0)
     ap.add_argument("--interactive", action="store_true",
