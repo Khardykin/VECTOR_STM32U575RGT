@@ -806,21 +806,23 @@ static void Button_Sos(void)
  * ============================================================================ */
 static void menu_navigate(void)
 {
-  uint8_t g1 = Menu_Gesture(1u);
-  uint8_t g2 = Menu_Gesture(2u);
-  uint8_t g3 = Menu_Gesture(3u);
+	uint8_t g1 = Menu_Gesture(1u);
+	uint8_t g2 = Menu_Gesture(2u);
+	uint8_t g3 = Menu_Gesture(3u);
 
 	/* Глушение звука ЛЮБОЙ кнопкой во время звукового оповещения.
 	   Вызывается ДО квитирования: mute гасит звук мгновенно через gate
 	   плеера, ack снимает индикацию в реестре на следующем тике арбитра.
 	   Работает на ЛЮБОМ экране. Возврат игнорируем — жест не съедается,
 	   уходит в навигацию или в квитирование ниже.                         */
-  	  uint8_t g_ack_mute = (((g1 != GEST_NONE) && (g1 != GEST_FAKE)) ||
-  			((g2 != GEST_NONE) && (g2 != GEST_FAKE))||
-			((g2 != GEST_NONE) && (g2 != GEST_FAKE)));
-  	  if(g_ack_mute == 1){
-  		  (void)Alert_ButtonSoundMute();
-  	  }
+	{
+		uint8_t g_ack_mute = (((g1 != GEST_NONE) && (g1 != GEST_FAKE)) ||
+				((g2 != GEST_NONE) && (g2 != GEST_FAKE))||
+				((g3 != GEST_NONE) && (g3 != GEST_FAKE)));
+		if(g_ack_mute == 1){
+			(void)Alert_ButtonSoundMute();
+		}
+	}
 
 	/* КВИТИРОВАНИЕ ЗЕЛЁНОЙ кнопкой (номер - ALERT_ACK_BUTTON, vector_config.h):
 	   короткое нажатие гасит ИНДИКАЦИЮ приоритетного статуса (Alert_vector), а
@@ -835,9 +837,9 @@ static void menu_navigate(void)
 	   КОНТЕКСТ: поток LVGL Task (Menu_Run, 100 мс).                          */
 	{
 		uint8_t *g_ack = (ALERT_ACK_BUTTON == 1u) ? &g1 :
-					   ((ALERT_ACK_BUTTON == 2u) ? &g2 : &g3);
+				((ALERT_ACK_BUTTON == 2u) ? &g2 : &g3);
 		if ((menu_as_short(*g_ack) == (uint8_t)GEST_SHORT) &&
-			(Alert_AckButton() != (uint8_t)ALERT_NONE)){
+				(Alert_AckButton() != (uint8_t)ALERT_NONE)){
 			*g_ack = (uint8_t)GEST_NONE;
 		}
 	}
