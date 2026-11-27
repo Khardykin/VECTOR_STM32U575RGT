@@ -181,14 +181,14 @@ typedef char log_pl_param_assert[(sizeof(log_pl_param_t) == LOG_PAYLOAD_MAX) ? 1
 // ГЕОМЕТРИЯ КОЛЬЦА v2 (LOG_FORMAT.md §2) - чистая арифметика (определения -
 // log_queue.c):
 // слот 40 Б; в секторе 4 КБ - 102 слота (4080 Б, хвост 16 Б не используется);
-// 512 секторов = 2 МБ = 52224 записи; phys = ptr mod 52224. Указатели
+// ёмкость кольца LOG_RING_SLOTS = 32767 слотов (phys = ptr mod 32767);
+// LOG_USABLE_SLOTS = 32665 (минус сектор запаса). Указатели
 // CurrentAddrFile/BegginAddrFile монотонные u32 (естественный заворот;
-// 2^32 не кратно 52224 - раз за ~27 тыс. лет кольцо «перескочит» хвост,
-// на целостность не влияет: физпозиция определяется самим ptr).
+// физпозиция определяется самим ptr).
 #define LOG_SLOT_SIZE			40u
 #define LOG_SLOTS_PER_SECTOR	102u
 #define LOG_SECTOR_SIZE			4096u
-#define LOG_RING_SLOTS			32768u	/* 512 × 102 */
+#define LOG_RING_SLOTS			32767u	/* ёмкость кольца, phys = ptr % 32767 */
 #define LOG_USABLE_SLOTS		(LOG_RING_SLOTS - LOG_SLOTS_PER_SECTOR)	/* сектор запаса */
 #define LOG_TIME_OFFSET			4u		/* offsetof(EVENT_LOG, H.working_hours) */
 

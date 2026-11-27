@@ -1,9 +1,10 @@
 /*
  * tools/test_logq/test_logq.c - хост-тест журнала v2 (LOG_FORMAT.md).
  *
- * Тестирует ЧИСТУЮ логику из Config_save_read.h (геометрия кольца 40 Б ×
- * 102/сектор × 512, RAM-очередь 16×40 Б, валидность записи, решение о
- * стирании, Archiveinterval->секунды) - те же static inline, что исполняет
+ * Тестирует ЧИСТУЮ логику из Config_save_read.h (геометрия кольца 40 Б,
+ * 102 слота/сектор, ёмкость LOG_RING_SLOTS = 32767, RAM-очередь 16×40 Б,
+ * валидность записи, решение о стирании, Archiveinterval->секунды) -
+ * те же функции, что исполняет
  * прошивка, + зеркало алгоритма писателя (log_write_rec/log_flush из
  * Config_save_read.c) поверх RAM-модели flash со случайными EXT_BUSY.
  *
@@ -46,12 +47,12 @@ static void test_geometry(void)
     CHECK(log_slot_addr_v2(base, 101u)    == base + 101u * 40u);
     CHECK(log_slot_addr_v2(base, 102u)    == base + 4096u);           /* сектор 1 */
     CHECK(log_slot_addr_v2(base, 103u)    == base + 4096u + 40u);
-    /* последний слот последнего сектора: phys=52223 -> сектор 511, слот 101 */
-    CHECK(log_slot_addr_v2(base, 52223u)  == base + 511u*4096u + 101u*40u);
-    CHECK(log_slot_addr_v2(base, 52223u) + 40u <= end - 16u + 16u);   /* в области */
+    /* последний слот кольца: phys=32766 -> сектор 321, слот 24 */
+    CHECK(log_slot_addr_v2(base, 32766u)  == base + 321u*4096u + 24u*40u);
+    CHECK(log_slot_addr_v2(base, 32766u) + 40u <= end - 16u + 16u);   /* в области */
     /* заворот кольца */
-    CHECK(log_slot_addr_v2(base, 52224u)  == base);
-    CHECK(log_slot_addr_v2(base, 52225u)  == base + 40u);
+    CHECK(log_slot_addr_v2(base, 32767u)  == base);
+    CHECK(log_slot_addr_v2(base, 32768u)  == base + 40u);
     /* хвост сектора (16 Б) не используется: конец слота 101 != конец сектора */
     CHECK(log_slot_addr_v2(base, 101u) + 40u == base + 4080u);
 
@@ -69,9 +70,9 @@ static void test_geometry(void)
     }
 
     /* ёмкость/геометрия кольца */
-    CHECK(LOG_RING_SLOTS == 52224u);
+    CHECK(LOG_RING_SLOTS == 32767u);
     CHECK(LOG_SLOTS_PER_SECTOR == 102u);
-    CHECK(LOG_USABLE_SLOTS == 52224u - 102u);
+    CHECK(LOG_USABLE_SLOTS == 32767u - 102u);
     CHECK(LOG_SLOTS_PER_SECTOR * LOG_SLOT_SIZE <= 4096u);
 }
 
@@ -306,7 +307,7 @@ static void test_writer(void)
     uint32_t cur = 0, beg = 0;
     /* модель событий: ptr -> wh (проверяем прочитанное), окно = живые записи */
     static uint32_t ev_wh[70000];
-    const uint32_t N = 60000u;    /* > ёмкости кольца 52224 - exercising wrap */
+    const uint32_t N = 60000u;    /* > ёмкости кольца 32767 - exercising wrap */
 
     g_flash = malloc(FLASH_SIZE);
     if (!g_flash) { printf("no mem\n"); exit(1); }
